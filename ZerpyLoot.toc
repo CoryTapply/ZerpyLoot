@@ -1,0 +1,47 @@
+## Interface: 20506
+## Title: ZerpyLoot
+## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
+## Author: Zerpy
+## Version: 0.1.0
+## SavedVariables: ZerpyLootDB
+## DefaultState: enabled
+
+# Vendored libraries (each carries its own separate open-source license, see file headers)
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
+Libs\AceComm-3.0\ChatThrottleLib.lua
+Libs\AceComm-3.0\AceComm-3.0.lua
+Libs\LibDeflate\LibDeflate.lua
+Libs\LibSerialize\LibSerialize.lua
+
+# Core (must load first - creates the ZerpyLoot global table every other
+# file, including Vendor/*, attaches to)
+Core\Init.lua
+Core\Constants.lua
+Core\Util.lua
+Core\PixelPerfect.lua
+Core\Settings.lua
+
+# Vendor: small, fresh, decode-only implementations
+Vendor\Json.lua
+Vendor\Base64.lua
+
+# Modules
+Comm.lua
+RollTracker.lua
+GroupLootRoll.lua
+SoftRes.lua
+Trade.lua
+Tooltip.lua
+
+# UI
+UI\Theme.lua
+UI\OptionsPanel.lua
+UI\RollWindow.lua
+UI\GroupLootRollBars.lua
+UI\SoftResImport.lua
+UI\TradeQueueWindow.lua
+
+# Debug / slash commands
+Debug.lua
