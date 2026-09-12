@@ -44,6 +44,20 @@ local TOP_PADDING = 8;
 local COUNTDOWN_BAR_HEIGHT = 6;
 local BOTTOM_PADDING = 8;
 
+local ITEM_TEXT_GAP_AFTER_ICON = 6;
+local ITEM_TEXT_GAP_BEFORE_BUTTONS = 8;
+-- itemText's available width, derived from the same layout constants
+-- createBar anchors it with rather than measured live off the frame (see
+-- barHeight's own comment above for why a live measurement right after
+-- layout isn't reliable) - safe to precompute since BAR_WIDTH is fixed, the
+-- bars aren't resizable.
+local ITEM_TEXT_MAX_WIDTH = (BAR_WIDTH - 2 * TOP_PADDING)
+    - (ICON_SIZE + ITEM_TEXT_GAP_AFTER_ICON)
+    - (ROLL_BUTTON_SIZE * 2 + PASS_BUTTON_SIZE + BUTTON_GAP * 2 + ITEM_TEXT_GAP_BEFORE_BUTTONS);
+-- Floor for the shrink-to-fit below - past this an item name just clips
+-- against needButton rather than shrinking down to unreadable.
+local ITEM_TEXT_MIN_FONT_HEIGHT = 8;
+
 -- Blizzard's own Group Loot button art (same textures the default
 -- GroupLootFrame buttons and ElvUI's LootRoll.lua use) - "-Up"/"-Down" is
 -- Blizzard's standard two-state naming for this kind of button texture.
@@ -104,6 +118,16 @@ local function buildRollButton(parent, rollType)
 
     button.countText = button:CreateFontString(nil, "OVERLAY", Theme.fonts.highlightSmall);
     button.countText:SetPoint("BOTTOMRIGHT", 0, 0);
+    -- Heavier shadow plus an outline than the shared font's default (see
+    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y and FONT_OUTLINE) so the vote count
+    -- stays legible over any button texture color, without changing every
+    -- other highlightSmall label elsewhere in the addon.
+    do
+        local fontFile, fontHeight = button.countText:GetFont();
+        button.countText:SetFont(fontFile, fontHeight, "OUTLINE");
+    end
+    button.countText:SetShadowOffset(2, -2);
+    button.countText:SetShadowColor(0, 0, 0, 1);
 
     return button;
 end
@@ -185,10 +209,25 @@ local function createBar()
     -- below has room to sit inset against the icon's bottom instead of the
     -- two overlapping.
     local itemText = topRow:CreateFontString(nil, "OVERLAY", Theme.fonts.normal);
-    itemText:SetPoint("TOPLEFT", itemButton, "TOPRIGHT", 6, 0);
-    itemText:SetPoint("RIGHT", needButton, "LEFT", -8, 0);
+    itemText:SetPoint("TOPLEFT", itemButton, "TOPRIGHT", ITEM_TEXT_GAP_AFTER_ICON, 0);
+    itemText:SetPoint("RIGHT", needButton, "LEFT", -ITEM_TEXT_GAP_BEFORE_BUTTONS, 0);
     itemText:SetJustifyH("LEFT");
     itemText:SetWordWrap(false);
+    -- Heavier shadow plus an outline than the shared font's default (see
+    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y and FONT_OUTLINE) so the item name
+    -- stays legible over the alert-frame area's varied backgrounds, without
+    -- changing every other normal-font label elsewhere in the addon. Base
+    -- font file/height stashed on the bar itself so Refresh's shrink-to-fit
+    -- below always has the un-shrunk size to start back from, even once this
+    -- pooled bar has been reused by a roll with a shorter name.
+    local itemTextFontFile, itemTextBaseFontHeight;
+    do
+        local fontFile, fontHeight = itemText:GetFont();
+        itemTextFontFile, itemTextBaseFontHeight = fontFile, fontHeight;
+        itemText:SetFont(fontFile, fontHeight, "OUTLINE");
+    end
+    itemText:SetShadowOffset(2, -2);
+    itemText:SetShadowColor(0, 0, 0, 1);
 
     -- Thin countdown bar inset beside the icon, running under the item name
     -- AND the roll buttons to the row's own right edge - anchored only by
@@ -253,6 +292,7 @@ local function createBar()
     passButton:SetScript("OnLeave", function() GameTooltip:Hide(); end);
 
     bar.itemButton, bar.itemIcon, bar.itemText = itemButton, itemIcon, itemText;
+    bar.itemTextFontFile, bar.itemTextBaseFontHeight = itemTextFontFile, itemTextBaseFontHeight;
     bar.countdownBar = countdownBar;
     bar.needButton, bar.greedButton, bar.passButton = needButton, greedButton, passButton;
 
@@ -332,6 +372,24 @@ local function layout()
     end
 end
 
+-- Shrinks bar.itemText's font one point at a time until roll.itemName's
+-- string width fits within ITEM_TEXT_MAX_WIDTH, down to
+-- ITEM_TEXT_MIN_FONT_HEIGHT - long item names (trinket/weapon names with
+-- "of the Whatever" suffixes) would otherwise just clip against needButton
+-- instead of reading in full. Always starts back from the bar's own base
+-- font height first so a pooled bar's previous (possibly shrunk) size
+-- doesn't carry over onto a shorter name.
+local function fitItemText(bar)
+    local itemText = bar.itemText;
+    local height = bar.itemTextBaseFontHeight;
+    itemText:SetFont(bar.itemTextFontFile, height, "OUTLINE");
+
+    while (itemText:GetStringWidth() > ITEM_TEXT_MAX_WIDTH and height > ITEM_TEXT_MIN_FONT_HEIGHT) do
+        height = height - 1;
+        itemText:SetFont(bar.itemTextFontFile, height, "OUTLINE");
+    end
+end
+
 function GroupLootRollBars.Refresh(rollID)
     local bar = barByRollID[rollID];
     local roll = GroupLootRoll.ActiveRolls[rollID];
@@ -339,6 +397,7 @@ function GroupLootRollBars.Refresh(rollID)
 
     bar.itemIcon:SetTexture(roll.itemIcon);
     bar.itemText:SetText(roll.itemName);
+    fitItemText(bar);
 
     -- Tint both the countdown bar and the item name with the item's own
     -- rarity color (poor through legendary), same as the default popup and
