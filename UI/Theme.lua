@@ -79,6 +79,11 @@ Theme.colors = {
     -- destructive control (e.g. the trade queue row's delete icon) matches it
     -- exactly instead of drifting from a separately-hand-picked red.
     danger = { 0xff / 0xFF, 0x4f / 0xFF, 0x58 / 0xFF, 1 },
+
+    -- Bright orange alert border - used to make a window's whole border "pop"
+    -- for something that needs immediate attention (e.g. the roll tracker
+    -- window when a soft-reserved item of yours is up for roll).
+    warning = { 1, 0.55, 0, 1 },
 };
 
 -- Named font objects every ZerpyLoot FontString uses (instead of Blizzard's
@@ -200,13 +205,23 @@ local function refreshBackdrop(frame)
     local edgeSize = Pixel.PixelSize(frame.pixelBorderThickness or 1);
     frame:SetBackdrop({ bgFile = CHROME_TEXTURE, edgeFile = CHROME_TEXTURE, edgeSize = edgeSize });
     frame:SetBackdropColor(unpack(Theme.colors.background));
-    frame:SetBackdropBorderColor(unpack(Theme.colors.border));
+    frame:SetBackdropBorderColor(unpack(frame.zlBorderColorOverride or Theme.colors.border));
 end
 
 function Theme.ApplyBorder(frame, thicknessPx)
     frame.pixelBorderThickness = thicknessPx or 1;
     refreshBackdrop(frame);
     frame.pixelBorderReflow = function() refreshBackdrop(frame); end
+end
+
+--- Overrides a Theme.CreateWindow frame's border color (e.g. to make it
+--- "pop" for something needing attention), surviving any later
+--- pixelBorderReflow (a display-scale change re-applies whatever override is
+--- currently set instead of silently reverting to the default border color).
+--- Pass a nil/falsy `color` to go back to the default border color.
+function Theme.SetWindowBorderColor(frame, color)
+    frame.zlBorderColorOverride = color or nil;
+    frame:SetBackdropBorderColor(unpack(color or Theme.colors.border));
 end
 
 function Theme.ApplyBackground(frame)

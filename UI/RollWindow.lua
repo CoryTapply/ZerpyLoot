@@ -481,6 +481,12 @@ function RollWindow.Refresh()
 
     local RollOff = RollTracker.CurrentRollOff;
 
+    -- Pop the whole window's border orange for as long as a roll-off is
+    -- actively up for an item we soft-reserved (see the louder sound in
+    -- RollTracker.applyStart) - reverts to the normal border the moment it
+    -- stops or there's no roll-off at all.
+    ZL.Theme.SetWindowBorderColor(frame, (RollOff and RollOff.active and RollOff.isSelfSR) and ZL.Theme.colors.warning or nil);
+
     -- A real roll-off (ours or someone else's) always supersedes a pending,
     -- not-yet-broadcast one.
     if (RollOff) then

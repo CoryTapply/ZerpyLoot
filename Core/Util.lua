@@ -163,6 +163,12 @@ function Util.playSound(soundKitID, channel)
     pcall(PlaySound, soundKitID, channel or "SFX");
 end
 
+-- Same pcall-wrapped safety, for a bundled Media\Sounds\*.ogg file instead of
+-- a built-in SOUNDKIT id.
+function Util.playSoundFile(filePath, channel)
+    pcall(PlaySoundFile, filePath, channel or "SFX");
+end
+
 -- Levenshtein edit distance between two strings (case-sensitive - callers
 -- normalize case first, same convention as GL:levenshtein).
 function Util.levenshtein(str1, str2)

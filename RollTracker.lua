@@ -132,6 +132,11 @@ local function applyStart(Message)
     local itemID = Util.itemIDFromLink(content.item);
     local itemName, _, _, _, _, _, _, _, _, itemIcon = GetItemInfo(content.item);
 
+    -- Whether *we* soft-reserved this item - drives the louder sound/orange
+    -- border pop below, so our own reserved item up for roll doesn't get
+    -- missed among everything else going on.
+    local isSelfSR = ZL.SoftRes ~= nil and ZL.SoftRes.PlayerHasReservedItem(Util.stripRealm(UnitName("player")), itemID);
+
     nextRollOffId = nextRollOffId + 1;
 
     RollTracker.CurrentRollOff = {
@@ -147,6 +152,7 @@ local function applyStart(Message)
         brackets = (type(content.SupportedRolls) == "table" and #content.SupportedRolls > 0) and content.SupportedRolls or Constants.DEFAULT_BRACKETS,
         startedAt = GetTime(),
         Rolls = {},
+        isSelfSR = isSelfSR,
     };
 
     startListeningForRolls();
@@ -179,7 +185,15 @@ local function applyStart(Message)
         end
     end
 
-    Util.playSound(SOUNDKIT.RAID_WARNING);
+    -- A louder, more exciting sound when it's our own soft-reserved item up
+    -- for roll, so it stands out from every other roll-off's plain raid
+    -- warning chime. Bundled as its own file (rather than a SOUNDKIT id)
+    -- since UI_EPICLOOT_TOAST isn't available on TBC clients.
+    if (isSelfSR) then
+        Util.playSoundFile("Interface\\AddOns\\ZerpyLoot\\Media\\Sounds\\SonicRing.ogg", "Master");
+    else
+        Util.playSound(SOUNDKIT.RAID_WARNING, "Master");
+    end
 
     if (ZL.UI.RollWindow and ZL.UI.RollWindow.Show) then
         ZL.UI.RollWindow.Show();
