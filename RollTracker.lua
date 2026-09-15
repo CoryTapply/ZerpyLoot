@@ -132,6 +132,13 @@ local function applyStart(Message)
     local itemID = Util.itemIDFromLink(content.item);
     local itemName, _, _, _, _, _, _, _, _, itemIcon = GetItemInfo(content.item);
 
+    -- Not cached client-side yet - explicitly request it rather than relying
+    -- on GetItemInfo's implicit fetch (mirrors SoftRes.lua's tryReplyWithReserves
+    -- flow). refreshItemDataIfNeeded picks up the result via GET_ITEM_INFO_RECEIVED.
+    if (not itemName and itemID) then
+        C_Item.RequestLoadItemDataByID(itemID);
+    end
+
     -- Whether *we* soft-reserved this item - drives the louder sound/orange
     -- border pop below, so our own reserved item up for roll doesn't get
     -- missed among everything else going on.
