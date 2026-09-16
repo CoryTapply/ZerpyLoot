@@ -576,7 +576,10 @@ function RollWindow.Refresh()
     end
 
     itemIcon:SetTexture(RollOff.itemIcon or FALLBACK_ICON);
-    itemText:SetText(RollOff.itemName or RollOff.item or "");
+    -- RollOff.item is the full item link (rarity color codes baked in by the
+    -- client) and is always set whenever RollOff exists - prefer it over the
+    -- plain itemName from GetItemInfo so the name shows its rarity color.
+    itemText:SetText(RollOff.item or RollOff.itemName or "");
     if (RollOff.initiatorIsMe) then
         awardedText:SetText(RollOff.awardedTo and awardedLabel(RollOff) or "|cff888888Right-click a roll to award|r");
     else

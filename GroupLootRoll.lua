@@ -38,6 +38,20 @@ local ActiveRolls = GroupLootRoll.ActiveRolls;
 -- here per rollID/rollType and drained the moment the roll actually appears.
 local cachedRolls = {};
 
+-- Same race as cachedRolls above, but for CANCEL_LOOT_ROLL itself: an addon
+-- that auto-responds the instant START_LOOT_ROLL fires (e.g. a WeakAura
+-- calling RollOnLoot straight from its own START_LOOT_ROLL handler) can make
+-- the client fire CANCEL_LOOT_ROLL for a rollID before onStartLootRoll below
+-- has populated ActiveRolls[rollID] - both events are dispatched
+-- synchronously to every registered frame in registration order, so whichever
+-- addon's frame comes first in that order can finish responding (and trigger
+-- the cancel) before this addon's own frame gets its turn at START_LOOT_ROLL.
+-- Without this, onCancelLootRoll's ActiveRolls check silently drops the
+-- cancel, onStartLootRoll then creates a bar for a roll the player already
+-- responded to, and it's stuck on screen (Need/Greed/Pass all now no-ops
+-- server-side) until the whole group roll's timer runs out.
+local earlyCancelledRolls = {};
+
 local function stashVote(rollID, rollType, name, classFile)
     local roll = ActiveRolls[rollID];
     if (roll) then
@@ -139,6 +153,14 @@ local function onStartLootRoll(rollID, rollTime)
     -- frame would first come into existence.
     suppressDefaultFrames();
 
+    -- Consume a cancel that raced ahead of this START_LOOT_ROLL (see
+    -- earlyCancelledRolls above) - the roll's already resolved for us, so
+    -- don't stand up a bar for it at all.
+    if (earlyCancelledRolls[rollID]) then
+        earlyCancelledRolls[rollID] = nil;
+        return;
+    end
+
     local texture, name, _, quality, _, canNeed, canGreed = GetLootRollItemInfo(rollID);
     local itemLink = GetLootRollItemLink(rollID);
 
@@ -175,7 +197,13 @@ function GroupLootRoll.ClearActiveRoll(rollID)
 end
 
 local function onCancelLootRoll(rollID)
-    if (not ActiveRolls[rollID]) then return; end
+    if (not ActiveRolls[rollID]) then
+        -- Cancel arrived before this addon's own START_LOOT_ROLL handling -
+        -- stash it so onStartLootRoll can skip creating a bar for it instead
+        -- of silently dropping the cancel (see earlyCancelledRolls above).
+        earlyCancelledRolls[rollID] = true;
+        return;
+    end
 
     GroupLootRoll.ClearActiveRoll(rollID);
 end
@@ -215,6 +243,7 @@ end
 -- the same thing here (mirrors ElvUI's ClearLootRollCache, aliased to both).
 local function onLootRollsComplete()
     wipe(cachedRolls);
+    wipe(earlyCancelledRolls);
 end
 
 local eventFrame = CreateFrame("Frame");
