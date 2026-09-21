@@ -1,4 +1,4 @@
-## Interface: 20506
+## Interface: 120100
 ## Title: ZerpyLoot
 ## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
 ## Author: Zerpy

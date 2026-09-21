@@ -1,21 +1,19 @@
 --[[
-Engine for WoW's native Group Loot (Need/Greed/Pass) rolls - START_LOOT_ROLL
-and friends. Entirely separate from RollTracker.lua's custom "/roll"-based
-roll-off system: that one parses CHAT_MSG_SYSTEM text for real dice rolls and
-never touches the client's own group-loot popup, which is what this file
-tracks instead.
+Engine for WoW's native Group Loot (Need/Greed/Transmog/Pass) rolls -
+START_LOOT_ROLL and friends. Entirely separate from RollTracker.lua's custom
+"/roll"-based roll-off system: that one parses CHAT_MSG_SYSTEM text for real
+dice rolls and never touches the client's own group-loot popup, which is what
+this file tracks instead.
 
-Seeing what OTHER players chose comes from C_LootHistory - the same API
-ElvUI's own LootRoll.lua uses for exactly this (gated to non-Retail clients
-there, since C_LootHistory's per-player roll history is a Classic-era
-feature). Confirmed available on TBC Classic (this addon's own
-## Interface: 20506, client 2.5.6) via Warcraft Wiki's
-API_C_LootHistory.GetPlayerInfo page, which lists "BCC Anniversary" 2.5.6 as
-supported.
+Seeing what OTHER players chose comes from C_LootHistory's drop snapshots:
+LOOT_HISTORY_UPDATE_DROP(encounterID, lootListKey) fires and
+C_LootHistory.GetSortedInfoForDrop returns one drop in full, including every
+player's choice (and their roll number for a Need). That replaces the old
+per-player LOOT_HISTORY_ROLL_CHANGED events and C_LootHistory.GetPlayerInfo,
+which no longer exist.
 
-TBC Classic's Group Loot only ever offers Need/Greed/Pass - Disenchant and
-Transmog are Wrath+/Retail additions - so this only ever populates rollType
-0 (pass), 1 (need) and 2 (greed).
+Each roll's votes are keyed by RollOnLoot's roll types - 0 pass, 1 need,
+2 greed, 4 transmog - and each vote is { name, classFile, roll?, offSpec? }.
 ]]
 
 local ZL = ZerpyLoot;
@@ -24,76 +22,59 @@ local Util = ZL.Util;
 
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 
+-- Blizzard's own constant for how many default roll frames exist
+-- (GroupLootFrame1..4) is a file-local, so it can't be read from here.
+local NUM_DEFAULT_GROUP_LOOT_FRAMES = 4;
+
 -- Keyed by rollID: { rollID, itemLink, itemIcon, itemName, quality, canNeed,
--- canGreed, duration, startedAt, votes = { [0]=passList, [1]=needList,
--- [2]=greedList } }, each vote list an array of { name, classFile }.
+-- canGreed, canTransmog, duration, startedAt, lootHandle, dropKey, votes = {
+-- [0]=passList, [1]=needList, [2]=greedList, [4]=transmogList } }, each vote
+-- list an array of { name, classFile, roll?, offSpec? }.
 -- Exposed (not local) so UI/GroupLootRollBars.lua can read it directly,
 -- same convention RollTracker.CurrentRollOff uses for RollWindow.lua.
 GroupLootRoll.ActiveRolls = {};
 local ActiveRolls = GroupLootRoll.ActiveRolls;
 
--- A LOOT_HISTORY_ROLL_CHANGED event for a given rollID can arrive slightly
--- before START_LOOT_ROLL has populated ActiveRolls[rollID] - the same race
--- ElvUI's LootRoll.lua guards against with its own cachedRolls table. Staged
--- here per rollID/rollType and drained the moment the roll actually appears.
-local cachedRolls = {};
-
--- Same race as cachedRolls above, but for CANCEL_LOOT_ROLL itself: an addon
--- that auto-responds the instant START_LOOT_ROLL fires (e.g. a WeakAura
--- calling RollOnLoot straight from its own START_LOOT_ROLL handler) can make
--- the client fire CANCEL_LOOT_ROLL for a rollID before onStartLootRoll below
--- has populated ActiveRolls[rollID] - both events are dispatched
--- synchronously to every registered frame in registration order, so whichever
--- addon's frame comes first in that order can finish responding (and trigger
--- the cancel) before this addon's own frame gets its turn at START_LOOT_ROLL.
--- Without this, onCancelLootRoll's ActiveRolls check silently drops the
--- cancel, onStartLootRoll then creates a bar for a roll the player already
--- responded to, and it's stuck on screen (Need/Greed/Pass all now no-ops
--- server-side) until the whole group roll's timer runs out.
+-- CANCEL_LOOT_ROLL can arrive for a rollID before onStartLootRoll below has
+-- populated ActiveRolls[rollID]: an addon that auto-responds the instant
+-- START_LOOT_ROLL fires (e.g. a WeakAura calling RollOnLoot straight from its
+-- own START_LOOT_ROLL handler) can make the client fire CANCEL_LOOT_ROLL
+-- before this addon's own frame gets its turn at START_LOOT_ROLL - both
+-- events are dispatched synchronously to every registered frame in
+-- registration order, so whichever addon's frame comes first can finish
+-- responding (and trigger the cancel) first. Without this, onCancelLootRoll's
+-- ActiveRolls check silently drops the cancel, onStartLootRoll then creates a
+-- bar for a roll the player already responded to, and it's stuck on screen
+-- (Need/Greed/Pass all now no-ops server-side) until the whole group roll's
+-- timer runs out.
 local earlyCancelledRolls = {};
 
-local function stashVote(rollID, rollType, name, classFile)
-    local roll = ActiveRolls[rollID];
-    if (roll) then
-        roll.votes[rollType] = roll.votes[rollType] or {};
-        table.insert(roll.votes[rollType], { name = name, classFile = classFile });
+-- Which active roll each history drop ("encounterID:lootListKey") has been
+-- matched to. Nothing in the client ties a rollID to a history drop directly,
+-- so the match is made once (see findRollForDrop) and remembered so later
+-- updates to the same drop keep landing on the same roll.
+local dropKeyToRollID = {};
 
-        if (ZL.UI.GroupLootRollBars.Refresh) then ZL.UI.GroupLootRollBars.Refresh(rollID); end
-    else
-        cachedRolls[rollID] = cachedRolls[rollID] or {};
-        cachedRolls[rollID][rollType] = cachedRolls[rollID][rollType] or {};
-        table.insert(cachedRolls[rollID][rollType], { name = name, classFile = classFile });
-    end
-end
-
-local function drainCache(rollID)
-    local cached = cachedRolls[rollID];
-    if (not cached) then return; end
-
-    local roll = ActiveRolls[rollID];
-    for rollType, votes in pairs(cached) do
-        roll.votes[rollType] = roll.votes[rollType] or {};
-        for _, vote in ipairs(votes) do
-            table.insert(roll.votes[rollType], vote);
-        end
-    end
-
-    cachedRolls[rollID] = nil;
-end
+-- EncounterLootDropRollState -> RollOnLoot roll type. NoRoll (4, "hasn't
+-- chosen yet") is deliberately absent: it's not a vote.
+local DROP_STATE_TO_ROLL_TYPE = {
+    [0] = 1, -- NeedMainSpec
+    [1] = 1, -- NeedOffSpec
+    [2] = 4, -- Transmog
+    [3] = 2, -- Greed
+    [5] = 0, -- Pass
+};
+local DROP_STATE_NEED_OFFSPEC = 1;
 
 -- Frames we've already force-hidden, so repeat suppressDefaultFrames() calls
 -- (see below) don't stack duplicate OnShow hooks on the same frame.
 local hookedDefaultFrames = {};
 
--- Unregistering START_LOOT_ROLL/CANCEL_LOOT_ROLL only stops a frame reacting
--- to FUTURE events - it does nothing if something else (Blizzard's own
--- pooling code, another addon) calls :Show() on it directly, which is
--- exactly what a pooled/lazily-created frame can do the moment it's handed
--- a roll. Hooking OnShow->Hide catches that regardless of why Show() was
--- called, not just the two events we know about.
+-- Hiding a default roll frame once isn't enough - Blizzard's container calls
+-- :Show() on one the moment it hands it a roll, and each frame registers its
+-- own CANCEL_LOOT_ROLL/CANCEL_ALL_LOOT_ROLLS handlers on every OnShow. Hooking
+-- OnShow->Hide catches that regardless of why Show() was called.
 local function forceHideFrame(frame)
-    frame:UnregisterEvent("START_LOOT_ROLL");
-    frame:UnregisterEvent("CANCEL_LOOT_ROLL");
     frame:Hide();
 
     if (not hookedDefaultFrames[frame]) then
@@ -106,26 +87,25 @@ end
 -- ZerpyLoot's own bars are the only Group Loot UI shown - mirrors the user's
 -- choice to fully replace the default popup rather than run alongside it.
 --
--- Two different default UIs exist depending on client/version:
---  - The legacy popup: a fixed set of GroupLootFrame1..N globals
---    (NUM_GROUP_LOOT_FRAMES is the Blizzard FrameXML global for N), present
---    from login.
---  - The newer alert-based popup (Retail, and BCC Anniversary as of its
---    client updates): GroupLootContainer, which pools roll frames into
---    GroupLootContainer.rollFrames on demand - they may not exist yet at
---    login, only once the first roll actually happens. That's why this is
---    called again from onStartLootRoll below, not just once from Init.
+-- START_LOOT_ROLL reaches Blizzard's UI through its event router, which calls
+-- GroupLootContainer_AddRoll; that opens one of the fixed GroupLootFrame1..4
+-- globals and files it in GroupLootContainer.rollFrames. Those are the frames
+-- hidden here. The container is shared with Blizzard's bonus roll frame, so
+-- it (and that frame) are deliberately left alone - the container hides
+-- itself once the roll frames are released (see GroupLootRoll.Init).
+--
+-- Called again from onStartLootRoll below, not just once from Init, since
+-- container.rollFrames is only populated once a roll actually happens.
 local function suppressDefaultFrames()
-    for i = 1, (NUM_GROUP_LOOT_FRAMES or 4) do
+    for i = 1, NUM_DEFAULT_GROUP_LOOT_FRAMES do
         local defaultFrame = _G["GroupLootFrame" .. i];
         if (defaultFrame) then forceHideFrame(defaultFrame); end
     end
 
     local container = _G.GroupLootContainer;
-    if (container) then
-        container:Hide();
-        if (container.rollFrames) then
-            for _, frame in ipairs(container.rollFrames) do forceHideFrame(frame); end
+    if (container and container.rollFrames) then
+        for _, frame in pairs(container.rollFrames) do
+            if (frame ~= _G.BonusRollFrame) then forceHideFrame(frame); end
         end
     end
 end
@@ -136,22 +116,15 @@ function GroupLootRoll.RollOn(rollID, rollType)
     RollOnLoot(rollID, rollType);
 end
 
--- rollIDs still pending a Need/Greed/Pass, persisted to SavedVariables so
--- they survive a /reload's fresh Lua state. Unlike everything else here this
--- is the one piece of roll state that MUST live in ZL.DB rather than a plain
--- local table - see restorePersistedRolls below for why the game doesn't
--- just re-fire START_LOOT_ROLL for us the way it does for a genuinely new
--- roll.
-local function persistedRolls()
-    ZL.DB.activeLootRolls = ZL.DB.activeLootRolls or {};
-    return ZL.DB.activeLootRolls;
-end
-
-local function onStartLootRoll(rollID, rollTime)
-    -- Self-heals against the pooled/lazily-created default frames described
-    -- above suppressDefaultFrames - a fresh roll is exactly the moment such a
-    -- frame would first come into existence.
+local function onStartLootRoll(rollID, rollTime, lootHandle)
+    -- Self-heals against the default frames described above
+    -- suppressDefaultFrames - a fresh roll is exactly the moment one would
+    -- first be handed a roll.
     suppressDefaultFrames();
+
+    -- Already tracking this roll (e.g. PLAYER_ENTERING_WORLD re-running the
+    -- rehydrate below after a zone change) - nothing to redo.
+    if (ActiveRolls[rollID]) then return; end
 
     -- Consume a cancel that raced ahead of this START_LOOT_ROLL (see
     -- earlyCancelledRolls above) - the roll's already resolved for us, so
@@ -161,7 +134,7 @@ local function onStartLootRoll(rollID, rollTime)
         return;
     end
 
-    local texture, name, _, quality, _, canNeed, canGreed = GetLootRollItemInfo(rollID);
+    local texture, name, _, quality, _, canNeed, canGreed, _, _, _, _, _, canTransmog = GetLootRollItemInfo(rollID);
     local itemLink = GetLootRollItemLink(rollID);
 
     ActiveRolls[rollID] = {
@@ -172,26 +145,30 @@ local function onStartLootRoll(rollID, rollTime)
         quality = quality,
         canNeed = canNeed,
         canGreed = canGreed,
+        canTransmog = canTransmog,
         duration = rollTime,
         startedAt = GetTime(),
+        lootHandle = lootHandle,
         votes = {},
     };
-    persistedRolls()[rollID] = true;
-
-    drainCache(rollID);
 
     if (ZL.UI.GroupLootRollBars.Acquire) then ZL.UI.GroupLootRollBars.Acquire(rollID); end
+
+    -- The history drop for this roll may already exist (its update event can
+    -- fire before START_LOOT_ROLL) - pick up whatever it already shows.
+    GroupLootRoll.SyncFromHistory();
 end
 
 -- Single cleanup path for a roll that's no longer pending, whether it ended
 -- normally (CANCEL_LOOT_ROLL) or GroupLootRollBars.lua's own OnUpdate safety
--- net caught it expiring without one - both need the same three things done
--- (drop the live state, drop the persisted-for-reload flag, hide the bar),
--- so neither has to duplicate the other's bookkeeping.
+-- net caught it expiring without one - both need the same things done (drop
+-- the live state, hide the bar), so neither has to duplicate the other's
+-- bookkeeping.
 function GroupLootRoll.ClearActiveRoll(rollID)
+    local roll = ActiveRolls[rollID];
+    if (roll and roll.dropKey) then dropKeyToRollID[roll.dropKey] = nil; end
+
     ActiveRolls[rollID] = nil;
-    cachedRolls[rollID] = nil;
-    persistedRolls()[rollID] = nil;
 
     if (ZL.UI.GroupLootRollBars.Release) then ZL.UI.GroupLootRollBars.Release(rollID); end
 end
@@ -208,41 +185,130 @@ local function onCancelLootRoll(rollID)
     GroupLootRoll.ClearActiveRoll(rollID);
 end
 
--- The client only fires START_LOOT_ROLL for a roll that's genuinely new, so
--- a roll already in progress before a /reload never gets it again - there's
--- also no "list current rolls" API to rediscover it blind (GetLootRollItemInfo
--- needs a rollID you already have). Rolling IDs aren't reset by /reload
--- though (confirmed via Warcraft Wiki's GetLootRollItemInfo page), so the
--- rollIDs stashed in persistedRolls() by onStartLootRoll are still valid to
--- query - GetLootRollTimeLeft on each tells us whether it's actually still
--- pending (survived the reload) or has since expired/resolved (stale entry
--- to drop). Run from PLAYER_ENTERING_WORLD rather than PLAYER_LOGIN since
--- that fires before the client has necessarily synced this roll's state back
--- from the server.
-local function restorePersistedRolls()
-    for rollID in pairs(persistedRolls()) do
-        local timeLeft = GetLootRollTimeLeft(rollID);
-        if (timeLeft and timeLeft > 0) then
-            onStartLootRoll(rollID, timeLeft);
-        else
-            persistedRolls()[rollID] = nil;
+-- Fired by the client when every pending roll is cancelled at once. Nothing
+-- else would ever tell us those bars are stale.
+local function onCancelAllLootRolls()
+    local rollIDs = {};
+    for rollID in pairs(ActiveRolls) do table.insert(rollIDs, rollID); end
+    for _, rollID in ipairs(rollIDs) do GroupLootRoll.ClearActiveRoll(rollID); end
+
+    wipe(earlyCancelledRolls);
+end
+
+-- The client only fires START_LOOT_ROLL for a roll that's genuinely new, so a
+-- roll already in progress before a /reload never gets it again.
+-- GetActiveLootRollIDs lists every roll still pending - Blizzard's own group
+-- loot frame rehydrates from it the same way. Run from PLAYER_ENTERING_WORLD
+-- rather than PLAYER_LOGIN since that fires before the client has necessarily
+-- synced this roll's state back from the server.
+local function restoreActiveRolls()
+    for _, rollID in ipairs(GetActiveLootRollIDs()) do
+        if (not ActiveRolls[rollID]) then
+            -- The roll's full duration, i.e. what START_LOOT_ROLL's rollTime
+            -- would have been.
+            local duration = C_Loot.GetLootRollDuration(rollID);
+            if (duration and duration > 0) then
+                onStartLootRoll(rollID, duration);
+            end
         end
     end
 end
 
-local function onLootHistoryRollChanged(itemIdx, playerIdx)
-    local name, classToken, rollType = C_LootHistory.GetPlayerInfo(itemIdx, playerIdx);
-    local rollID = C_LootHistory.GetItem(itemIdx);
-    if (not name or not rollID) then return; end
+--------------------------------------------------------------------------
+-- Loot history: one snapshot per drop
+--------------------------------------------------------------------------
 
-    stashVote(rollID, rollType, Util.stripRealm(name), classToken);
+-- Finds which active roll a history drop belongs to. Nothing in the client
+-- links a rollID to a drop's lootListKey, so: same item, not already matched
+-- to another drop, and preferably the roll whose START_LOOT_ROLL lootHandle
+-- equals the drop's lootListKey (an exact match if the client really uses one
+-- as the other). Failing that, the earliest such roll - identical items
+-- rolled at the same time resolve in the order they started.
+local function findRollForDrop(lootListKey, itemLink)
+    local itemID = Util.itemIDFromLink(itemLink);
+    if (not itemID) then return nil; end
+
+    local alreadyMatched = {};
+    for _, matchedRollID in pairs(dropKeyToRollID) do alreadyMatched[matchedRollID] = true; end
+
+    local best;
+    for rollID, roll in pairs(ActiveRolls) do
+        if (not alreadyMatched[rollID] and Util.itemIDFromLink(roll.itemLink) == itemID) then
+            if (roll.lootHandle ~= nil and roll.lootHandle == lootListKey) then
+                return rollID;
+            end
+
+            if (not best or roll.startedAt < ActiveRolls[best].startedAt) then
+                best = rollID;
+            end
+        end
+    end
+
+    return best;
 end
 
--- Clears any stale cached votes once the client considers every roll in this
--- batch resolved - LOOT_HISTORY_ROLL_COMPLETE/LOOT_ROLLS_COMPLETE both mean
--- the same thing here (mirrors ElvUI's ClearLootRollCache, aliased to both).
+-- Replaces the matched roll's whole vote set from one drop snapshot (the
+-- snapshot already contains every player's choice, so there's nothing to
+-- append to).
+local function applyDropInfo(encounterID, dropInfo)
+    if (type(dropInfo) ~= "table" or not dropInfo.lootListKey) then return; end
+
+    local key = encounterID .. ":" .. dropInfo.lootListKey;
+    local rollID = dropKeyToRollID[key];
+
+    if (not rollID or not ActiveRolls[rollID]) then
+        -- A drop that already has a winner (or everyone passed) is history, not
+        -- a live roll - never match one of those to a new roll, or an old drop
+        -- of the same item could claim it.
+        if (dropInfo.winner or dropInfo.allPassed) then return; end
+
+        rollID = findRollForDrop(dropInfo.lootListKey, dropInfo.itemHyperlink);
+        if (not rollID) then return; end
+
+        dropKeyToRollID[key] = rollID;
+        ActiveRolls[rollID].dropKey = key;
+    end
+
+    local votes = {};
+    for _, rollInfo in ipairs(dropInfo.rollInfos or {}) do
+        local rollType = DROP_STATE_TO_ROLL_TYPE[rollInfo.state];
+        if (rollType) then
+            votes[rollType] = votes[rollType] or {};
+            table.insert(votes[rollType], {
+                name = Util.stripRealm(rollInfo.playerName),
+                classFile = rollInfo.playerClass,
+                roll = rollInfo.roll,
+                offSpec = (rollInfo.state == DROP_STATE_NEED_OFFSPEC) or nil,
+            });
+        end
+    end
+
+    ActiveRolls[rollID].votes = votes;
+    if (ZL.UI.GroupLootRollBars.Refresh) then ZL.UI.GroupLootRollBars.Refresh(rollID); end
+end
+
+local function onLootHistoryUpdateDrop(encounterID, lootListKey)
+    if (not encounterID or not lootListKey) then return; end
+    applyDropInfo(encounterID, C_LootHistory.GetSortedInfoForDrop(encounterID, lootListKey));
+end
+
+--- Re-reads every drop in the loot history and applies it to the matching
+--- active roll. Used when a roll starts (its drop may have been reported
+--- before START_LOOT_ROLL). pcall-wrapped: it's a best-effort catch-up, and a
+--- failure here must never stop the roll's bar from appearing.
+function GroupLootRoll.SyncFromHistory()
+    pcall(function()
+        for _, encounter in ipairs(C_LootHistory.GetAllEncounterInfos() or {}) do
+            for _, dropInfo in ipairs(C_LootHistory.GetSortedDropsForEncounter(encounter.encounterID) or {}) do
+                applyDropInfo(encounter.encounterID, dropInfo);
+            end
+        end
+    end);
+end
+
+-- Every roll in this batch is resolved, so any cancel we stashed for a roll
+-- that never showed up is stale.
 local function onLootRollsComplete()
-    wipe(cachedRolls);
     wipe(earlyCancelledRolls);
 end
 
@@ -252,39 +318,53 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         onStartLootRoll(...);
     elseif (event == "CANCEL_LOOT_ROLL") then
         onCancelLootRoll(...);
-    elseif (event == "LOOT_HISTORY_ROLL_CHANGED") then
-        onLootHistoryRollChanged(...);
+    elseif (event == "CANCEL_ALL_LOOT_ROLLS") then
+        onCancelAllLootRolls();
+    elseif (event == "LOOT_HISTORY_UPDATE_DROP") then
+        onLootHistoryUpdateDrop(...);
     elseif (event == "PLAYER_ENTERING_WORLD") then
-        restorePersistedRolls();
-    else
+        restoreActiveRolls();
+    elseif (event == "LOOT_ROLLS_COMPLETE") then
         onLootRollsComplete();
     end
 end);
 
 function GroupLootRoll.Init()
+    -- Roll IDs used to be persisted here to survive a /reload; the client can
+    -- list pending rolls itself now (see restoreActiveRolls), so drop any
+    -- leftover saved copy.
+    if (ZL.DB) then ZL.DB.activeLootRolls = nil; end
+
     if (not ZL.Settings.GetGroupLootRollEnabled()) then return; end
 
     suppressDefaultFrames();
 
-    -- GroupLootContainer_Update is what Blizzard calls whenever the pooled
-    -- alert-based popup (see suppressDefaultFrames) acquires or lays out a
-    -- roll frame - the same hook point ElvUI's AlertFrame.lua uses to
-    -- reposition that container. Re-running suppression here catches a
-    -- pooled frame the instant it's assigned, on top of the onStartLootRoll
-    -- call below.
-    if (_G.GroupLootContainer_Update) then
-        hooksecurefunc("GroupLootContainer_Update", suppressDefaultFrames);
-    end
+    -- GroupLootContainer_AddFrame is where Blizzard hands a roll to one of
+    -- the default frames. Hiding that frame (see forceHideFrame) leaves the
+    -- container still believing the slot is occupied, so its bookkeeping
+    -- grows with every roll; releasing the frame straight back keeps it
+    -- empty - and lets the container hide itself, so we never have to force
+    -- it hidden (which would take Blizzard's bonus roll frame down with it).
+    -- Deferred a frame so it runs outside Blizzard's own call.
+    hooksecurefunc("GroupLootContainer_AddFrame", function(container, frame)
+        if (not hookedDefaultFrames[frame]) then return; end
 
-    -- CANCEL_ALL_LOOT_ROLLS deliberately not registered - it's a Retail-only
-    -- event (confirmed via ElvUI's own LootRoll.lua, which only registers it
-    -- behind an E.Retail check).
+        C_Timer.After(0, function()
+            pcall(GroupLootContainer_RemoveFrame, container, frame);
+        end);
+    end);
+
+    -- GroupLootContainer_Update is what Blizzard calls whenever the container
+    -- acquires or lays out a roll frame. Re-running suppression here catches a
+    -- frame the instant it's assigned, on top of the onStartLootRoll call.
+    hooksecurefunc("GroupLootContainer_Update", suppressDefaultFrames);
+
     eventFrame:RegisterEvent("START_LOOT_ROLL");
     eventFrame:RegisterEvent("CANCEL_LOOT_ROLL");
-    eventFrame:RegisterEvent("LOOT_HISTORY_ROLL_CHANGED");
-    eventFrame:RegisterEvent("LOOT_HISTORY_ROLL_COMPLETE");
+    eventFrame:RegisterEvent("CANCEL_ALL_LOOT_ROLLS");
+    eventFrame:RegisterEvent("LOOT_HISTORY_UPDATE_DROP");
     eventFrame:RegisterEvent("LOOT_ROLLS_COMPLETE");
     -- Restores any roll still pending from before a /reload - see
-    -- restorePersistedRolls above.
+    -- restoreActiveRolls above.
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD");
 end

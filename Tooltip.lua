@@ -70,7 +70,7 @@ local function addTradeQueueLines(tooltip, itemID)
     for _, entry in ipairs(matches) do
         -- winnerClass is a WoW class token, recorded at award time; fall back
         -- to the current group roster for older queue entries that predate it.
-        local classFile = entry.winnerClass or Util.groupMembers()[Util.stripRealm(entry.winner)];
+        local classFile = entry.winnerClass or Util.lookupClass(Util.groupMembers(), entry.winner);
         local text = Util.classColoredName(entry.winner, classFile);
 
         local detail = entry.classification or "?";
@@ -86,8 +86,17 @@ local function addTradeQueueLines(tooltip, itemID)
     return true;
 end
 
-local function onTooltipSetItem(tooltip)
-    local _, itemLink = tooltip:GetItem();
+-- TooltipDataProcessor post-calls fire for every tooltip (comparison
+-- tooltips, embedded ones, ...); only the two the addon has always decorated
+-- get lines added.
+local function onItemTooltipData(tooltip, data)
+    if (tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip) then return; end
+
+    local itemLink = data and data.hyperlink;
+    if (not itemLink) then
+        local _, link = tooltip:GetItem();
+        itemLink = link;
+    end
     if (not itemLink) then return; end
 
     local itemID = Util.itemIDFromLink(itemLink);
@@ -102,9 +111,5 @@ local function onTooltipSetItem(tooltip)
 end
 
 function Tooltip.Init()
-    GameTooltip:HookScript("OnTooltipSetItem", onTooltipSetItem);
-
-    if (ItemRefTooltip) then
-        ItemRefTooltip:HookScript("OnTooltipSetItem", onTooltipSetItem);
-    end
+    TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, onItemTooltipData);
 end

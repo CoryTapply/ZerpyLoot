@@ -38,25 +38,14 @@ local ERR_TRADE_COMPLETE = ERR_TRADE_COMPLETE;
 -- apart, so it must never be treated as success on its own.
 local activeSession = { partner = nil, placedItemLinks = {} };
 
-local getContainerNumSlots = C_Container and C_Container.GetContainerNumSlots or GetContainerNumSlots;
-local getContainerItemInfo = C_Container and C_Container.GetContainerItemInfo or nil;
-local useContainerItem = C_Container and C_Container.UseContainerItem or UseContainerItem;
-
 local function containerItemID(bag, slot)
-    if (getContainerItemInfo) then
-        local info = getContainerItemInfo(bag, slot);
-        return info and info.itemID or nil;
-    end
-
-    -- Legacy (pre-C_Container) client fallback: GetContainerItemInfo returns
-    -- a plain value list, and the item link is the 7th return.
-    local _, _, _, _, _, _, itemLink = GetContainerItemInfo(bag, slot);
-    return itemLink and Util.itemIDFromLink(itemLink) or nil;
+    local info = C_Container.GetContainerItemInfo(bag, slot);
+    return info and info.itemID or nil;
 end
 
 local function findItemInBags(itemID)
     for bag = 0, 4 do
-        local numSlots = getContainerNumSlots(bag) or 0;
+        local numSlots = C_Container.GetContainerNumSlots(bag) or 0;
         for slot = 1, numSlots do
             if (containerItemID(bag, slot) == itemID) then
                 return bag, slot;
@@ -147,7 +136,7 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
     local tradeAlreadyOpen = TradeFrame and TradeFrame:IsShown();
     local currentPartner = tradeAlreadyOpen and UnitName("NPC");
 
-    if (tradeAlreadyOpen and not (currentPartner and Util.iEquals(Util.stripRealm(currentPartner), Util.stripRealm(playerName)))) then
+    if (tradeAlreadyOpen and not (currentPartner and Util.namesMatch(currentPartner, playerName, true))) then
         onResult(false, "You're already trading with someone else.");
         return;
     end
@@ -170,7 +159,7 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
 
     local function placeItem()
         if (TradeFrame and TradeFrame:IsShown()) then
-            useContainerItem(bag, slot);
+            C_Container.UseContainerItem(bag, slot);
         end
     end
 
@@ -197,7 +186,7 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
 
         if (event == "TRADE_SHOW") then
             local partner = UnitName("NPC");
-            if (not partner or not Util.iEquals(Util.stripRealm(partner), Util.stripRealm(playerName))) then
+            if (not partner or not Util.namesMatch(partner, playerName, true)) then
                 return; -- some other trade window opened, not ours - keep waiting
             end
 
@@ -214,7 +203,9 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
     if (tradeAlreadyOpen) then
         placeAndResolve();
     else
-        InitiateTrade(playerName);
+        -- InitiateTrade takes a unit token; the bare name is only a fallback
+        -- for someone we can't find in the group, and may well be rejected.
+        InitiateTrade(Util.unitTokenForName(playerName) or playerName);
 
         timeoutTimer = C_Timer.NewTimer(TRADE_OPEN_TIMEOUT, function()
             finish(false, "Trade window did not open.");
@@ -240,7 +231,7 @@ local function onTradeComplete()
     for i = #Trade.Queue, 1, -1 do
         local entry = Trade.Queue[i];
         if (activeSession.partner
-            and Util.iEquals(Util.stripRealm(entry.winner or ""), Util.stripRealm(activeSession.partner))
+            and Util.namesMatch(entry.winner, activeSession.partner, true)
             and activeSession.placedItemLinks[entry.itemLink]) then
             table.remove(Trade.Queue, i);
             onItemActuallyTraded(entry);

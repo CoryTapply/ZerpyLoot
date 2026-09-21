@@ -9,13 +9,23 @@ local ZL = ZerpyLoot;
 local Settings = ZL.Settings;
 local LSM = LibStub("LibSharedMedia-3.0");
 
+-- TEMPORARY: forces this theme regardless of the saved setting (the saved
+-- value isn't touched, so it comes back once this is set to nil). Set to nil
+-- to revert to the normal saved/default theme behaviour.
+local FORCED_THEME = "blizzardthin";
+
 function Settings.Init()
     ZL.DB.settings = ZL.DB.settings or {};
     local s = ZL.DB.settings;
 
     s.font = s.font or LSM:GetDefault("font");
     s.statusbar = s.statusbar or LSM:GetDefault("statusbar");
+    s.theme = ZL.Theme.THEMES[s.theme] and s.theme or ZL.Theme.DEFAULT_THEME;
 
+    -- The theme is what this session's windows get skinned with, so it's
+    -- locked in here once (before any window exists) rather than re-read -
+    -- changing the setting mid-session only takes effect after a /reload.
+    ZL.Theme.Init(FORCED_THEME or s.theme);
     ZL.Theme.ApplyFont(s.font);
     ZL.Theme.RefreshStatusBars(s.statusbar);
 end
@@ -31,6 +41,21 @@ end
 function Settings.SetFont(key)
     ZL.DB.settings.font = key;
     ZL.Theme.ApplyFont(key);
+end
+
+-- UI theme key (see Theme.THEMES). Unlike font/statusbar this can't be
+-- applied live - the default skin strips Blizzard's own button/frame art and
+-- has no way to put it back - so the value saved here is picked up at the
+-- next /reload (the options panel prompts for one).
+function Settings.GetTheme()
+    if (FORCED_THEME) then return FORCED_THEME; end
+
+    local theme = ZL.DB and ZL.DB.settings and ZL.DB.settings.theme;
+    return (theme and ZL.Theme.THEMES[theme]) and theme or ZL.Theme.DEFAULT_THEME;
+end
+
+function Settings.SetTheme(key)
+    ZL.DB.settings.theme = key;
 end
 
 function Settings.GetStatusBarTexture()

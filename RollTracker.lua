@@ -78,18 +78,25 @@ function RollTracker.ProcessRoll(message)
         return;
     end
 
+    -- Chat text is hidden from addons during chat lockdown; there's nothing
+    -- we can parse, and touching it would throw.
+    if (Util.isSecret(message)) then
+        return;
+    end
+
     for roller, roll, low, high in string.gmatch(message, rollPattern) do
         roll = tonumber(roll) or 0;
         low = tonumber(low) or 0;
         high = tonumber(high) or 0;
 
         local rollerBase = Util.stripRealm(roller);
-        local members = Util.groupMembers();
-        local classFile = members[rollerBase];
 
         -- Only count rolls from people actually in our group (mirrors
         -- Classes/RollOff.lua:936-951 - rolls never include a realm suffix).
-        if (members[rollerBase] ~= nil) then
+        -- Forever names are two words, and the roster may list a different
+        -- half than the roll message, hence findMember rather than a lookup.
+        local memberName, classFile = Util.findMember(Util.groupMembers(), rollerBase);
+        if (memberName ~= nil) then
             local classification = classify(low, high);
 
             table.insert(RollOff.Rolls, {
@@ -130,7 +137,7 @@ local function applyStart(Message)
     end
 
     local itemID = Util.itemIDFromLink(content.item);
-    local itemName, _, _, _, _, _, _, _, _, itemIcon = GetItemInfo(content.item);
+    local itemName, _, itemQuality, _, _, _, _, _, _, itemIcon = Util.GetItemInfo(content.item);
 
     -- Not cached client-side yet - explicitly request it rather than relying
     -- on GetItemInfo's implicit fetch (mirrors SoftRes.lua's tryReplyWithReserves
@@ -154,6 +161,7 @@ local function applyStart(Message)
         item = content.item,
         itemID = itemID,
         itemName = itemName,
+        itemQuality = itemQuality,
         itemIcon = itemIcon,
         time = math.floor(content.time),
         brackets = (type(content.SupportedRolls) == "table" and #content.SupportedRolls > 0) and content.SupportedRolls or Constants.DEFAULT_BRACKETS,
@@ -426,13 +434,14 @@ local function refreshItemDataIfNeeded()
         return;
     end
 
-    local itemName, _, _, _, _, _, _, _, _, itemIcon = GetItemInfo(RollOff.item);
+    local itemName, _, itemQuality, _, _, _, _, _, _, itemIcon = Util.GetItemInfo(RollOff.item);
     if (not itemIcon) then
         return; -- still not cached - wait for the next GET_ITEM_INFO_RECEIVED
     end
 
     RollOff.itemIcon = itemIcon;
     RollOff.itemName = RollOff.itemName or itemName;
+    RollOff.itemQuality = RollOff.itemQuality or itemQuality;
 
     if (ZL.UI.RollWindow and ZL.UI.RollWindow.Refresh) then
         ZL.UI.RollWindow.Refresh();

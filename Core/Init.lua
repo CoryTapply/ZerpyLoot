@@ -35,12 +35,27 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
         ZerpyLootDB = ZerpyLootDB or {};
         ZL.DB = ZerpyLootDB;
     elseif (event == "PLAYER_LOGIN") then
-        if (ZL.Settings.Init) then ZL.Settings.Init(); end
-        if (ZL.Comm.Init) then ZL.Comm.Init(); end
-        if (ZL.RollTracker.Init) then ZL.RollTracker.Init(); end
-        if (ZL.GroupLootRoll.Init) then ZL.GroupLootRoll.Init(); end
-        if (ZL.SoftRes.Init) then ZL.SoftRes.Init(); end
-        if (ZL.Tooltip.Init) then ZL.Tooltip.Init(); end
-        if (ZL.Trade.Init) then ZL.Trade.Init(); end
+        -- Each module is initialised in its own pcall so one module failing
+        -- (e.g. registering an event this client doesn't have) can't stop
+        -- every module after it from loading.
+        local modules = {
+            { "Settings", ZL.Settings },
+            { "Comm", ZL.Comm },
+            { "RollTracker", ZL.RollTracker },
+            { "GroupLootRoll", ZL.GroupLootRoll },
+            { "SoftRes", ZL.SoftRes },
+            { "Tooltip", ZL.Tooltip },
+            { "Trade", ZL.Trade },
+        };
+
+        for _, module in ipairs(modules) do
+            local moduleName, moduleTable = module[1], module[2];
+            if (moduleTable.Init) then
+                local ok, err = pcall(moduleTable.Init);
+                if (not ok) then
+                    print(("|cff8865ffZerpyLoot|r %s failed to initialise: %s"):format(moduleName, tostring(err)));
+                end
+            end
+        end
     end
 end);

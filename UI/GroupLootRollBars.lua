@@ -21,7 +21,9 @@ local GroupLootRoll = ZL.GroupLootRoll;
 local Util = ZL.Util;
 local Theme = ZL.Theme;
 
-local ROLL_PASS, ROLL_NEED, ROLL_GREED = 0, 1, 2;
+-- Same values RollOnLoot takes. Transmog (4) replaces Greed for items you
+-- can't need or greed.
+local ROLL_PASS, ROLL_NEED, ROLL_GREED, ROLL_TRANSMOG = 0, 1, 2, 4;
 
 local BAR_WIDTH = 300;
 local BUTTON_GAP = 4;
@@ -67,6 +69,14 @@ local ROLL_BUTTON_TEXTURES = {
     [ROLL_PASS]  = { up = [[Interface\Buttons\UI-GroupLoot-Pass-Up]],  down = [[Interface\Buttons\UI-GroupLoot-Pass-Down]] },
 };
 
+-- Transmog has no file-based art; Blizzard's own roll frame draws it from
+-- these atlases (the same ones GroupLootFrame.xml's TransmogButton uses).
+local TRANSMOG_ATLASES = {
+    up = "lootroll-toast-icon-transmog-up",
+    down = "lootroll-toast-icon-transmog-down",
+    highlight = "lootroll-toast-icon-transmog-highlight",
+};
+
 -- Key this stack's saved anchor position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition - same mechanism RollWindow.lua
 -- uses for its own window).
@@ -99,15 +109,23 @@ local order = {};
 local barHeight = TOP_PADDING + ICON_SIZE + BOTTOM_PADDING;
 
 local function buildRollButton(parent, rollType)
-    local textures = ROLL_BUTTON_TEXTURES[rollType];
     local size = (rollType == ROLL_PASS) and PASS_BUTTON_SIZE or ROLL_BUTTON_SIZE;
 
     local button = CreateFrame("Button", nil, parent);
     button:SetSize(size, size);
-    button:SetNormalTexture(textures.up);
-    button:SetPushedTexture(textures.down);
-    button:SetDisabledTexture(textures.up);
-    button:SetHighlightTexture(textures.up, "ADD");
+
+    if (rollType == ROLL_TRANSMOG) then
+        button:SetNormalAtlas(TRANSMOG_ATLASES.up);
+        button:SetPushedAtlas(TRANSMOG_ATLASES.down);
+        button:SetDisabledAtlas(TRANSMOG_ATLASES.up);
+        button:SetHighlightAtlas(TRANSMOG_ATLASES.highlight, "ADD");
+    else
+        local textures = ROLL_BUTTON_TEXTURES[rollType];
+        button:SetNormalTexture(textures.up);
+        button:SetPushedTexture(textures.down);
+        button:SetDisabledTexture(textures.up);
+        button:SetHighlightTexture(textures.up, "ADD");
+    end
 
     -- Disabled state (can't Need/Greed this item) reuses the same "up"
     -- texture, greyed out - Blizzard's own button art has no separate
@@ -118,13 +136,13 @@ local function buildRollButton(parent, rollType)
 
     button.countText = button:CreateFontString(nil, "OVERLAY", Theme.fonts.highlightSmall);
     button.countText:SetPoint("BOTTOMRIGHT", 0, 0);
-    -- Heavier shadow plus an outline than the shared font's default (see
-    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y and FONT_OUTLINE) so the vote count
+    -- Heavier shadow than the shared font's default (see
+    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y) so the vote count
     -- stays legible over any button texture color, without changing every
     -- other highlightSmall label elsewhere in the addon.
     do
         local fontFile, fontHeight = button.countText:GetFont();
-        button.countText:SetFont(fontFile, fontHeight, "OUTLINE");
+        button.countText:SetFont(fontFile, fontHeight, Theme.FONT_FLAGS);
     end
     button.countText:SetShadowOffset(2, -2);
     button.countText:SetShadowColor(0, 0, 0, 1);
@@ -168,9 +186,7 @@ local function createBar()
     itemIcon:SetTexCoord(0.0833, 0.9167, 0.0833, 0.9167);
 
     local iconBorder = CreateFrame("Frame", nil, bar, "BackdropTemplate");
-    iconBorder:SetPoint("TOPLEFT", itemButton, "TOPLEFT", -1, 1);
-    iconBorder:SetPoint("BOTTOMRIGHT", itemButton, "BOTTOMRIGHT", 1, -1);
-    Theme.SkinBorder(iconBorder);
+    Theme.SkinIconBorder(iconBorder, itemButton);
 
     itemButton:SetScript("OnEnter", function()
         if (not bar.rollID) then return; end
@@ -198,6 +214,12 @@ local function createBar()
     local greedButton = buildRollButton(topRow, ROLL_GREED);
     greedButton:SetPoint("RIGHT", passButton, "LEFT", -BUTTON_GAP, -2);
 
+    -- Transmog takes Greed's exact slot (the two are never offered together,
+    -- same as Blizzard's own roll frame) - shown/hidden in Refresh.
+    local transmogButton = buildRollButton(topRow, ROLL_TRANSMOG);
+    transmogButton:SetPoint("RIGHT", passButton, "LEFT", -BUTTON_GAP, -2);
+    transmogButton:Hide();
+
     local needButton = buildRollButton(topRow, ROLL_NEED);
     needButton:SetPoint("RIGHT", greedButton, "LEFT", -BUTTON_GAP, 0);
 
@@ -213,8 +235,8 @@ local function createBar()
     itemText:SetPoint("RIGHT", needButton, "LEFT", -ITEM_TEXT_GAP_BEFORE_BUTTONS, 0);
     itemText:SetJustifyH("LEFT");
     itemText:SetWordWrap(false);
-    -- Heavier shadow plus an outline than the shared font's default (see
-    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y and FONT_OUTLINE) so the item name
+    -- Heavier shadow than the shared font's default (see
+    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y) so the item name
     -- stays legible over the alert-frame area's varied backgrounds, without
     -- changing every other normal-font label elsewhere in the addon. Base
     -- font file/height stashed on the bar itself so Refresh's shrink-to-fit
@@ -224,7 +246,7 @@ local function createBar()
     do
         local fontFile, fontHeight = itemText:GetFont();
         itemTextFontFile, itemTextBaseFontHeight = fontFile, fontHeight;
-        itemText:SetFont(fontFile, fontHeight, "OUTLINE");
+        itemText:SetFont(fontFile, fontHeight, Theme.FONT_FLAGS);
     end
     itemText:SetShadowOffset(2, -2);
     itemText:SetShadowColor(0, 0, 0, 1);
@@ -270,7 +292,11 @@ local function createBar()
         local votes = roll and roll.votes[rollType];
         if (votes and #votes > 0) then
             for _, vote in ipairs(votes) do
-                GameTooltip:AddLine(Util.classColoredName(vote.name, vote.classFile));
+                local line = Util.classColoredName(vote.name, vote.classFile);
+                -- The roll number (Needs only) and whether a Need was off-spec.
+                if (vote.roll) then line = ("%s  |cffffffff%d|r"):format(line, vote.roll); end
+                if (vote.offSpec) then line = line .. "  |cff888888(off spec)|r"; end
+                GameTooltip:AddLine(line);
             end
         else
             GameTooltip:AddLine("|cff888888No one yet|r");
@@ -287,14 +313,20 @@ local function createBar()
     greedButton:SetScript("OnEnter", function() showVotersTooltip(greedButton, GREED or "Greed", ROLL_GREED); end);
     greedButton:SetScript("OnLeave", function() GameTooltip:Hide(); end);
 
+    transmogButton:SetScript("OnClick", function() if (bar.rollID) then GroupLootRoll.RollOn(bar.rollID, ROLL_TRANSMOG); end end);
+    transmogButton:SetScript("OnEnter", function() showVotersTooltip(transmogButton, TRANSMOGRIFICATION or "Transmog", ROLL_TRANSMOG); end);
+    transmogButton:SetScript("OnLeave", function() GameTooltip:Hide(); end);
+
     passButton:SetScript("OnClick", function() if (bar.rollID) then GroupLootRoll.RollOn(bar.rollID, ROLL_PASS); end end);
     passButton:SetScript("OnEnter", function() showVotersTooltip(passButton, PASS or "Pass", ROLL_PASS); end);
     passButton:SetScript("OnLeave", function() GameTooltip:Hide(); end);
 
     bar.itemButton, bar.itemIcon, bar.itemText = itemButton, itemIcon, itemText;
+    bar.iconBorder = iconBorder;
     bar.itemTextFontFile, bar.itemTextBaseFontHeight = itemTextFontFile, itemTextBaseFontHeight;
     bar.countdownBar = countdownBar;
     bar.needButton, bar.greedButton, bar.passButton = needButton, greedButton, passButton;
+    bar.transmogButton = transmogButton;
 
     bar:SetScript("OnUpdate", function(self)
         if (not self.rollID) then return; end
@@ -305,9 +337,8 @@ local function createBar()
             -- works around: some other addon (or the server) can leave a
             -- roll expired without ever firing CANCEL_LOOT_ROLL for it.
             -- Routed through GroupLootRoll.ClearActiveRoll (rather than
-            -- clearing ActiveRolls directly) so the SavedVariables entry
-            -- backing reload-restore gets dropped too - otherwise this same
-            -- stale rollID would come back on the next /reload.
+            -- clearing ActiveRolls directly) so its other per-roll state
+            -- (cached votes, history-drop match) gets dropped too.
             GroupLootRoll.ClearActiveRoll(self.rollID);
             return;
         end
@@ -382,11 +413,11 @@ end
 local function fitItemText(bar)
     local itemText = bar.itemText;
     local height = bar.itemTextBaseFontHeight;
-    itemText:SetFont(bar.itemTextFontFile, height, "OUTLINE");
+    itemText:SetFont(bar.itemTextFontFile, height, Theme.FONT_FLAGS);
 
     while (itemText:GetStringWidth() > ITEM_TEXT_MAX_WIDTH and height > ITEM_TEXT_MIN_FONT_HEIGHT) do
         height = height - 1;
-        itemText:SetFont(bar.itemTextFontFile, height, "OUTLINE");
+        itemText:SetFont(bar.itemTextFontFile, height, Theme.FONT_FLAGS);
     end
 end
 
@@ -396,6 +427,7 @@ function GroupLootRollBars.Refresh(rollID)
     if (not bar or not roll) then return; end
 
     bar.itemIcon:SetTexture(roll.itemIcon);
+    Theme.SetIconBorderQuality(bar.iconBorder, roll.quality);
     bar.itemText:SetText(roll.itemName);
     fitItemText(bar);
 
@@ -404,7 +436,7 @@ function GroupLootRollBars.Refresh(rollID)
     -- ElvUI's LootRoll.lua - falls back to the flat accent color on the rare
     -- nil (GetItemQualityColor only fails for an out-of-range quality index,
     -- which a real roll never has).
-    local r, g, b = GetItemQualityColor(roll.quality or 1);
+    local r, g, b = Util.GetItemQualityColor(roll.quality or 1);
     r, g, b = r or Theme.colors.accent[1], g or Theme.colors.accent[2], b or Theme.colors.accent[3];
     bar.countdownBar:SetStatusBarColor(r, g, b);
     bar.itemText:SetTextColor(r, g, b);
@@ -412,7 +444,12 @@ function GroupLootRollBars.Refresh(rollID)
     if (roll.canNeed) then bar.needButton:Enable(); else bar.needButton:Disable(); end
     if (roll.canGreed) then bar.greedButton:Enable(); else bar.greedButton:Disable(); end
 
-    for _, entry in ipairs({ { bar.needButton, ROLL_NEED }, { bar.greedButton, ROLL_GREED }, { bar.passButton, ROLL_PASS } }) do
+    -- Transmog replaces Greed when the item offers it (Blizzard's own roll
+    -- frame does the same swap).
+    bar.greedButton:SetShown(not roll.canTransmog);
+    bar.transmogButton:SetShown(roll.canTransmog and true or false);
+
+    for _, entry in ipairs({ { bar.needButton, ROLL_NEED }, { bar.greedButton, ROLL_GREED }, { bar.transmogButton, ROLL_TRANSMOG }, { bar.passButton, ROLL_PASS } }) do
         local button, rollType = entry[1], entry[2];
         local votes = roll.votes[rollType];
         button.countText:SetText((votes and #votes > 0) and tostring(#votes) or "");

@@ -46,38 +46,133 @@ function Util.iEquals(a, b)
     return string.lower(a) == string.lower(b);
 end
 
+-- Forever characters have two names separated by a space ("First Last"), and
+-- different sources (roll messages, roster, unit names, trade window) report
+-- either the full pair or just one half. All name comparisons go through the
+-- helpers below rather than plain equality.
+local function nameParts(name)
+    local parts = {};
+    for part in string.gmatch(string.lower(Util.stripRealm(name)), "%S+") do
+        table.insert(parts, part);
+    end
+    return parts;
+end
+
+-- True when a and b are the same name, ignoring case and realm. With `loose`,
+-- also true when they share one of their space-separated names - but never
+-- when both are complete two-part names, since "Aelin Frost" and "Aelin
+-- Stormrage" are different players.
+function Util.namesMatch(a, b, loose)
+    if (type(a) ~= "string" or type(b) ~= "string") then return false; end
+
+    if (string.lower(Util.stripRealm(a)) == string.lower(Util.stripRealm(b))) then
+        return true;
+    end
+    if (not loose) then return false; end
+
+    local partsA, partsB = nameParts(a), nameParts(b);
+    if (#partsA > 1 and #partsB > 1) then return false; end
+
+    for _, partA in ipairs(partsA) do
+        for _, partB in ipairs(partsB) do
+            if (partA == partB) then return true; end
+        end
+    end
+
+    return false;
+end
+
 -- Returns a map of base-name -> class token ("WARRIOR", "MAGE", ...) for
 -- everyone currently in our group (raid, party, or just ourselves if solo).
+-- The class is false when it isn't known yet, so membership can be tested
+-- with `~= nil` without a missing class hiding the player.
 function Util.groupMembers()
     local members = {};
+    local function add(name, classFile)
+        if (name and not Util.isSecret(name)) then
+            members[Util.stripRealm(name)] = classFile or false;
+        end
+    end
 
     if (IsInRaid()) then
         for i = 1, GetNumGroupMembers() do
             local name, _, _, _, _, classFile = GetRaidRosterInfo(i);
-            if (name) then
-                members[Util.stripRealm(name)] = classFile;
-            end
+            add(name, classFile);
         end
     elseif (IsInGroup()) then
-        local _, playerClass = UnitClass("player");
-        members[Util.stripRealm(UnitName("player"))] = playerClass;
+        add(UnitName("player"), select(2, UnitClass("player")));
 
         for i = 1, (GetNumGroupMembers() or 1) - 1 do
             local unit = "party" .. i;
             if (UnitExists(unit)) then
-                local name = UnitName(unit);
-                local _, classFile = UnitClass(unit);
-                if (name) then
-                    members[Util.stripRealm(name)] = classFile;
-                end
+                add(UnitName(unit), select(2, UnitClass(unit)));
             end
         end
     else
-        local _, playerClass = UnitClass("player");
-        members[Util.stripRealm(UnitName("player"))] = playerClass;
+        add(UnitName("player"), select(2, UnitClass("player")));
     end
 
     return members;
+end
+
+-- Finds `name` in a groupMembers() map: the full name first, then any
+-- roster entry sharing one of its names (used when the roster and the source
+-- of `name` disagree on full-vs-half). Returns the roster's own name and the
+-- class token (nil while unknown), or nil when nobody matches - or when
+-- several people share a name half, since guessing would mis-colour someone.
+function Util.findMember(members, name)
+    if (type(members) ~= "table" or type(name) ~= "string") then return nil; end
+
+    local exact = Util.stripRealm(name);
+    if (members[exact] ~= nil) then
+        return exact, members[exact] or nil;
+    end
+
+    local found, foundClass, looseMatches = nil, nil, 0;
+    for memberName, classFile in pairs(members) do
+        if (Util.namesMatch(memberName, exact)) then
+            return memberName, classFile or nil;
+        elseif (Util.namesMatch(memberName, exact, true)) then
+            found, foundClass = memberName, classFile or nil;
+            looseMatches = looseMatches + 1;
+        end
+    end
+
+    if (looseMatches == 1) then return found, foundClass; end
+
+    return nil;
+end
+
+-- Class token for a player name, or nil when not in the group / unknown.
+function Util.lookupClass(members, name)
+    local _, classFile = Util.findMember(members, name);
+    return classFile;
+end
+
+-- Resolves a player name (realm suffix ignored) to a unit token ("raid5",
+-- "party2", "player") for someone in our group, or nil if they aren't in it.
+-- Needed because InitiateTrade takes a unit token rather than a bare name.
+function Util.unitTokenForName(name)
+    if (type(name) ~= "string" or name == "") then return nil; end
+
+    local units = { "player" };
+    if (IsInRaid()) then
+        for i = 1, GetNumGroupMembers() do table.insert(units, "raid" .. i); end
+    elseif (IsInGroup()) then
+        for i = 1, (GetNumGroupMembers() or 1) - 1 do table.insert(units, "party" .. i); end
+    end
+
+    -- Full-name match beats a shared-half match, so two characters who
+    -- share one name never get confused with each other.
+    for _, loose in ipairs({ false, true }) do
+        for _, unit in ipairs(units) do
+            if (UnitExists(unit) and Util.namesMatch(UnitName(unit), name, loose)) then
+                return unit;
+            end
+        end
+    end
+
+    return nil;
 end
 
 -- Class-colored player name, e.g. "|cffc79c6eThrall|r". Falls back to white
@@ -86,6 +181,18 @@ function Util.classColoredName(name, classFile)
     local color = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile];
     if (color and color.colorStr) then
         return ("|c%s%s|r"):format(color.colorStr, name);
+    end
+
+    return name;
+end
+
+-- Rarity-colored item name, e.g. "|cff0070ddSulfuron Hammer|r", for callers
+-- that only have a bare item name/id (no item link, which already carries
+-- its own color codes). Falls back to white if quality is unknown.
+function Util.qualityColoredItemName(name, quality)
+    local color = quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality];
+    if (color and color.hex) then
+        return ("%s%s|r"):format(color.hex, name);
     end
 
     return name;
@@ -104,6 +211,33 @@ local CLASS_NAME_TO_TOKEN = {
 function Util.classNameToToken(className)
     if (not className) then return nil; end
     return CLASS_NAME_TO_TOKEN[string.lower(className)];
+end
+
+-- True when `value` is a secret value (the client hides chat text from
+-- addons during chat lockdown - string operations on it throw).
+function Util.isSecret(value)
+    return issecretvalue(value);
+end
+
+-- Item-info wrappers. The bare GetItemInfo/GetItemIcon/GetItemQualityColor
+-- globals no longer exist; the C_Item namespace versions have the same return
+-- values, so every caller goes through these.
+function Util.GetItemInfo(itemInfo)
+    return C_Item.GetItemInfo(itemInfo);
+end
+
+-- Item quality (Enum.ItemQuality) for an item link/id/name, or nil while the
+-- item isn't cached yet.
+function Util.GetItemQuality(itemInfo)
+    return (select(3, C_Item.GetItemInfo(itemInfo)));
+end
+
+function Util.GetItemIcon(itemID)
+    return C_Item.GetItemIconByID(itemID);
+end
+
+function Util.GetItemQualityColor(quality)
+    return C_Item.GetItemQualityColor(quality);
 end
 
 function Util.itemIDFromLink(itemLink)
@@ -126,7 +260,7 @@ function Util.HandleItemLinkClick(itemLink)
     if (not itemLink) then return false; end
 
     if (IsModifiedClick("CHATLINK")) then
-        ChatEdit_InsertLink(itemLink);
+        ChatFrameUtil.InsertLink(itemLink);
         return true;
     elseif (IsModifiedClick("DRESSUP")) then
         DressUpItemLink(itemLink);

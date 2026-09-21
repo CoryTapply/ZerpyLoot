@@ -37,7 +37,7 @@ local HALF_BUTTON_WIDTH = (CONTENT_WIDTH - BUTTON_GAP) / 2;
 -- Key this window's saved position is stored under (see Settings.GetWindowPosition/SetWindowPosition).
 local POSITION_KEY = "rollWindow";
 
-local frame, itemButton, itemIcon, itemText, countdownText, countdownBar, countdownBarBorder, msButton, osButton, awardedText, scrollChild;
+local frame, itemButton, itemIcon, itemIconBorder, itemText, countdownText, countdownBar, countdownBarBorder, msButton, osButton, awardedText, scrollChild;
 local startRow, secondsBox, startRollButton;
 local rows = {};
 
@@ -120,10 +120,8 @@ local function ensureFrame()
     -- bounds edge-to-edge), so it's drawn on a separate wrapper frame pulled
     -- 1px outside itemButton's own bounds instead (same trick as the roller
     -- popup's countdown bar border).
-    local iconBorder = CreateFrame("Frame", nil, itemRow, "BackdropTemplate");
-    iconBorder:SetPoint("TOPLEFT", itemButton, "TOPLEFT", -1, 1);
-    iconBorder:SetPoint("BOTTOMRIGHT", itemButton, "BOTTOMRIGHT", 1, -1);
-    ZL.Theme.SkinBorder(iconBorder);
+    itemIconBorder = CreateFrame("Frame", nil, itemRow, "BackdropTemplate");
+    ZL.Theme.SkinIconBorder(itemIconBorder, itemButton);
 
     itemText = itemRow:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.normalMedium);
     itemText:SetPoint("LEFT", itemButton, "RIGHT", 6, 0);
@@ -168,10 +166,13 @@ local function ensureFrame()
     timerLabel:SetText("Timer");
 
     secondsBox = CreateFrame("EditBox", nil, startRow, "InputBoxTemplate");
-    secondsBox:SetSize(32, 20);
+    secondsBox:SetSize(40, 20);
     secondsBox:SetMaxLetters(3);
-    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", 6, 0);
+    -- The Blizzard InputBoxTemplate's border art overhangs the box by 5px on
+    -- the left, so nudge it right to keep that from crowding the label.
+    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", ZL.Theme.IsBlizzard() and 11 or 6, 0);
     secondsBox:SetAutoFocus(false);
+    secondsBox:SetFontObject(_G[ZL.Theme.fonts.input]);
     secondsBox:SetNumeric(true);
     secondsBox:SetJustifyH("RIGHT");
     ZL.Theme.SkinEditBox(secondsBox);
@@ -180,7 +181,7 @@ local function ensureFrame()
     secondsSuffix:SetPoint("LEFT", secondsBox, "RIGHT", 4, 0);
     secondsSuffix:SetText("s");
 
-    startRollButton = CreateFrame("Button", nil, startRow, "UIPanelButtonTemplate");
+    startRollButton = ZL.Theme.CreateButton(startRow);
     startRollButton:SetSize(HALF_BUTTON_WIDTH, 22);
     startRollButton:SetPoint("RIGHT", 0, 0);
     startRollButton:SetText("Start Roll");
@@ -206,7 +207,7 @@ local function ensureFrame()
     -- popup's countdown bar) since a backdrop border on the bar itself would
     -- sit under its own fill texture.
     countdownBar = CreateFrame("StatusBar", nil, frame);
-    countdownBar:SetSize(230, 6);
+    countdownBar:SetSize(230, ZL.Theme.IsBlizzard() and ZL.Theme.BLIZZARD_BAR_HEIGHT or 6);
     countdownBar:SetPoint("TOP", countdownText, "BOTTOM", 0, -6);
     ZL.Theme.ApplyStatusBarTexture(countdownBar, ZL.Settings.GetStatusBarTexture());
     countdownBar:SetStatusBarColor(unpack(ZL.Theme.colors.accent));
@@ -250,16 +251,14 @@ local function ensureFrame()
     end);
 
     countdownBarBorder = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-    countdownBarBorder:SetPoint("TOPLEFT", countdownBar, "TOPLEFT", -1, 1);
-    countdownBarBorder:SetPoint("BOTTOMRIGHT", countdownBar, "BOTTOMRIGHT", 1, -1);
-    ZL.Theme.SkinBorder(countdownBarBorder);
+    ZL.Theme.SkinBarBorder(countdownBarBorder, countdownBar);
     countdownBarBorder:Hide();
 
     -- Same roll buttons as the roller popup, so the initiator can roll on
     -- their own roll-off from this window too, without needing that separate
     -- popup. Sized to leave a small gap between them while still together
     -- spanning exactly as wide as the bar above.
-    msButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate");
+    msButton = ZL.Theme.CreateButton(frame);
     msButton:SetSize(HALF_BUTTON_WIDTH, 22);
     msButton:SetPoint("TOPLEFT", countdownBar, "BOTTOMLEFT", 0, -8);
     msButton:SetText("MS");
@@ -267,7 +266,7 @@ local function ensureFrame()
     ZL.Theme.SkinButton(msButton);
     msButton:Hide();
 
-    osButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate");
+    osButton = ZL.Theme.CreateButton(frame);
     osButton:SetSize(HALF_BUTTON_WIDTH, 22);
     osButton:SetPoint("TOPRIGHT", countdownBar, "BOTTOMRIGHT", 0, -8);
     osButton:SetText("OS");
@@ -284,7 +283,7 @@ local function ensureFrame()
     -- from the window top) so the row list always sits a fixed gap below
     -- whatever text actually ends up there, instead of leaving a large dead
     -- gap when that text is shorter than the space a hardcoded offset assumed.
-    local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate");
+    local scrollFrame = ZL.Theme.CreateScrollFrame(frame);
     scrollFrame:SetPoint("TOP", awardedText, "BOTTOM", 0, -10);
     scrollFrame:SetPoint("LEFT", frame, "LEFT", 12, 0);
     scrollFrame:SetPoint("BOTTOMRIGHT", -30, 12);
@@ -508,7 +507,8 @@ function RollWindow.Refresh()
         osButton:Hide();
 
         if (pendingItemLink) then
-            itemIcon:SetTexture(select(10, GetItemInfo(pendingItemLink)) or FALLBACK_ICON);
+            itemIcon:SetTexture(select(10, Util.GetItemInfo(pendingItemLink)) or FALLBACK_ICON);
+            ZL.Theme.SetIconBorderQuality(itemIconBorder, Util.GetItemQuality(pendingItemLink));
             itemText:SetText(pendingItemLink);
             countdownText:SetText("");
             awardedText:SetText("");
@@ -525,6 +525,7 @@ function RollWindow.Refresh()
             setResizeEnabled(false);
         else
             itemIcon:SetTexture(nil);
+            ZL.Theme.SetIconBorderQuality(itemIconBorder, nil);
             itemText:SetText("");
             countdownText:SetText("");
             awardedText:SetText("");
@@ -576,10 +577,10 @@ function RollWindow.Refresh()
     end
 
     itemIcon:SetTexture(RollOff.itemIcon or FALLBACK_ICON);
-    -- RollOff.item is the full item link (rarity color codes baked in by the
-    -- client) and is always set whenever RollOff exists - prefer it over the
-    -- plain itemName from GetItemInfo so the name shows its rarity color.
-    itemText:SetText(RollOff.item or RollOff.itemName or "");
+    ZL.Theme.SetIconBorderQuality(itemIconBorder, RollOff.itemQuality);
+    -- RollOff.item is just the bare itemID string (no color codes) - color
+    -- itemName manually from itemQuality instead of relying on RollOff.item.
+    itemText:SetText(RollOff.itemName and Util.qualityColoredItemName(RollOff.itemName, RollOff.itemQuality) or RollOff.item or "");
     if (RollOff.initiatorIsMe) then
         awardedText:SetText(RollOff.awardedTo and awardedLabel(RollOff) or "|cff888888Right-click a roll to award|r");
     else

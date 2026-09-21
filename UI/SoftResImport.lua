@@ -17,6 +17,22 @@ local MAX_ICONS_PER_ROW = 6;
 local NAME_WIDTH = 130;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 
+-- Rarity-tints an icon's Blizzard-theme border. Preview icons come from item
+-- IDs that may not be cached yet (the icon itself doesn't need the cache, the
+-- quality does), so an uncached item is loaded and the border filled in once
+-- its data arrives - unless the button has since moved on to another item.
+local function setIconQuality(iconButton, itemID)
+    local quality = Util.GetItemQuality(itemID);
+    ZL.Theme.SetIconBorderQuality(iconButton.iconBorder, quality);
+    if (quality) then return; end
+
+    Item:CreateFromItemID(itemID):ContinueOnItemLoad(function()
+        if (iconButton.itemID == itemID) then
+            ZL.Theme.SetIconBorderQuality(iconButton.iconBorder, Util.GetItemQuality(itemID));
+        end
+    end);
+end
+
 local frame, editBox, statusText, previewHint, previewScrollFrame, previewScrollChild;
 local previewRows = {};
 local hardReserveRow;
@@ -64,7 +80,7 @@ local function ensureFrame()
     pasteBg:SetPoint("TOPRIGHT", -12, -48);
     pasteBg:SetHeight(94);
 
-    local pasteScrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate");
+    local pasteScrollFrame = ZL.Theme.CreateScrollFrame(frame);
     pasteScrollFrame:SetPoint("TOPLEFT", pasteBg, "TOPLEFT", 6, -6);
     pasteScrollFrame:SetPoint("BOTTOMRIGHT", pasteBg, "BOTTOMRIGHT", -24, 6);
     pasteScrollFrame:SetFrameLevel(pasteBg:GetFrameLevel() + 1);
@@ -105,7 +121,7 @@ local function ensureFrame()
     previewHint:SetPoint("TOPLEFT", 16, -166);
     previewHint:SetText("Paste a valid export above to preview its reservations here.");
 
-    previewScrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate");
+    previewScrollFrame = ZL.Theme.CreateScrollFrame(frame);
     previewScrollFrame:SetPoint("TOPLEFT", 16, -166);
     previewScrollFrame:SetPoint("TOPRIGHT", -34, -166);
     previewScrollFrame:SetHeight(PREVIEW_MAX_HEIGHT);
@@ -163,10 +179,8 @@ local function ensureFrame()
             -- icon's own bounds (same trick as RollWindow's/TradeQueueWindow's
             -- iconBorder) so it doesn't get painted over by the icon's own
             -- ARTWORK-layer texture.
-            local iconBorder = CreateFrame("Frame", nil, iconButton, "BackdropTemplate");
-            iconBorder:SetPoint("TOPLEFT", iconButton, "TOPLEFT", -1, 1);
-            iconBorder:SetPoint("BOTTOMRIGHT", iconButton, "BOTTOMRIGHT", 1, -1);
-            ZL.Theme.SkinBorder(iconBorder);
+            iconButton.iconBorder = CreateFrame("Frame", nil, iconButton, "BackdropTemplate");
+            ZL.Theme.SkinIconBorder(iconButton.iconBorder, iconButton);
 
             iconButton:SetScript("OnEnter", function(self)
                 if (not self.itemID) then return; end
@@ -185,7 +199,7 @@ local function ensureFrame()
             iconButton:RegisterForClicks("LeftButtonUp");
             iconButton:SetScript("OnClick", function(self)
                 if (not self.itemID) then return; end
-                Util.HandleItemLinkClick(select(2, GetItemInfo(self.itemID)));
+                Util.HandleItemLinkClick(select(2, Util.GetItemInfo(self.itemID)));
             end);
 
             iconButton:Hide();
@@ -211,7 +225,7 @@ local function ensureFrame()
     statusText:SetPoint("BOTTOM", 0, 46);
     statusText:SetWidth(400);
 
-    local importButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate");
+    local importButton = ZL.Theme.CreateButton(frame);
     importButton:SetSize(150, 22);
     importButton:SetPoint("BOTTOMLEFT", 20, 14);
     importButton:SetText("Import & Broadcast");
@@ -228,7 +242,7 @@ local function ensureFrame()
     end);
     ZL.Theme.SkinButton(importButton);
 
-    local reportMissingButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate");
+    local reportMissingButton = ZL.Theme.CreateButton(frame);
     reportMissingButton:SetSize(130, 22);
     reportMissingButton:SetPoint("LEFT", importButton, "RIGHT", 10, 0);
     reportMissingButton:SetText("Report Missing");
@@ -245,7 +259,7 @@ local function ensureFrame()
     end);
     ZL.Theme.SkinButton(reportMissingButton);
 
-    local clearButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate");
+    local clearButton = ZL.Theme.CreateButton(frame);
     clearButton:SetSize(70, 22);
     clearButton:SetPoint("LEFT", reportMissingButton, "RIGHT", 10, 0);
     clearButton:SetText("Clear");
@@ -292,7 +306,8 @@ local function renderPreview(result)
             local entry = hardReserves[j];
             if (entry) then
                 iconButton.itemID = entry.id;
-                iconButton.texture:SetTexture(GetItemIcon(entry.id) or FALLBACK_ICON);
+                iconButton.texture:SetTexture(Util.GetItemIcon(entry.id) or FALLBACK_ICON);
+                setIconQuality(iconButton, entry.id);
                 iconButton:Show();
             else
                 iconButton.itemID = nil;
@@ -347,7 +362,8 @@ local function renderPreview(result)
                 local itemID = itemIDs[j];
                 if (itemID) then
                     iconButton.itemID = itemID;
-                    iconButton.texture:SetTexture(GetItemIcon(itemID) or FALLBACK_ICON);
+                    iconButton.texture:SetTexture(Util.GetItemIcon(itemID) or FALLBACK_ICON);
+                    setIconQuality(iconButton, itemID);
                     iconButton:Show();
                 else
                     iconButton.itemID = nil;

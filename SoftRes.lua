@@ -437,19 +437,15 @@ end
 -- reserves (item links + count), mirroring Gargul's SoftRes:handleWhisperCommand.
 --------------------------------------------------------------------------
 
--- GetLootMethod was replaced by C_PartyInfo.GetLootMethod (numeric method) on
--- newer clients; this normalizes both to the same (string, partyID, raidID)
--- shape Gargul's own GL.GetLootMethod shim returns (Utils/Shims.lua:170-191).
+-- C_PartyInfo.GetLootMethod returns a numeric Enum.LootMethod; this maps it to
+-- the (string, partyID, raidID) shape Gargul's own GL.GetLootMethod shim
+-- returns (Utils/Shims.lua:170-191).
 local LOOT_METHOD_NAMES = {
     [0] = "freeforall", [1] = "roundrobin", [2] = "master",
     [3] = "group", [4] = "needbeforegreed", [5] = "personalloot",
 };
 
 local function currentLootMethod()
-    if (GetLootMethod) then
-        return GetLootMethod();
-    end
-
     local method, partyID, raidID = C_PartyInfo.GetLootMethod();
     return LOOT_METHOD_NAMES[method], partyID, raidID;
 end
@@ -483,7 +479,7 @@ local function tryReplyWithReserves(sender, items)
 
     for idString, count in pairs(items) do
         local itemID = tonumber(idString);
-        local _, itemLink = GetItemInfo(itemID);
+        local _, itemLink = Util.GetItemInfo(itemID);
         if (not itemLink) then return false; end
 
         if (count and count > 1) then
@@ -498,6 +494,7 @@ local function tryReplyWithReserves(sender, items)
 end
 
 function SoftRes.HandleWhisperCommand(message, sender)
+    if (Util.isSecret(message) or Util.isSecret(sender)) then return; end
     if (type(message) ~= "string" or type(sender) ~= "string") then return; end
     if (string.lower(string.sub(strtrim(message), 1, 3)) ~= "!sr") then return; end
     if (not canAnswerWhisperCommand()) then return; end
