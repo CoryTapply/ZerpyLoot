@@ -30,31 +30,13 @@ local function debugPrint(msg)
     end
 end
 
--- Resolve a logical channel ("GROUP" or an explicit distribution) into a
--- concrete AceComm distribution + recipient, mirroring CommMessage.new
--- (Classes/CommMessage.lua:47-58).
-local function resolveChannel(channel, recipient)
-    if (channel ~= "GROUP") then
-        return channel, recipient;
-    end
-
-    if (IsInRaid()) then
-        return "RAID", recipient;
-    elseif (IsInGroup()) then
-        return "PARTY", recipient;
-    end
-
-    -- Not grouped: whisper ourselves so features are still testable solo.
-    return "WHISPER", UnitName("player");
-end
-
 --- Send an action to the group (or a specific recipient).
 ---@param action number One of Constants.Actions
 ---@param content any Arbitrary serializable content
 ---@param channel string "GROUP" or an explicit AceComm distribution ("WHISPER", "PARTY", "RAID")
 ---@param recipient string|nil Required for WHISPER
 function Comm.Send(action, content, channel, recipient)
-    local distribution, target = resolveChannel(channel or "GROUP", recipient);
+    local distribution, target = Util.GroupDistribution(channel or "GROUP", recipient);
 
     local payload = {
         a = action,

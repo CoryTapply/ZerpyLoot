@@ -48,6 +48,7 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         end
     elseif (msg == "commdebug") then
         FL.Comm.debugEnabled = not FL.Comm.debugEnabled;
+        FL.LootCouncil.debugEnabled = FL.Comm.debugEnabled;
         print(("|cff8865ffForeverLoot|r comm debug: %s"):format(FL.Comm.debugEnabled and "ON" or "OFF"));
     elseif (msg == "roll" or msg == "rollwindow") then
         if (FL.UI.RollWindow and FL.UI.RollWindow.Toggle) then

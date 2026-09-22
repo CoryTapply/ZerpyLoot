@@ -285,6 +285,24 @@ function Util.GroupChatChannel(raidChannel)
     return nil;
 end
 
+-- Resolve a logical channel ("GROUP" or an explicit distribution) into a
+-- concrete AceComm distribution + recipient. Shared by every comm layer in
+-- the addon so each doesn't need its own "not grouped -> whisper myself"
+-- fallback.
+function Util.GroupDistribution(channel, recipient)
+    if (channel ~= "GROUP") then
+        return channel, recipient;
+    end
+
+    if (IsInRaid()) then
+        return "RAID", recipient;
+    elseif (IsInGroup()) then
+        return "PARTY", recipient;
+    end
+
+    return "WHISPER", UnitName("player");
+end
+
 function Util.playerFqn()
     local realm = GetRealmName();
     realm = realm and string.gsub(realm, "%s+", "") or "";
