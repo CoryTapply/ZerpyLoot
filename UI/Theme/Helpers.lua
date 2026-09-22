@@ -72,3 +72,55 @@ function Helpers.SetChromeAlertBorder(frame, color)
     if (color) then frame.zlAlertBorder:SetBackdropBorderColor(unpack(color)); end
     frame.zlAlertBorder:SetShown(color ~= nil and color ~= false);
 end
+
+local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
+local DELETE_ICON_SIZE = 16;
+local DELETE_ART_BUTTON_SIZE = 24;
+
+--- Delete/trash icon button (same look everywhere a row can be removed -
+--- TradeQueueWindow, LootCouncilAddItemsWindow, ...), skin-agnostic: uses
+--- the active skin's own delete-button art kit (Theme.metrics.deleteButtonArtKit)
+--- when one is set and its atlas art actually exists on this client, falling
+--- back to a plain trash icon with a pressed-state nudge otherwise. Caller
+--- positions the returned button and sets its own OnClick.
+function Helpers.CreateDeleteButton(parent, fallbackSize)
+    local button = CreateFrame("Button", nil, parent);
+    button:RegisterForClicks("LeftButtonUp");
+
+    local artKit = Theme.metrics.deleteButtonArtKit;
+    local useArtKit = artKit ~= nil
+        and C_Texture.GetAtlasInfo(artKit) ~= nil
+        and C_Texture.GetAtlasInfo(artKit .. "-Pressed") ~= nil;
+
+    if (useArtKit) then
+        button:SetSize(DELETE_ART_BUTTON_SIZE, DELETE_ART_BUTTON_SIZE);
+        button:SetNormalAtlas(artKit);
+        button:SetPushedAtlas(artKit .. "-Pressed");
+        if (C_Texture.GetAtlasInfo(artKit .. "-Highlight")) then
+            button:SetHighlightAtlas(artKit .. "-Highlight");
+        end
+    else
+        button:SetSize(fallbackSize or DELETE_ART_BUTTON_SIZE, fallbackSize or DELETE_ART_BUTTON_SIZE);
+
+        local highlight = button:CreateTexture(nil, "HIGHLIGHT");
+        highlight:SetAllPoints(button);
+        highlight:SetColorTexture(1, 1, 1, 0.12);
+        button:SetHighlightTexture(highlight);
+
+        local icon = button:CreateTexture(nil, "ARTWORK");
+        icon:SetSize(DELETE_ICON_SIZE, DELETE_ICON_SIZE);
+        icon:SetPoint("CENTER");
+        icon:SetTexture(DELETE_ICON_TEXTURE);
+        icon:SetVertexColor(unpack(Theme.colors.danger));
+
+        -- Pressed state: nudge the icon 1px down-right while the mouse is
+        -- held on the button, restoring it on release/leave/hide so it can't
+        -- stick shifted.
+        button:SetScript("OnMouseDown", function() icon:SetPoint("CENTER", 1, -1); end);
+        for _, script in ipairs({ "OnMouseUp", "OnLeave", "OnHide" }) do
+            button:SetScript(script, function() icon:SetPoint("CENTER", 0, 0); end);
+        end
+    end
+
+    return button;
+end

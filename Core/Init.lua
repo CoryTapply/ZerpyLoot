@@ -16,6 +16,7 @@ FL.GroupLootRoll = FL.GroupLootRoll or {};
 FL.SoftRes = FL.SoftRes or {};
 FL.Tooltip = FL.Tooltip or {};
 FL.Trade = FL.Trade or {};
+FL.LootCouncil = FL.LootCouncil or {};
 FL.Pixel = FL.Pixel or {};
 FL.Theme = FL.Theme or {};
 FL.Settings = FL.Settings or {};
@@ -24,6 +25,7 @@ FL.UI.RollWindow = FL.UI.RollWindow or {};
 FL.UI.GroupLootRollBars = FL.UI.GroupLootRollBars or {};
 FL.UI.SoftResImport = FL.UI.SoftResImport or {};
 FL.UI.TradeQueueWindow = FL.UI.TradeQueueWindow or {};
+FL.UI.LootCouncilAddItemsWindow = FL.UI.LootCouncilAddItemsWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.Vendor = FL.Vendor or {};
 
@@ -46,6 +48,7 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "SoftRes", FL.SoftRes },
             { "Tooltip", FL.Tooltip },
             { "Trade", FL.Trade },
+            { "LootCouncil", FL.LootCouncil },
         };
 
         for _, module in ipairs(modules) do

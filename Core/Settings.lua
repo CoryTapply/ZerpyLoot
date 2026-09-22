@@ -12,7 +12,7 @@ local LSM = LibStub("LibSharedMedia-3.0");
 -- TEMPORARY: forces this theme regardless of the saved setting (the saved
 -- value isn't touched, so it comes back once this is set to nil). Set to nil
 -- to revert to the normal saved/default theme behaviour.
-local FORCED_THEME = "default";
+local FORCED_THEME = "blizzardthin";
 
 function Settings.Init()
     FL.DB.settings = FL.DB.settings or {};

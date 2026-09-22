@@ -33,6 +33,7 @@ RollTracker.lua
 GroupLootRoll.lua
 SoftRes.lua
 Trade.lua
+LootCouncil.lua
 Tooltip.lua
 
 # UI
@@ -50,6 +51,7 @@ UI\RollWindow.lua
 UI\GroupLootRollBars.lua
 UI\SoftResImport.lua
 UI\TradeQueueWindow.lua
+UI\LootCouncilAddItemsWindow.lua
 
 # Debug / slash commands
 Debug.lua

@@ -140,6 +140,12 @@ Theme.SkinCloseButton = deferUntilReady(function(button)
     activeSkin().SkinButton(button, "close");
 end);
 
+--- Creates a delete/trash icon button (see Theme.Helpers.CreateDeleteButton)
+--- - the same look everywhere a row can be removed, regardless of skin.
+function Theme.CreateDeleteButton(parent, fallbackSize)
+    return Theme.Helpers.CreateDeleteButton(parent, fallbackSize);
+end
+
 --- Give an EditBox (single or multi-line, InputBoxTemplate or template-less)
 --- the skin's input look.
 Theme.SkinEditBox = deferUntilReady(function(editBox)

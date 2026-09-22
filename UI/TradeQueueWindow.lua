@@ -13,13 +13,6 @@ local ROW_HEIGHT = 34;
 local ICON_SIZE = 26;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DELETE_BUTTON_SIZE = 20;
-local DELETE_ICON_SIZE = 16;
-local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
--- A skin can swap the trash icon for a delete button art kit (see
--- Theme.metrics.deleteButtonArtKit: the pressed art is the same name plus
--- "-Pressed", the hover art plus "-Highlight"). The Blizzard skins use
--- Blizzard's red "128-RedButton-Delete".
-local DELETE_ART_BUTTON_SIZE = 24;
 
 local WINDOW_WIDTH = 280;
 local DEFAULT_HEIGHT = 300;
@@ -81,13 +74,6 @@ local function ensureFrame()
         scrollChild:SetWidth(width);
     end);
 
-    -- Theme is fixed at login (changes need a UI reload), so this can be
-    -- decided once. Falls back to the trash icon if the art is missing.
-    local DELETE_ART_KIT = FL.Theme.metrics.deleteButtonArtKit;
-    local useArtKit = DELETE_ART_KIT ~= nil
-        and C_Texture.GetAtlasInfo(DELETE_ART_KIT) ~= nil
-        and C_Texture.GetAtlasInfo(DELETE_ART_KIT .. "-Pressed") ~= nil;
-
     for i = 1, MAX_ROWS do
         local row = CreateFrame("Button", nil, scrollChild);
         row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_HEIGHT);
@@ -122,47 +108,15 @@ local function ensureFrame()
         -- triggers row's own OnClick (retry). Removing a queued item is
         -- gated behind SHIFT (see its OnClick below) so a stray click can't
         -- silently drop something the group is still owed.
-        row.deleteButton = CreateFrame("Button", nil, row);
-        row.deleteButton:SetSize(DELETE_BUTTON_SIZE, DELETE_BUTTON_SIZE);
+        row.deleteButton = FL.Theme.CreateDeleteButton(row, DELETE_BUTTON_SIZE);
         row.deleteButton:SetPoint("RIGHT", -2, 0);
-        row.deleteButton:RegisterForClicks("LeftButtonUp");
-
-        if (useArtKit) then
-            -- Blizzard's own button art carries its pressed and hover states.
-            row.deleteButton:SetSize(DELETE_ART_BUTTON_SIZE, DELETE_ART_BUTTON_SIZE);
-            row.deleteButton:SetNormalAtlas(DELETE_ART_KIT);
-            row.deleteButton:SetPushedAtlas(DELETE_ART_KIT .. "-Pressed");
-            if (C_Texture.GetAtlasInfo(DELETE_ART_KIT .. "-Highlight")) then
-                row.deleteButton:SetHighlightAtlas(DELETE_ART_KIT .. "-Highlight");
-            end
-        else
-            local deleteHighlight = row.deleteButton:CreateTexture(nil, "HIGHLIGHT");
-            deleteHighlight:SetAllPoints(row.deleteButton);
-            deleteHighlight:SetColorTexture(1, 1, 1, 0.12);
-            row.deleteButton:SetHighlightTexture(deleteHighlight);
-
-            row.deleteIcon = row.deleteButton:CreateTexture(nil, "ARTWORK");
-            row.deleteIcon:SetSize(DELETE_ICON_SIZE, DELETE_ICON_SIZE);
-            row.deleteIcon:SetPoint("CENTER");
-            row.deleteIcon:SetTexture(DELETE_ICON_TEXTURE);
-            row.deleteIcon:SetVertexColor(unpack(FL.Theme.colors.danger));
-
-            -- Pressed state: nudge the icon 1px down-right while the mouse is
-            -- held on the button, restoring it on release/leave/hide so it
-            -- can't stick shifted.
-            local deleteIcon = row.deleteIcon;
-            row.deleteButton:SetScript("OnMouseDown", function() deleteIcon:SetPoint("CENTER", 1, -1); end);
-            for _, script in ipairs({ "OnMouseUp", "OnLeave", "OnHide" }) do
-                row.deleteButton:SetScript(script, function() deleteIcon:SetPoint("CENTER", 0, 0); end);
-            end
-        end
 
         row.deleteButton:SetScript("OnClick", function(self)
             local parentRow = self:GetParent();
             if (not parentRow.entry) then return; end
 
             if (not IsShiftKeyDown()) then
-                statusText:SetText(("|cffff4444Hold SHIFT and click the %s to remove this item.|r"):format(useArtKit and "delete button" or "trash icon"));
+                statusText:SetText("|cffff4444Hold SHIFT and click the delete button to remove this item.|r");
                 return;
             end
 

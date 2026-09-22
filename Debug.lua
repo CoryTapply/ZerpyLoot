@@ -6,8 +6,37 @@ local function resetAllWindowPositions()
     if (FL.UI.GroupLootRollBars and FL.UI.GroupLootRollBars.ResetPosition) then FL.UI.GroupLootRollBars.ResetPosition(); end
     if (FL.UI.SoftResImport and FL.UI.SoftResImport.ResetPosition) then FL.UI.SoftResImport.ResetPosition(); end
     if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.ResetPosition) then FL.UI.TradeQueueWindow.ResetPosition(); end
+    if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.ResetPosition) then FL.UI.LootCouncilAddItemsWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
+
+-- Loot Council entry point. Phase 1: with no arguments, always opens the
+-- leader's Add Items window. Later phases extend the no-argument case to show
+-- the raider response window (if a session is active) or a "no active
+-- session" panel with a request button (Phase 9) instead, depending on the
+-- player's role and local session state.
+SLASH_FOREVERLOOTLC1 = "/flc";
+SlashCmdList["FOREVERLOOTLC"] = function(msg)
+    local firstWord, rest = string.match(strtrim(msg or ""), "^(%S*)%s*(.-)$");
+
+    if (firstWord and string.lower(firstWord) == "add") then
+        local added, skipped, found = FL.LootCouncil.DraftAddItemsFromText(rest);
+        if (not found) then
+            print("|cff8865ffForeverLoot|r No item link found. Usage: /flc add [item link] [item link] ...");
+        else
+            local suffix = skipped > 0 and (" (%d already in list)"):format(skipped) or "";
+            print(("|cff8865ffForeverLoot|r Added %d item%s to the loot council list%s."):format(added, added == 1 and "" or "s", suffix));
+            if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.Show) then
+                FL.UI.LootCouncilAddItemsWindow.Show();
+            end
+        end
+        return;
+    end
+
+    if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.Toggle) then
+        FL.UI.LootCouncilAddItemsWindow.Toggle();
+    end
+end;
 
 SLASH_FOREVERLOOT1 = "/fl";
 SlashCmdList["FOREVERLOOT"] = function(msg)
@@ -45,6 +74,8 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("  /fl roll - toggle the roll tracker window");
         print("  /fl softres - open the SoftRes import window");
         print("  /fl tradequeue - open the trade queue window");
+        print("  /flc - open the loot council window");
+        print("  /flc add [item link] [item link] ... - add item(s) to the loot council list");
         print("  /fl options - open the settings panel");
         print("  /fl resetpositions - reset all window positions to their defaults");
     end
