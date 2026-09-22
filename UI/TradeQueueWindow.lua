@@ -15,10 +15,10 @@ local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DELETE_BUTTON_SIZE = 20;
 local DELETE_ICON_SIZE = 16;
 local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ZerpyLoot\\Media\\Icons\\trash.tga";
--- Both Blizzard themes swap the trash icon for Blizzard's red delete button
--- art (the "128-RedButton-Delete" art kit: the pressed art is the same name
--- plus "-Pressed", the hover art plus "-Highlight").
-local DELETE_ART_KIT = "128-RedButton-Delete";
+-- A skin can swap the trash icon for a delete button art kit (see
+-- Theme.metrics.deleteButtonArtKit: the pressed art is the same name plus
+-- "-Pressed", the hover art plus "-Highlight"). The Blizzard skins use
+-- Blizzard's red "128-RedButton-Delete".
 local DELETE_ART_BUTTON_SIZE = 24;
 
 local WINDOW_WIDTH = 280;
@@ -83,7 +83,8 @@ local function ensureFrame()
 
     -- Theme is fixed at login (changes need a UI reload), so this can be
     -- decided once. Falls back to the trash icon if the art is missing.
-    local useArtKit = ZL.Theme.IsBlizzard()
+    local DELETE_ART_KIT = ZL.Theme.metrics.deleteButtonArtKit;
+    local useArtKit = DELETE_ART_KIT ~= nil
         and C_Texture.GetAtlasInfo(DELETE_ART_KIT) ~= nil
         and C_Texture.GetAtlasInfo(DELETE_ART_KIT .. "-Pressed") ~= nil;
 

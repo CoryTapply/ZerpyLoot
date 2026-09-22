@@ -20,7 +20,8 @@ local ROW_HEIGHT = 20;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DEFAULT_TIMER = 15;
 -- Shared with the trade queue window's delete icon - see Theme.colors.danger.
-local COUNTDOWN_BAR_HOVER_COLOR = ZL.Theme.colors.danger;
+-- Read at use (not cached here) since the color depends on the active skin,
+-- which isn't known until login.
 local COUNTDOWN_BAR_STOPPED_COLOR = { 0.5, 0.5, 0.5, 1 };
 
 local WINDOW_WIDTH = 260;
@@ -170,7 +171,7 @@ local function ensureFrame()
     secondsBox:SetMaxLetters(3);
     -- The Blizzard InputBoxTemplate's border art overhangs the box by 5px on
     -- the left, so nudge it right to keep that from crowding the label.
-    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", ZL.Theme.IsBlizzard() and 11 or 6, 0);
+    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", ZL.Theme.metrics.secondsBoxGap, 0);
     secondsBox:SetAutoFocus(false);
     secondsBox:SetFontObject(_G[ZL.Theme.fonts.input]);
     secondsBox:SetNumeric(true);
@@ -207,7 +208,7 @@ local function ensureFrame()
     -- popup's countdown bar) since a backdrop border on the bar itself would
     -- sit under its own fill texture.
     countdownBar = CreateFrame("StatusBar", nil, frame);
-    countdownBar:SetSize(230, ZL.Theme.IsBlizzard() and ZL.Theme.BLIZZARD_BAR_HEIGHT or 6);
+    countdownBar:SetSize(230, ZL.Theme.metrics.countdownBarHeight);
     countdownBar:SetPoint("TOP", countdownText, "BOTTOM", 0, -6);
     ZL.Theme.ApplyStatusBarTexture(countdownBar, ZL.Settings.GetStatusBarTexture());
     countdownBar:SetStatusBarColor(unpack(ZL.Theme.colors.accent));
@@ -227,7 +228,7 @@ local function ensureFrame()
     countdownBar:SetScript("OnEnter", function(self)
         local RollOff = RollTracker.CurrentRollOff;
         if (RollOff and RollOff.active) then
-            self:SetStatusBarColor(unpack(COUNTDOWN_BAR_HOVER_COLOR));
+            self:SetStatusBarColor(unpack(ZL.Theme.colors.danger));
         end
     end);
     countdownBar:SetScript("OnLeave", function(self)

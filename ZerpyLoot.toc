@@ -36,7 +36,15 @@ Trade.lua
 Tooltip.lua
 
 # UI
-UI\Theme.lua
+UI\Theme\Theme.lua
+UI\Theme\Fonts.lua
+UI\Theme\Helpers.lua
+UI\Theme\Window.lua
+# Skins: one file each, registered in dropdown order. A skin's base must load
+# before it (see UI\Theme\Skins\README.md).
+UI\Theme\Skins\Default.lua
+UI\Theme\Skins\Blizzard.lua
+UI\Theme\Skins\BlizzardThin.lua
 UI\OptionsPanel.lua
 UI\RollWindow.lua
 UI\GroupLootRollBars.lua

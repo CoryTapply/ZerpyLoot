@@ -137,7 +137,7 @@ local function buildRollButton(parent, rollType)
     button.countText = button:CreateFontString(nil, "OVERLAY", Theme.fonts.highlightSmall);
     button.countText:SetPoint("BOTTOMRIGHT", 0, 0);
     -- Heavier shadow than the shared font's default (see
-    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y) so the vote count
+    -- Theme/Fonts.lua's FONT_SHADOW_OFFSET_X/Y) so the vote count
     -- stays legible over any button texture color, without changing every
     -- other highlightSmall label elsewhere in the addon.
     do
@@ -236,7 +236,7 @@ local function createBar()
     itemText:SetJustifyH("LEFT");
     itemText:SetWordWrap(false);
     -- Heavier shadow than the shared font's default (see
-    -- Theme.lua's FONT_SHADOW_OFFSET_X/Y) so the item name
+    -- Theme/Fonts.lua's FONT_SHADOW_OFFSET_X/Y) so the item name
     -- stays legible over the alert-frame area's varied backgrounds, without
     -- changing every other normal-font label elsewhere in the addon. Base
     -- font file/height stashed on the bar itself so Refresh's shrink-to-fit
