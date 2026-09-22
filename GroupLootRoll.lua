@@ -16,9 +16,9 @@ Each roll's votes are keyed by RollOnLoot's roll types - 0 pass, 1 need,
 2 greed, 4 transmog - and each vote is { name, classFile, roll?, offSpec? }.
 ]]
 
-local ZL = ZerpyLoot;
-local GroupLootRoll = ZL.GroupLootRoll;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local GroupLootRoll = FL.GroupLootRoll;
+local Util = FL.Util;
 
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 
@@ -84,7 +84,7 @@ local function forceHideFrame(frame)
 end
 
 -- Prevents Blizzard's own Group Loot popup from ever appearing, so
--- ZerpyLoot's own bars are the only Group Loot UI shown - mirrors the user's
+-- ForeverLoot's own bars are the only Group Loot UI shown - mirrors the user's
 -- choice to fully replace the default popup rather than run alongside it.
 --
 -- START_LOOT_ROLL reaches Blizzard's UI through its event router, which calls
@@ -152,7 +152,7 @@ local function onStartLootRoll(rollID, rollTime, lootHandle)
         votes = {},
     };
 
-    if (ZL.UI.GroupLootRollBars.Acquire) then ZL.UI.GroupLootRollBars.Acquire(rollID); end
+    if (FL.UI.GroupLootRollBars.Acquire) then FL.UI.GroupLootRollBars.Acquire(rollID); end
 
     -- The history drop for this roll may already exist (its update event can
     -- fire before START_LOOT_ROLL) - pick up whatever it already shows.
@@ -170,7 +170,7 @@ function GroupLootRoll.ClearActiveRoll(rollID)
 
     ActiveRolls[rollID] = nil;
 
-    if (ZL.UI.GroupLootRollBars.Release) then ZL.UI.GroupLootRollBars.Release(rollID); end
+    if (FL.UI.GroupLootRollBars.Release) then FL.UI.GroupLootRollBars.Release(rollID); end
 end
 
 local function onCancelLootRoll(rollID)
@@ -284,7 +284,7 @@ local function applyDropInfo(encounterID, dropInfo)
     end
 
     ActiveRolls[rollID].votes = votes;
-    if (ZL.UI.GroupLootRollBars.Refresh) then ZL.UI.GroupLootRollBars.Refresh(rollID); end
+    if (FL.UI.GroupLootRollBars.Refresh) then FL.UI.GroupLootRollBars.Refresh(rollID); end
 end
 
 local function onLootHistoryUpdateDrop(encounterID, lootListKey)
@@ -333,9 +333,9 @@ function GroupLootRoll.Init()
     -- Roll IDs used to be persisted here to survive a /reload; the client can
     -- list pending rolls itself now (see restoreActiveRolls), so drop any
     -- leftover saved copy.
-    if (ZL.DB) then ZL.DB.activeLootRolls = nil; end
+    if (FL.DB) then FL.DB.activeLootRolls = nil; end
 
-    if (not ZL.Settings.GetGroupLootRollEnabled()) then return; end
+    if (not FL.Settings.GetGroupLootRollEnabled()) then return; end
 
     suppressDefaultFrames();
 

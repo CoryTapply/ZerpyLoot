@@ -4,9 +4,9 @@ specific to one skin's look - keep it that way, so a skin can use these
 without depending on another skin's file.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
-local Pixel = ZL.Pixel;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
+local Pixel = FL.Pixel;
 local Helpers = Theme.Helpers;
 
 -- Flat, solid-color, Blizzard-shipped texture used for both the background and
@@ -25,7 +25,7 @@ function Helpers.EnsureBackdrop(frame)
 end
 
 --- Flat solid-color backdrop with a border `thicknessPx` physical pixels wide
---- (edge size computed through ZL.Pixel so it lands exactly on the pixel
+--- (edge size computed through FL.Pixel so it lands exactly on the pixel
 --- grid). Pass a nil `fillColor` for a border-only frame.
 function Helpers.SetFlatBackdrop(frame, fillColor, borderColor, thicknessPx)
     frame:SetBackdrop({

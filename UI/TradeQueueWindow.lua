@@ -3,10 +3,10 @@ Items that couldn't be auto-traded (out of range, trade window didn't open,
 or we didn't have the item yet at award time). Click an entry to retry.
 ]]
 
-local ZL = ZerpyLoot;
-local TradeQueueWindow = ZL.UI.TradeQueueWindow;
-local Trade = ZL.Trade;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local TradeQueueWindow = FL.UI.TradeQueueWindow;
+local Trade = FL.Trade;
+local Util = FL.Util;
 
 local MAX_ROWS = 20;
 local ROW_HEIGHT = 34;
@@ -14,7 +14,7 @@ local ICON_SIZE = 26;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DELETE_BUTTON_SIZE = 20;
 local DELETE_ICON_SIZE = 16;
-local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ZerpyLoot\\Media\\Icons\\trash.tga";
+local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
 -- A skin can swap the trash icon for a delete button art kit (see
 -- Theme.metrics.deleteButtonArtKit: the pressed art is the same name plus
 -- "-Pressed", the hover art plus "-Highlight"). The Blizzard skins use
@@ -34,31 +34,31 @@ local POSITION_KEY = "tradeQueueWindow";
 local function ensureFrame()
     if (frame) then return; end
 
-    local savedPosition = ZL.Settings.GetWindowPosition(POSITION_KEY);
-    frame = ZL.Theme.CreateWindow("ZerpyLootTradeQueueWindow", WINDOW_WIDTH, ZL.Settings.GetTradeQueueWindowHeight() or DEFAULT_HEIGHT,
+    local savedPosition = FL.Settings.GetWindowPosition(POSITION_KEY);
+    frame = FL.Theme.CreateWindow("ForeverLootTradeQueueWindow", WINDOW_WIDTH, FL.Settings.GetTradeQueueWindowHeight() or DEFAULT_HEIGHT,
         savedPosition and savedPosition.x or 200, savedPosition and savedPosition.y or 0,
-        function(x, y) ZL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
+        function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     frame:Hide();
 
-    local title = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.title);
+    local title = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.title);
     title:SetPoint("TOP", 0, -10);
-    title:SetText("ZerpyLoot - Trade Queue");
+    title:SetText("ForeverLoot - Trade Queue");
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton");
     closeButton:SetSize(20, 20);
     closeButton:SetPoint("TOPRIGHT", -4, -4);
     closeButton:SetScript("OnClick", function() frame:Hide(); end);
-    ZL.Theme.SkinCloseButton(closeButton);
+    FL.Theme.SkinCloseButton(closeButton);
 
-    local hint = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.disableSmall);
+    local hint = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.disableSmall);
     hint:SetPoint("TOP", 0, -30);
     hint:SetWidth(250);
     hint:SetText("Click an item to retry trading it to its winner.");
 
-    local scrollFrame = ZL.Theme.CreateScrollFrame(frame);
+    local scrollFrame = FL.Theme.CreateScrollFrame(frame);
     scrollFrame:SetPoint("TOPLEFT", 12, -56);
     scrollFrame:SetPoint("BOTTOMRIGHT", -30, 32);
-    ZL.Theme.SkinScrollBar(scrollFrame);
+    FL.Theme.SkinScrollBar(scrollFrame);
 
     -- Shrinking the window down to its minimum should leave exactly one
     -- queued item visible (not the whole list, but not none either) - so
@@ -83,7 +83,7 @@ local function ensureFrame()
 
     -- Theme is fixed at login (changes need a UI reload), so this can be
     -- decided once. Falls back to the trash icon if the art is missing.
-    local DELETE_ART_KIT = ZL.Theme.metrics.deleteButtonArtKit;
+    local DELETE_ART_KIT = FL.Theme.metrics.deleteButtonArtKit;
     local useArtKit = DELETE_ART_KIT ~= nil
         and C_Texture.GetAtlasInfo(DELETE_ART_KIT) ~= nil
         and C_Texture.GetAtlasInfo(DELETE_ART_KIT .. "-Pressed") ~= nil;
@@ -114,7 +114,7 @@ local function ensureFrame()
         -- icon's own bounds (same trick as RollWindow's iconBorder) so it
         -- doesn't get painted over by the icon's own ARTWORK-layer texture.
         row.iconBorder = CreateFrame("Frame", nil, row, "BackdropTemplate");
-        ZL.Theme.SkinIconBorder(row.iconBorder, row.icon);
+        FL.Theme.SkinIconBorder(row.iconBorder, row.icon);
 
         -- Delete button (right end of the row) - a separate mouse-enabled
         -- Button sitting on top of `row` (as its child, it already gets a
@@ -145,7 +145,7 @@ local function ensureFrame()
             row.deleteIcon:SetSize(DELETE_ICON_SIZE, DELETE_ICON_SIZE);
             row.deleteIcon:SetPoint("CENTER");
             row.deleteIcon:SetTexture(DELETE_ICON_TEXTURE);
-            row.deleteIcon:SetVertexColor(unpack(ZL.Theme.colors.danger));
+            row.deleteIcon:SetVertexColor(unpack(FL.Theme.colors.danger));
 
             -- Pressed state: nudge the icon 1px down-right while the mouse is
             -- held on the button, restoring it on release/leave/hide so it
@@ -177,13 +177,13 @@ local function ensureFrame()
         -- point) so the item name lines up with the top of the icon, and to
         -- the delete button's LEFT (not the row's own RIGHT) so long item
         -- names never run under the delete icon.
-        row.itemText = row:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightSmall);
+        row.itemText = row:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightSmall);
         row.itemText:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 6, 0);
         row.itemText:SetPoint("RIGHT", row.deleteButton, "LEFT", -2, 0);
         row.itemText:SetJustifyH("LEFT");
         row.itemText:SetWordWrap(false);
 
-        row.winnerText = row:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.disableSmall);
+        row.winnerText = row:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.disableSmall);
         row.winnerText:SetPoint("TOPLEFT", row.itemText, "BOTTOMLEFT", 0, -2);
         row.winnerText:SetPoint("RIGHT", row.deleteButton, "LEFT", -2, 0);
         row.winnerText:SetJustifyH("LEFT");
@@ -219,12 +219,12 @@ local function ensureFrame()
         rows[i] = row;
     end
 
-    statusText = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightSmall);
+    statusText = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightSmall);
     statusText:SetPoint("BOTTOM", 0, 10);
     statusText:SetWidth(250);
 
-    ZL.Theme.MakeBottomResizable(frame, WINDOW_WIDTH, minHeight, MAX_HEIGHT, function(height)
-        ZL.Settings.SetTradeQueueWindowHeight(height);
+    FL.Theme.MakeBottomResizable(frame, WINDOW_WIDTH, minHeight, MAX_HEIGHT, function(height)
+        FL.Settings.SetTradeQueueWindowHeight(height);
     end);
 end
 
@@ -245,7 +245,7 @@ function TradeQueueWindow.Refresh()
             row.entry = entry;
             row.queueIndex = i;
             row.icon:SetTexture(entry.itemIcon or Util.GetItemIcon(entry.itemID) or FALLBACK_ICON);
-            ZL.Theme.SetIconBorderQuality(row.iconBorder, Util.GetItemQuality(entry.itemLink or entry.itemID));
+            FL.Theme.SetIconBorderQuality(row.iconBorder, Util.GetItemQuality(entry.itemLink or entry.itemID));
             row.itemText:SetText(entry.itemLink or "?");
 
             local winner = entry.winner or "?";
@@ -311,6 +311,6 @@ function TradeQueueWindow.Toggle()
 end
 
 function TradeQueueWindow.ResetPosition()
-    ZL.Settings.ClearWindowPosition(POSITION_KEY);
-    if (frame) then ZL.Theme.ResetWindowPosition(frame); end
+    FL.Settings.ClearWindowPosition(POSITION_KEY);
+    if (frame) then FL.Theme.ResetWindowPosition(frame); end
 end

@@ -1,18 +1,18 @@
 # Adding a skin
 
-A skin is one Lua file in this folder that calls `ZL.Theme.RegisterSkin(key, def)`.
+A skin is one Lua file in this folder that calls `FL.Theme.RegisterSkin(key, def)`.
 
 1. Create `UI/Theme/Skins/MySkin.lua`.
-2. Add `UI\Theme\Skins\MySkin.lua` to `ZerpyLoot.toc` **after** its base skin's file. TOC order is also the order of the options dropdown.
+2. Add `UI\Theme\Skins\MySkin.lua` to `ForeverLoot.toc` **after** its base skin's file. TOC order is also the order of the options dropdown.
 
 Nothing else changes: the dropdown, settings and every window pick the skin up from the registry.
 
 ## Smallest possible skin: a recolor
 
 ```lua
-local ZL = ZerpyLoot;
+local FL = ForeverLoot;
 
-ZL.Theme.RegisterSkin("crimson", {
+FL.Theme.RegisterSkin("crimson", {
     name = "Crimson",                        -- dropdown label
     colors = { accent = { 0.8, 0.1, 0.1, 1 }, accentHover = { 0.9, 0.3, 0.3, 1 } },
 });
@@ -30,7 +30,7 @@ Everything is optional; missing values and methods are inherited. Skins never re
 
 **`resizeHandle`** - look of the bottom-edge drag handle; fields (including `hitOffsetY`, `opacity`, and `tintChrome` / `dragOpacity`, which tint the chrome art via its `SetResizeHighlight(color, strength)` method instead of drawing a line) are documented above `Theme.MakeBottomResizable` in `Window.lua`.
 
-**Methods** (plain functions, no `self`; read colors and metrics via `ZL.Theme.colors` / `ZL.Theme.metrics` so derived skins recolor them):
+**Methods** (plain functions, no `self`; read colors and metrics via `FL.Theme.colors` / `FL.Theme.metrics` so derived skins recolor them):
 
 | Method | Purpose |
 | --- | --- |
@@ -45,7 +45,7 @@ Everything is optional; missing values and methods are inherited. Skins never re
 | `SkinBarBorder(frame, bar)` | Status bar border |
 | `StyleScrollBar(bar)` | Scrollbar look (auto-hide is handled by the core) |
 
-`ZL.Theme.Helpers` has shared building blocks (`SetFlatBackdrop`, `EnsureBackdrop`, `CreateChromeFrame`, `SetChromeAlertBorder`, `FLAT_TEXTURE`).
+`FL.Theme.Helpers` has shared building blocks (`SetFlatBackdrop`, `EnsureBackdrop`, `CreateChromeFrame`, `SetChromeAlertBorder`, `FLAT_TEXTURE`).
 
 ## Rules that keep skins independent
 

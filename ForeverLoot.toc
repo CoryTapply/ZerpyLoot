@@ -1,9 +1,9 @@
 ## Interface: 120100
-## Title: ZerpyLoot
+## Title: ForeverLoot
 ## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
 ## Author: Zerpy
 ## Version: 0.1.0
-## SavedVariables: ZerpyLootDB
+## SavedVariables: ForeverLootDB
 ## DefaultState: enabled
 
 # Vendored libraries (each carries its own separate open-source license, see file headers)
@@ -15,7 +15,7 @@ Libs\AceComm-3.0\AceComm-3.0.lua
 Libs\LibDeflate\LibDeflate.lua
 Libs\LibSerialize\LibSerialize.lua
 
-# Core (must load first - creates the ZerpyLoot global table every other
+# Core (must load first - creates the ForeverLoot global table every other
 # file, including Vendor/*, attaches to)
 Core\Init.lua
 Core\Constants.lua

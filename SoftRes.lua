@@ -5,20 +5,20 @@ softres.it's "Gargul Export" format and Gargul's broadcastSoftRes wire action.
 Import pipeline: base64 decode -> zlib inflate -> JSON decode (see Gargul's
 Classes/SoftRes.lua:1066-1245, importGargulData). The exact original pasted
 string is kept verbatim and re-broadcast unmodified, so Gargul clients (and
-other ZerpyLoot clients) can re-parse the identical bytes we imported.
+other ForeverLoot clients) can re-parse the identical bytes we imported.
 
-The raw pasted string is also persisted to ZL.DB.softRes.importString on
+The raw pasted string is also persisted to FL.DB.softRes.importString on
 every successful import, and reloaded (re-parsed, not re-broadcast) by
 SoftRes.Init() at login, so soft reserves survive a UI reload/relog.
 ]]
 
-local ZL = ZerpyLoot;
-local SoftRes = ZL.SoftRes;
-local Constants = ZL.Constants;
-local Comm = ZL.Comm;
-local Util = ZL.Util;
-local Base64 = ZL.Vendor.Base64;
-local Json = ZL.Vendor.Json;
+local FL = ForeverLoot;
+local SoftRes = FL.SoftRes;
+local Constants = FL.Constants;
+local Comm = FL.Comm;
+local Util = FL.Util;
+local Base64 = FL.Vendor.Base64;
+local Json = FL.Vendor.Json;
 
 -- Raw, as pasted/received - re-broadcast verbatim, never re-encoded.
 SoftRes.ImportString = nil;
@@ -31,7 +31,7 @@ SoftRes.HardReserveDetailsByID = {}; -- idString -> {id, reservedFor, note}
 
 local function debugPrint(msg)
     if (Comm.debugEnabled) then
-        print("|cff8865ffZerpyLoot|r " .. msg);
+        print("|cff8865ffForeverLoot|r " .. msg);
     end
 end
 
@@ -255,14 +255,14 @@ function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
     SoftRes.MetaData = result;
 
     for original, corrected in pairs(fixPlayerNames()) do
-        print(("|cff8865ffZerpyLoot|r Auto name fix: the SR of '%s' is now linked to '%s'"):format(original, corrected));
+        print(("|cff8865ffForeverLoot|r Auto name fix: the SR of '%s' is now linked to '%s'"):format(original, corrected));
     end
 
     materialize();
 
     if (not skipPersist) then
-        ZL.DB.softRes = ZL.DB.softRes or {};
-        ZL.DB.softRes.importString = pastedString;
+        FL.DB.softRes = FL.DB.softRes or {};
+        FL.DB.softRes.importString = pastedString;
     end
 
     debugPrint(("SoftRes imported: %d player entries, %d hard reserves"):format(
@@ -292,8 +292,8 @@ function SoftRes.Clear()
     SoftRes.PlayerNamesByItemID = {};
     SoftRes.HardReserveDetailsByID = {};
 
-    if (ZL.DB.softRes) then
-        ZL.DB.softRes.importString = nil;
+    if (FL.DB.softRes) then
+        FL.DB.softRes.importString = nil;
     end
 
     debugPrint("SoftRes data cleared");
@@ -307,7 +307,7 @@ end
 --- Gargul clients re-parse the exact same string on receipt.
 function SoftRes.Broadcast()
     if (not SoftRes.ImportString) then
-        print("|cff8865ffZerpyLoot|r No SoftRes data imported yet.");
+        print("|cff8865ffForeverLoot|r No SoftRes data imported yet.");
         return false;
     end
 
@@ -325,15 +325,15 @@ Comm.Actions[Constants.Actions.broadcastSoftRes] = function(Message)
     local ok, err = SoftRes.Import(content, true);
     if (ok) then
         local from = Util.stripRealm(Message.senderFqn) or Message.senderFqn or "someone";
-        print(("|cff8865ffZerpyLoot|r Received SoftRes data from %s (%d players, %d hard reserves)."):format(
+        print(("|cff8865ffForeverLoot|r Received SoftRes data from %s (%d players, %d hard reserves)."):format(
             from, #(SoftRes.MetaData.SoftReserves or {}), #(SoftRes.MetaData.HardReserves or {})
         ));
 
         -- Someone else's import just replaced our data (and DB.softRes.importString,
         -- via the persist above) - if the SoftRes window is open, its preview and
         -- paste box are now stale, so sync them to match.
-        if (ZL.UI.SoftResImport and ZL.UI.SoftResImport.SyncExternalImport) then
-            ZL.UI.SoftResImport.SyncExternalImport();
+        if (FL.UI.SoftResImport and FL.UI.SoftResImport.SyncExternalImport) then
+            FL.UI.SoftResImport.SyncExternalImport();
         end
     else
         debugPrint("Failed to import SoftRes broadcast from " .. tostring(Message.senderFqn) .. ": " .. tostring(err));
@@ -366,7 +366,7 @@ end
 ---@return table missingNames
 function SoftRes.PostMissingSoftReserves()
     if (not SoftRes.MetaData) then
-        print("|cff8865ffZerpyLoot|r No SoftRes data imported yet.");
+        print("|cff8865ffForeverLoot|r No SoftRes data imported yet.");
         return false, {};
     end
 
@@ -379,7 +379,7 @@ function SoftRes.PostMissingSoftReserves()
     if (channel) then
         pcall(SendChatMessage, text, channel);
     else
-        print("|cff8865ffZerpyLoot|r " .. text);
+        print("|cff8865ffForeverLoot|r " .. text);
     end
 
     return true, missing;
@@ -542,7 +542,7 @@ end
 function SoftRes.Init()
     initWhisperListener();
 
-    local saved = ZL.DB.softRes and ZL.DB.softRes.importString;
+    local saved = FL.DB.softRes and FL.DB.softRes.importString;
     if (not saved) then return; end
 
     local ok, err = SoftRes.Import(saved, true, true);

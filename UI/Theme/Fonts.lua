@@ -1,15 +1,15 @@
 --[[
-Named font objects every ZerpyLoot FontString uses, plus the SharedMedia
+Named font objects every ForeverLoot FontString uses, plus the SharedMedia
 font-face and statusbar-texture swapping. Skins don't touch this file: the
 only per-skin input is the title color (colors.title, falling back to
 colors.accent), applied by Theme.ApplyFontColors at Theme.Init.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
 local LSM = LibStub("LibSharedMedia-3.0");
 
--- Named font objects every ZerpyLoot FontString uses (instead of Blizzard's
+-- Named font objects every ForeverLoot FontString uses (instead of Blizzard's
 -- global GameFontXxx objects directly - overriding those would also reskin
 -- the rest of the game's UI). Every size, color, outline and shadow value
 -- below is a hardcoded literal rather than copied off a Blizzard font
@@ -18,22 +18,22 @@ local LSM = LibStub("LibSharedMedia-3.0");
 -- default font or the player changes an unrelated client setting. Only the
 -- font FACE gets swapped later, by Theme.ApplyFont.
 Theme.fonts = {
-    normal = "ZerpyLootFontNormal",
-    normalMedium = "ZerpyLootFontNormalMedium",
-    normalLarge = "ZerpyLootFontNormalLarge",
-    normalSmall = "ZerpyLootFontNormalSmall",
-    highlight = "ZerpyLootFontHighlight",
-    highlightMedium = "ZerpyLootFontHighlightMedium",
-    highlightSmall = "ZerpyLootFontHighlightSmall",
-    disableSmall = "ZerpyLootFontDisableSmall",
+    normal = "ForeverLootFontNormal",
+    normalMedium = "ForeverLootFontNormalMedium",
+    normalLarge = "ForeverLootFontNormalLarge",
+    normalSmall = "ForeverLootFontNormalSmall",
+    highlight = "ForeverLootFontHighlight",
+    highlightMedium = "ForeverLootFontHighlightMedium",
+    highlightSmall = "ForeverLootFontHighlightSmall",
+    disableSmall = "ForeverLootFontDisableSmall",
 
     -- Window/panel titles (skin accent color) and button labels (white) - see
     -- DefineFont calls below for why these get their own dedicated colors.
-    title = "ZerpyLootFontTitle",
-    titleLarge = "ZerpyLootFontTitleLarge",
-    button = "ZerpyLootFontButton",
-    buttonDisabled = "ZerpyLootFontButtonDisabled",
-    input = "ZerpyLootFontInput",
+    title = "ForeverLootFontTitle",
+    titleLarge = "ForeverLootFontTitleLarge",
+    button = "ForeverLootFontButton",
+    buttonDisabled = "ForeverLootFontButtonDisabled",
+    input = "ForeverLootFontInput",
 };
 
 -- Every piece of text this addon draws uses this flag string (outline + the

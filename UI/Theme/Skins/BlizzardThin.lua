@@ -5,8 +5,8 @@ frame art WoW Forever's BagsBar draws. It shows what a derived skin looks like:
 everything not defined here comes from `base = "blizzard"`.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
 local Helpers = Theme.Helpers;
 
 local Skin = {};

@@ -5,8 +5,8 @@ file path) so they keep resolving correctly even if another addon changes
 what that key points to.
 ]]
 
-local ZL = ZerpyLoot;
-local Settings = ZL.Settings;
+local FL = ForeverLoot;
+local Settings = FL.Settings;
 local LSM = LibStub("LibSharedMedia-3.0");
 
 -- TEMPORARY: forces this theme regardless of the saved setting (the saved
@@ -15,32 +15,32 @@ local LSM = LibStub("LibSharedMedia-3.0");
 local FORCED_THEME = "default";
 
 function Settings.Init()
-    ZL.DB.settings = ZL.DB.settings or {};
-    local s = ZL.DB.settings;
+    FL.DB.settings = FL.DB.settings or {};
+    local s = FL.DB.settings;
 
     s.font = s.font or LSM:GetDefault("font");
     s.statusbar = s.statusbar or LSM:GetDefault("statusbar");
-    s.theme = ZL.Theme.THEMES[s.theme] and s.theme or ZL.Theme.DEFAULT_THEME;
+    s.theme = FL.Theme.THEMES[s.theme] and s.theme or FL.Theme.DEFAULT_THEME;
 
     -- The theme is what this session's windows get skinned with, so it's
     -- locked in here once (before any window exists) rather than re-read -
     -- changing the setting mid-session only takes effect after a /reload.
-    ZL.Theme.Init(FORCED_THEME or s.theme);
-    ZL.Theme.ApplyFont(s.font);
-    ZL.Theme.RefreshStatusBars(s.statusbar);
+    FL.Theme.Init(FORCED_THEME or s.theme);
+    FL.Theme.ApplyFont(s.font);
+    FL.Theme.RefreshStatusBars(s.statusbar);
 end
 
--- ZL.DB isn't set until ADDON_LOADED fires, but UIDropDownMenu_Initialize
+-- FL.DB isn't set until ADDON_LOADED fires, but UIDropDownMenu_Initialize
 -- calls its init function once immediately at registration time - which
 -- happens while this file's UI/OptionsPanel.lua is still loading, well
--- before that. Guard against ZL.DB being nil at that point.
+-- before that. Guard against FL.DB being nil at that point.
 function Settings.GetFont()
-    return ZL.DB and ZL.DB.settings and ZL.DB.settings.font;
+    return FL.DB and FL.DB.settings and FL.DB.settings.font;
 end
 
 function Settings.SetFont(key)
-    ZL.DB.settings.font = key;
-    ZL.Theme.ApplyFont(key);
+    FL.DB.settings.font = key;
+    FL.Theme.ApplyFont(key);
 end
 
 -- UI theme key (see Theme.THEMES). Unlike font/statusbar this can't be
@@ -50,51 +50,51 @@ end
 function Settings.GetTheme()
     if (FORCED_THEME) then return FORCED_THEME; end
 
-    local theme = ZL.DB and ZL.DB.settings and ZL.DB.settings.theme;
-    return (theme and ZL.Theme.THEMES[theme]) and theme or ZL.Theme.DEFAULT_THEME;
+    local theme = FL.DB and FL.DB.settings and FL.DB.settings.theme;
+    return (theme and FL.Theme.THEMES[theme]) and theme or FL.Theme.DEFAULT_THEME;
 end
 
 function Settings.SetTheme(key)
-    ZL.DB.settings.theme = key;
+    FL.DB.settings.theme = key;
 end
 
 function Settings.GetStatusBarTexture()
-    return ZL.DB and ZL.DB.settings and ZL.DB.settings.statusbar;
+    return FL.DB and FL.DB.settings and FL.DB.settings.statusbar;
 end
 
 function Settings.SetStatusBarTexture(key)
-    ZL.DB.settings.statusbar = key;
-    ZL.Theme.RefreshStatusBars(key);
+    FL.DB.settings.statusbar = key;
+    FL.Theme.RefreshStatusBars(key);
 end
 
 -- Last roll-off duration (seconds) entered in the roll window's start
 -- prompt, re-used as the default the next time it's opened.
 function Settings.GetRollOffSeconds()
-    return ZL.DB and ZL.DB.settings and ZL.DB.settings.rollOffSeconds;
+    return FL.DB and FL.DB.settings and FL.DB.settings.rollOffSeconds;
 end
 
 function Settings.SetRollOffSeconds(seconds)
-    ZL.DB.settings.rollOffSeconds = seconds;
+    FL.DB.settings.rollOffSeconds = seconds;
 end
 
 -- Roll window height (in UI units), set by dragging its bottom edge -
 -- re-used as that window's height the next time it's created.
 function Settings.GetRollWindowHeight()
-    return ZL.DB and ZL.DB.settings and ZL.DB.settings.rollWindowHeight;
+    return FL.DB and FL.DB.settings and FL.DB.settings.rollWindowHeight;
 end
 
 function Settings.SetRollWindowHeight(height)
-    ZL.DB.settings.rollWindowHeight = height;
+    FL.DB.settings.rollWindowHeight = height;
 end
 
 -- Trade queue window height (in UI units), set by dragging its bottom edge -
 -- re-used as that window's height the next time it's created.
 function Settings.GetTradeQueueWindowHeight()
-    return ZL.DB and ZL.DB.settings and ZL.DB.settings.tradeQueueWindowHeight;
+    return FL.DB and FL.DB.settings and FL.DB.settings.tradeQueueWindowHeight;
 end
 
 function Settings.SetTradeQueueWindowHeight(height)
-    ZL.DB.settings.tradeQueueWindowHeight = height;
+    FL.DB.settings.tradeQueueWindowHeight = height;
 end
 
 -- Window positions (x/y, the same CENTER-relative convention
@@ -104,32 +104,32 @@ end
 -- so resetting every window's position at once (see the /zl resetpositions
 -- command) is a single table clear instead of one call per window.
 function Settings.GetWindowPosition(key)
-    local positions = ZL.DB and ZL.DB.settings and ZL.DB.settings.windowPositions;
+    local positions = FL.DB and FL.DB.settings and FL.DB.settings.windowPositions;
     return positions and positions[key];
 end
 
 function Settings.SetWindowPosition(key, x, y)
-    ZL.DB.settings.windowPositions = ZL.DB.settings.windowPositions or {};
-    ZL.DB.settings.windowPositions[key] = { x = x, y = y };
+    FL.DB.settings.windowPositions = FL.DB.settings.windowPositions or {};
+    FL.DB.settings.windowPositions[key] = { x = x, y = y };
 end
 
 function Settings.ClearWindowPosition(key)
-    local positions = ZL.DB and ZL.DB.settings and ZL.DB.settings.windowPositions;
+    local positions = FL.DB and FL.DB.settings and FL.DB.settings.windowPositions;
     if (positions) then positions[key] = nil; end
 end
 
--- Whether ZerpyLoot's native Group Loot (Need/Greed/Pass) bars replace
+-- Whether ForeverLoot's native Group Loot (Need/Greed/Pass) bars replace
 -- Blizzard's default popup. Read once at login by GroupLootRoll.Init to
 -- decide whether to suppress GroupLootFrame1..N, so toggling this requires
 -- a /reload to take effect - same as every other structural setting here.
 function Settings.GetGroupLootRollEnabled()
-    local enabled = ZL.DB and ZL.DB.settings and ZL.DB.settings.groupLootRollEnabled;
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.groupLootRollEnabled;
     if (enabled == nil) then return true; end
     return enabled;
 end
 
 function Settings.SetGroupLootRollEnabled(enabled)
-    ZL.DB.settings.groupLootRollEnabled = enabled and true or false;
+    FL.DB.settings.groupLootRollEnabled = enabled and true or false;
 end
 
 -- Whether the Group Loot roll bars' draggable "Group Loot" anchor header is
@@ -138,9 +138,9 @@ end
 -- Unlike GroupLootRollEnabled above, this is read live by
 -- GroupLootRollBars rather than only at login.
 function Settings.GetGroupLootRollLocked()
-    return (ZL.DB and ZL.DB.settings and ZL.DB.settings.groupLootRollLocked) and true or false;
+    return (FL.DB and FL.DB.settings and FL.DB.settings.groupLootRollLocked) and true or false;
 end
 
 function Settings.SetGroupLootRollLocked(locked)
-    ZL.DB.settings.groupLootRollLocked = locked and true or false;
+    FL.DB.settings.groupLootRollLocked = locked and true or false;
 end

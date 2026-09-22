@@ -8,11 +8,11 @@ regardless of reservation status), a "Pending Trade" section lists anyone
 still owed this item from the trade queue.
 ]]
 
-local ZL = ZerpyLoot;
-local Tooltip = ZL.Tooltip;
-local SoftRes = ZL.SoftRes;
-local Trade = ZL.Trade;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local Tooltip = FL.Tooltip;
+local SoftRes = FL.SoftRes;
+local Trade = FL.Trade;
+local Util = FL.Util;
 
 local function addLines(tooltip, itemLink)
     if (not itemLink) then return false; end
@@ -52,7 +52,7 @@ local function addLines(tooltip, itemLink)
 end
 
 -- Shows who still owes a trade for this item, for items awarded via a
--- roll-off but not yet confirmed traded (ZL.Trade.Queue). Independent of
+-- roll-off but not yet confirmed traded (FL.Trade.Queue). Independent of
 -- reservation status, so it's called unconditionally rather than folded into
 -- addLines()'s hard-reserve early-return above.
 local function addTradeQueueLines(tooltip, itemID)

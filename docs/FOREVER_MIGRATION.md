@@ -1,8 +1,8 @@
-# ZerpyLoot → WoW Forever: API migration report
+# ForeverLoot → WoW Forever: API migration report
 
 ## Context
 
-ZerpyLoot targets TBC Anniversary (`## Interface: 20506`, client 2.5.6). WoW Forever runs on the
+ForeverLoot targets TBC Anniversary (`## Interface: 20506`, client 2.5.6). WoW Forever runs on the
 Midnight (12.x) API. You reported that some registered events don't exist there. This document
 lists every place the addon has to change, why, and how to verify it.
 
@@ -211,7 +211,7 @@ end
 ```
 
 `C_Loot.GetLootRollDuration` is Forever-only; on Anniversary keep `GetLootRollTimeLeft(rollID)`.
-Then drop `ZL.DB.activeLootRolls` and `persistedRolls()`. Keep the `PLAYER_ENTERING_WORLD` trigger
+Then drop `FL.DB.activeLootRolls` and `persistedRolls()`. Keep the `PLAYER_ENTERING_WORLD` trigger
 (Blizzard's gamepad path does the same).
 
 ### 2.6 `InitiateTrade` now takes a UnitToken
@@ -338,6 +338,6 @@ Also confirm the Anniversary side still receives the legacy events after your ch
 
 ## Files the code work will touch
 
-`ZerpyLoot.toc`, `Core/Init.lua`, `Core/Util.lua`, `GroupLootRoll.lua`, `UI/GroupLootRollBars.lua`,
+`ForeverLoot.toc`, `Core/Init.lua`, `Core/Util.lua`, `GroupLootRoll.lua`, `UI/GroupLootRollBars.lua`,
 `Tooltip.lua`, `RollTracker.lua`, `SoftRes.lua`, `Trade.lua`, `UI/SoftResImport.lua`,
 `UI/TradeQueueWindow.lua`, `UI/RollWindow.lua`.

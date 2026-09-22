@@ -4,9 +4,9 @@ re-encode SoftRes data since broadcasts simply re-send the original pasted
 string verbatim.
 ]]
 
-local ZL = ZerpyLoot;
-ZL.Vendor.Base64 = ZL.Vendor.Base64 or {};
-local Base64 = ZL.Vendor.Base64;
+local FL = ForeverLoot;
+FL.Vendor.Base64 = FL.Vendor.Base64 or {};
+local Base64 = FL.Vendor.Base64;
 
 local ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

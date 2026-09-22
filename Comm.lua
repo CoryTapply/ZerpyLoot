@@ -11,10 +11,10 @@ See Gargul's Classes/Comm.lua and Classes/CommMessage.lua for the reference
 implementation this mirrors.
 ]]
 
-local ZL = ZerpyLoot;
-local Comm = ZL.Comm;
-local Constants = ZL.Constants;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local Comm = FL.Comm;
+local Constants = FL.Constants;
+local Util = FL.Util;
 
 local AceComm, LibDeflate, LibSerialize;
 
@@ -26,7 +26,7 @@ Comm.debugEnabled = false;
 
 local function debugPrint(msg)
     if (Comm.debugEnabled) then
-        print("|cff8865ffZerpyLoot|r " .. msg);
+        print("|cff8865ffForeverLoot|r " .. msg);
     end
 end
 

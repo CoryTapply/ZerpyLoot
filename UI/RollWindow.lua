@@ -10,10 +10,10 @@ client ever sees them, since nothing goes out over addon comm until Start
 Roll is actually clicked.
 ]]
 
-local ZL = ZerpyLoot;
-local RollWindow = ZL.UI.RollWindow;
-local RollTracker = ZL.RollTracker;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local RollWindow = FL.UI.RollWindow;
+local RollTracker = FL.RollTracker;
+local Util = FL.Util;
 
 local MAX_ROWS = 40;
 local ROW_HEIGHT = 20;
@@ -69,7 +69,7 @@ local pendingItemLink;
 -- the plain Blizzard StaticPopupDialogs API (confirmed via Gargul's own
 -- Classes/Dialog.lua that this is exactly what it uses under the hood, just
 -- wrapped in a thin class - no addon-specific dialog library needed here).
-StaticPopupDialogs["ZERPYLOOT_AWARD_CONFIRM"] = {
+StaticPopupDialogs["FOREVERLOOT_AWARD_CONFIRM"] = {
     text = "Award %s to %s?",
     button1 = YES,
     button2 = NO,
@@ -85,17 +85,17 @@ StaticPopupDialogs["ZERPYLOOT_AWARD_CONFIRM"] = {
 local function ensureFrame()
     if (frame) then return; end
 
-    local savedPosition = ZL.Settings.GetWindowPosition(POSITION_KEY);
-    frame = ZL.Theme.CreateWindow("ZerpyLootRollWindow", WINDOW_WIDTH, ZL.Settings.GetRollWindowHeight() or DEFAULT_HEIGHT,
+    local savedPosition = FL.Settings.GetWindowPosition(POSITION_KEY);
+    frame = FL.Theme.CreateWindow("ForeverLootRollWindow", WINDOW_WIDTH, FL.Settings.GetRollWindowHeight() or DEFAULT_HEIGHT,
         savedPosition and savedPosition.x or 0, savedPosition and savedPosition.y or 0,
-        function(x, y) ZL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
+        function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     frame:Hide();
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton");
     closeButton:SetSize(20, 20);
     closeButton:SetPoint("TOPRIGHT", -4, -4);
     closeButton:SetScript("OnClick", function() RollWindow.Hide(); end);
-    ZL.Theme.SkinCloseButton(closeButton);
+    FL.Theme.SkinCloseButton(closeButton);
 
     -- Row container purely for layout (not mouse-enabled) - only the icon
     -- itself (itemButton) triggers the tooltip, not the name text next to it.
@@ -122,9 +122,9 @@ local function ensureFrame()
     -- 1px outside itemButton's own bounds instead (same trick as the roller
     -- popup's countdown bar border).
     itemIconBorder = CreateFrame("Frame", nil, itemRow, "BackdropTemplate");
-    ZL.Theme.SkinIconBorder(itemIconBorder, itemButton);
+    FL.Theme.SkinIconBorder(itemIconBorder, itemButton);
 
-    itemText = itemRow:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.normalMedium);
+    itemText = itemRow:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.normalMedium);
     itemText:SetPoint("LEFT", itemButton, "RIGHT", 6, 0);
     itemText:SetPoint("RIGHT", itemRow, "RIGHT");
     itemText:SetJustifyH("LEFT");
@@ -162,7 +162,7 @@ local function ensureFrame()
     startRow:SetSize(CONTENT_WIDTH, 22);
     startRow:Hide();
 
-    local timerLabel = startRow:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.normal);
+    local timerLabel = startRow:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.normal);
     timerLabel:SetPoint("LEFT", 0, 0);
     timerLabel:SetText("Timer");
 
@@ -171,27 +171,27 @@ local function ensureFrame()
     secondsBox:SetMaxLetters(3);
     -- The Blizzard InputBoxTemplate's border art overhangs the box by 5px on
     -- the left, so nudge it right to keep that from crowding the label.
-    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", ZL.Theme.metrics.secondsBoxGap, 0);
+    secondsBox:SetPoint("LEFT", timerLabel, "RIGHT", FL.Theme.metrics.secondsBoxGap, 0);
     secondsBox:SetAutoFocus(false);
-    secondsBox:SetFontObject(_G[ZL.Theme.fonts.input]);
+    secondsBox:SetFontObject(_G[FL.Theme.fonts.input]);
     secondsBox:SetNumeric(true);
     secondsBox:SetJustifyH("RIGHT");
-    ZL.Theme.SkinEditBox(secondsBox);
+    FL.Theme.SkinEditBox(secondsBox);
 
-    local secondsSuffix = startRow:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.normal);
+    local secondsSuffix = startRow:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.normal);
     secondsSuffix:SetPoint("LEFT", secondsBox, "RIGHT", 4, 0);
     secondsSuffix:SetText("s");
 
-    startRollButton = ZL.Theme.CreateButton(startRow);
+    startRollButton = FL.Theme.CreateButton(startRow);
     startRollButton:SetSize(HALF_BUTTON_WIDTH, 22);
     startRollButton:SetPoint("RIGHT", 0, 0);
     startRollButton:SetText("Start Roll");
     startRollButton:SetScript("OnClick", function()
         local seconds = tonumber(secondsBox:GetText()) or DEFAULT_TIMER;
-        ZL.Settings.SetRollOffSeconds(seconds);
+        FL.Settings.SetRollOffSeconds(seconds);
         RollTracker.StartRollOff(pendingItemLink, seconds);
     end);
-    ZL.Theme.SkinAccentButton(startRollButton);
+    FL.Theme.SkinAccentButton(startRollButton);
 
     -- Height that ends just below the Start Roll button, with the same 12px
     -- bottom margin the scroll frame uses (see its BOTTOMRIGHT anchor
@@ -199,7 +199,7 @@ local function ensureFrame()
     -- hand-added offsets, so it can't drift out of sync with the layout.
     compactHeight = (frame:GetTop() - startRollButton:GetBottom()) + 12;
 
-    countdownText = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlight);
+    countdownText = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlight);
     countdownText:SetPoint("TOP", 0, -38 - 6);
 
     -- Thin countdown bar, no text of its own (the seconds-remaining text
@@ -208,10 +208,10 @@ local function ensureFrame()
     -- popup's countdown bar) since a backdrop border on the bar itself would
     -- sit under its own fill texture.
     countdownBar = CreateFrame("StatusBar", nil, frame);
-    countdownBar:SetSize(230, ZL.Theme.metrics.countdownBarHeight);
+    countdownBar:SetSize(230, FL.Theme.metrics.countdownBarHeight);
     countdownBar:SetPoint("TOP", countdownText, "BOTTOM", 0, -6);
-    ZL.Theme.ApplyStatusBarTexture(countdownBar, ZL.Settings.GetStatusBarTexture());
-    countdownBar:SetStatusBarColor(unpack(ZL.Theme.colors.accent));
+    FL.Theme.ApplyStatusBarTexture(countdownBar, FL.Settings.GetStatusBarTexture());
+    countdownBar:SetStatusBarColor(unpack(FL.Theme.colors.accent));
     countdownBar:SetMinMaxValues(0, 1);
     countdownBar:SetValue(0);
     countdownBar:Hide(); -- only shown once a roll-off is actually running
@@ -222,13 +222,13 @@ local function ensureFrame()
 
     -- Clicking the bar ends the roll-off early (same broadcast as
     -- RollTracker.StopRollOff, so real Gargul clients in the group pick up
-    -- the stop too, not just other ZerpyLoot ones) - only meaningful for
+    -- the stop too, not just other ForeverLoot ones) - only meaningful for
     -- whoever started it, same restriction as awarding a roll.
     countdownBar:EnableMouse(true);
     countdownBar:SetScript("OnEnter", function(self)
         local RollOff = RollTracker.CurrentRollOff;
         if (RollOff and RollOff.active) then
-            self:SetStatusBarColor(unpack(ZL.Theme.colors.danger));
+            self:SetStatusBarColor(unpack(FL.Theme.colors.danger));
         end
     end);
     countdownBar:SetScript("OnLeave", function(self)
@@ -236,7 +236,7 @@ local function ensureFrame()
         if (RollOff and not RollOff.active) then
             self:SetStatusBarColor(unpack(COUNTDOWN_BAR_STOPPED_COLOR));
         else
-            self:SetStatusBarColor(unpack(ZL.Theme.colors.accent));
+            self:SetStatusBarColor(unpack(FL.Theme.colors.accent));
         end
     end);
     countdownBar:SetScript("OnMouseUp", function()
@@ -244,7 +244,7 @@ local function ensureFrame()
         if (not RollOff or not RollOff.active) then return; end
 
         if (not RollOff.initiatorIsMe) then
-            print("|cff8865ffZerpyLoot|r Only the player who started this roll-off can end it early.");
+            print("|cff8865ffForeverLoot|r Only the player who started this roll-off can end it early.");
             return;
         end
 
@@ -252,30 +252,30 @@ local function ensureFrame()
     end);
 
     countdownBarBorder = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-    ZL.Theme.SkinBarBorder(countdownBarBorder, countdownBar);
+    FL.Theme.SkinBarBorder(countdownBarBorder, countdownBar);
     countdownBarBorder:Hide();
 
     -- Same roll buttons as the roller popup, so the initiator can roll on
     -- their own roll-off from this window too, without needing that separate
     -- popup. Sized to leave a small gap between them while still together
     -- spanning exactly as wide as the bar above.
-    msButton = ZL.Theme.CreateButton(frame);
+    msButton = FL.Theme.CreateButton(frame);
     msButton:SetSize(HALF_BUTTON_WIDTH, 22);
     msButton:SetPoint("TOPLEFT", countdownBar, "BOTTOMLEFT", 0, -8);
     msButton:SetText("MS");
     msButton:SetScript("OnClick", function() RandomRoll(1, 100); end);
-    ZL.Theme.SkinButton(msButton);
+    FL.Theme.SkinButton(msButton);
     msButton:Hide();
 
-    osButton = ZL.Theme.CreateButton(frame);
+    osButton = FL.Theme.CreateButton(frame);
     osButton:SetSize(HALF_BUTTON_WIDTH, 22);
     osButton:SetPoint("TOPRIGHT", countdownBar, "BOTTOMRIGHT", 0, -8);
     osButton:SetText("OS");
     osButton:SetScript("OnClick", function() RandomRoll(1, 99); end);
-    ZL.Theme.SkinButton(osButton);
+    FL.Theme.SkinButton(osButton);
     osButton:Hide();
 
-    awardedText = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightSmall);
+    awardedText = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightSmall);
     awardedText:SetPoint("TOPLEFT", msButton, "BOTTOMLEFT", 0, -8);
     awardedText:SetWidth(230);
     awardedText:SetJustifyH("LEFT");
@@ -284,11 +284,11 @@ local function ensureFrame()
     -- from the window top) so the row list always sits a fixed gap below
     -- whatever text actually ends up there, instead of leaving a large dead
     -- gap when that text is shorter than the space a hardcoded offset assumed.
-    local scrollFrame = ZL.Theme.CreateScrollFrame(frame);
+    local scrollFrame = FL.Theme.CreateScrollFrame(frame);
     scrollFrame:SetPoint("TOP", awardedText, "BOTTOM", 0, -10);
     scrollFrame:SetPoint("LEFT", frame, "LEFT", 12, 0);
     scrollFrame:SetPoint("BOTTOMRIGHT", -30, 12);
-    ZL.Theme.SkinScrollBar(scrollFrame);
+    FL.Theme.SkinScrollBar(scrollFrame);
 
     -- Shrinking the window down to hide the roll list (and its scrollbar)
     -- entirely means the window's height needs to be able to go as low as
@@ -308,7 +308,7 @@ local function ensureFrame()
     -- stub of a thumb. Hooked to OnSizeChanged (not just checked once) so
     -- it tracks live as the window is dragged, not only after release.
     local function updateScrollBarNearMin()
-        ZL.Theme.SetScrollBarHidden(scrollFrame, frame:GetHeight() <= minHeight + 10);
+        FL.Theme.SetScrollBarHidden(scrollFrame, frame:GetHeight() <= minHeight + 10);
     end
     frame:HookScript("OnSizeChanged", updateScrollBarNearMin);
     updateScrollBarNearMin();
@@ -342,7 +342,7 @@ local function ensureFrame()
         -- Indented off row's own left edge (rather than flush with it) so the
         -- row highlight - which spans the full row - visibly extends a bit
         -- left of the roller's name instead of stopping right at it.
-        row.text = row:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightSmall);
+        row.text = row:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightSmall);
         row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, 0);
         row.text:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT");
         row.text:SetJustifyH("LEFT");
@@ -353,19 +353,19 @@ local function ensureFrame()
 
             -- Only the player who started this roll-off may award it.
             if (not RollOff.initiatorIsMe) then
-                print("|cff8865ffZerpyLoot|r Only the player who started this roll-off can award it.");
+                print("|cff8865ffForeverLoot|r Only the player who started this roll-off can award it.");
                 return;
             end
 
-            StaticPopup_Show("ZERPYLOOT_AWARD_CONFIRM", RollOff.item, self.rollData.player, { player = self.rollData.player, rollData = self.rollData });
+            StaticPopup_Show("FOREVERLOOT_AWARD_CONFIRM", RollOff.item, self.rollData.player, { player = self.rollData.player, rollData = self.rollData });
         end);
 
         row:Hide();
         rows[i] = row;
     end
 
-    local _, resizeEnabledFn = ZL.Theme.MakeBottomResizable(frame, WINDOW_WIDTH, minHeight, MAX_HEIGHT, function(height)
-        ZL.Settings.SetRollWindowHeight(height);
+    local _, resizeEnabledFn = FL.Theme.MakeBottomResizable(frame, WINDOW_WIDTH, minHeight, MAX_HEIGHT, function(height)
+        FL.Settings.SetRollWindowHeight(height);
     end);
     setResizeEnabled = resizeEnabledFn;
 
@@ -403,7 +403,7 @@ function RollWindow.updateHeightAnimation()
     local t = math.min(1, (GetTime() - heightAnim.startTime) / GROW_ANIMATION_DURATION);
     local eased = 1 - (1 - t) ^ 3; -- ease-out cubic
     local height = heightAnim.startHeight + (heightAnim.targetHeight - heightAnim.startHeight) * eased;
-    ZL.Pixel.SetHeight(frame, height);
+    FL.Pixel.SetHeight(frame, height);
 
     if (t >= 1) then
         heightAnim = nil;
@@ -455,7 +455,7 @@ local function buildRows()
     for _, roll in ipairs(RollOff.Rolls) do
         countsByPlayer[roll.player] = (countsByPlayer[roll.player] or 0) + 1;
         roll.rollNumber = countsByPlayer[roll.player];
-        roll.isSR = ZL.SoftRes ~= nil and ZL.SoftRes.PlayerHasReservedItem(roll.player, RollOff.itemID);
+        roll.isSR = FL.SoftRes ~= nil and FL.SoftRes.PlayerHasReservedItem(roll.player, RollOff.itemID);
         table.insert(result, roll);
     end
 
@@ -485,7 +485,7 @@ function RollWindow.Refresh()
     -- actively up for an item we soft-reserved (see the louder sound in
     -- RollTracker.applyStart) - reverts to the normal border the moment it
     -- stops or there's no roll-off at all.
-    ZL.Theme.SetWindowBorderColor(frame, (RollOff and RollOff.active and RollOff.isSelfSR) and ZL.Theme.colors.warning or nil);
+    FL.Theme.SetWindowBorderColor(frame, (RollOff and RollOff.active and RollOff.isSelfSR) and FL.Theme.colors.warning or nil);
 
     -- A real roll-off (ours or someone else's) always supersedes a pending,
     -- not-yet-broadcast one.
@@ -509,24 +509,24 @@ function RollWindow.Refresh()
 
         if (pendingItemLink) then
             itemIcon:SetTexture(select(10, Util.GetItemInfo(pendingItemLink)) or FALLBACK_ICON);
-            ZL.Theme.SetIconBorderQuality(itemIconBorder, Util.GetItemQuality(pendingItemLink));
+            FL.Theme.SetIconBorderQuality(itemIconBorder, Util.GetItemQuality(pendingItemLink));
             itemText:SetText(pendingItemLink);
             countdownText:SetText("");
             awardedText:SetText("");
-            secondsBox:SetText(tostring(ZL.Settings.GetRollOffSeconds() or DEFAULT_TIMER));
+            secondsBox:SetText(tostring(FL.Settings.GetRollOffSeconds() or DEFAULT_TIMER));
             startRow:Show();
             -- Shrink down to just fit the prompt - cancels any leftover
             -- grow animation from a previous roll-off, so alt+clicking a
             -- new item right after one wraps up doesn't fight it.
             heightAnim = nil;
-            ZL.Pixel.SetHeight(frame, compactHeight);
+            FL.Pixel.SetHeight(frame, compactHeight);
             -- compactHeight sits below minHeight on purpose - disable the
             -- resize handle so grabbing it can't snap the window straight up
             -- to minHeight the instant a drag starts (see setResizeEnabled).
             setResizeEnabled(false);
         else
             itemIcon:SetTexture(nil);
-            ZL.Theme.SetIconBorderQuality(itemIconBorder, nil);
+            FL.Theme.SetIconBorderQuality(itemIconBorder, nil);
             itemText:SetText("");
             countdownText:SetText("");
             awardedText:SetText("");
@@ -546,13 +546,13 @@ function RollWindow.Refresh()
     -- this roll-off is the local player's own (they just pressed Start
     -- Roll) - otherwise (someone else's roll-off) it should already be at
     -- that height the moment it appears.
-    local targetHeight = math.max(ZL.Settings.GetRollWindowHeight() or DEFAULT_HEIGHT, minHeight);
+    local targetHeight = math.max(FL.Settings.GetRollWindowHeight() or DEFAULT_HEIGHT, minHeight);
     if (frame:GetHeight() ~= targetHeight) then
         if (RollOff.initiatorIsMe) then
             animateGrowTo(targetHeight);
         else
             heightAnim = nil;
-            ZL.Pixel.SetHeight(frame, targetHeight);
+            FL.Pixel.SetHeight(frame, targetHeight);
         end
     end
 
@@ -565,7 +565,7 @@ function RollWindow.Refresh()
     msButton:Show();
     osButton:Show();
     if (RollOff.active) then
-        countdownBar:SetStatusBarColor(unpack(ZL.Theme.colors.accent));
+        countdownBar:SetStatusBarColor(unpack(FL.Theme.colors.accent));
         msButton:Enable();
         osButton:Enable();
     else
@@ -578,7 +578,7 @@ function RollWindow.Refresh()
     end
 
     itemIcon:SetTexture(RollOff.itemIcon or FALLBACK_ICON);
-    ZL.Theme.SetIconBorderQuality(itemIconBorder, RollOff.itemQuality);
+    FL.Theme.SetIconBorderQuality(itemIconBorder, RollOff.itemQuality);
     -- RollOff.item is just the bare itemID string (no color codes) - color
     -- itemName manually from itemQuality instead of relying on RollOff.item.
     itemText:SetText(RollOff.itemName and Util.qualityColoredItemName(RollOff.itemName, RollOff.itemQuality) or RollOff.item or "");
@@ -648,6 +648,6 @@ function RollWindow.Toggle()
 end
 
 function RollWindow.ResetPosition()
-    ZL.Settings.ClearWindowPosition(POSITION_KEY);
-    if (frame) then ZL.Theme.ResetWindowPosition(frame); end
+    FL.Settings.ClearWindowPosition(POSITION_KEY);
+    if (frame) then FL.Theme.ResetWindowPosition(frame); end
 end

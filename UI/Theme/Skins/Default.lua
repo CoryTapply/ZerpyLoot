@@ -1,18 +1,18 @@
 --[[
 "Default" skin: ElvUI-style window chrome - a solid dark background plus a
-crisp 1-physical-pixel border, built on ZL.Pixel so the border stays exactly
+crisp 1-physical-pixel border, built on FL.Pixel so the border stays exactly
 1px on any UIScale or monitor. Colors match ElvUI's own default palette
 (media.backdropcolor / media.bordercolor from its Profile defaults) so
-ZerpyLoot's windows sit visually flush with an ElvUI-skinned UI.
+ForeverLoot's windows sit visually flush with an ElvUI-skinned UI.
 
 This is also the root of every other skin's inheritance chain: it defines
 EVERY colors/metrics/resizeHandle key and EVERY skin method, so a skin that
 omits something falls back to the flat look defined here.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
-local Pixel = ZL.Pixel;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
+local Pixel = FL.Pixel;
 local Helpers = Theme.Helpers;
 
 -- Cell's own close/delete icon (Media/Icons/close.tga), copied into this
@@ -20,7 +20,7 @@ local Helpers = Theme.Helpers;
 -- of font metrics, unlike the FontString "x" glyph this used to be (which
 -- ended up noticeably off-center since a single-point-anchored FontString
 -- auto-sizes to the glyph's raw advance box, not its visual ink).
-local CLOSE_ICON_TEXTURE = "Interface\\AddOns\\ZerpyLoot\\Media\\Icons\\close.tga";
+local CLOSE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\close.tga";
 local CLOSE_ICON_SIZE = 10;
 
 -- Press-feedback nudge for a close button's icon, matching the -1px
@@ -32,7 +32,7 @@ local Skin = {};
 Skin.name = "Default";
 
 -- Background alpha (0.9) intentionally matches Cell's options window
--- (Cell.StylizeFrame's default color) so ZerpyLoot's windows read as part of
+-- (Cell.StylizeFrame's default color) so ForeverLoot's windows read as part of
 -- the same family of dark, semi-transparent raid-tool UIs.
 Skin.colors = {
     -- Window backdrop fill and border (see ApplyWindowBackdrop).

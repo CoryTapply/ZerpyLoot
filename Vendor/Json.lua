@@ -3,9 +3,9 @@ Minimal recursive-descent JSON decoder. Decode-only - the SoftRes broadcast
 protocol re-sends the original pasted string verbatim, so no encoder is needed.
 ]]
 
-local ZL = ZerpyLoot;
-ZL.Vendor.Json = ZL.Vendor.Json or {};
-local Json = ZL.Vendor.Json;
+local FL = ForeverLoot;
+FL.Vendor.Json = FL.Vendor.Json or {};
+local Json = FL.Vendor.Json;
 
 local decodeValue;
 

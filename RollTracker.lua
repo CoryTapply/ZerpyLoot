@@ -1,7 +1,7 @@
 --[[
 Roll-off sessions: alt+left-click a bag item to start one (Gargul-compatible
 broadcast so real Gargul clients see it too), and/or observe a roll-off
-started by anyone else (Gargul or ZerpyLoot).
+started by anyone else (Gargul or ForeverLoot).
 
 Actual roll VALUES are never sent over addon comm by Gargul or by us - players
 use the stock /roll command and the server broadcasts the result to everyone
@@ -9,11 +9,11 @@ as a CHAT_MSG_SYSTEM message matching the client's localized RANDOM_ROLL_RESULT
 string. We parse that exactly the way Gargul does (see Classes/RollOff.lua).
 ]]
 
-local ZL = ZerpyLoot;
-local RollTracker = ZL.RollTracker;
-local Constants = ZL.Constants;
-local Util = ZL.Util;
-local Comm = ZL.Comm;
+local FL = ForeverLoot;
+local RollTracker = FL.RollTracker;
+local Constants = FL.Constants;
+local Util = FL.Util;
+local Comm = FL.Comm;
 
 local rollPattern;
 local rollFrame;
@@ -29,7 +29,7 @@ local nextRollOffId = 0;
 
 local function debugPrint(msg)
     if (Comm.debugEnabled) then
-        print("|cff8865ffZerpyLoot|r " .. msg);
+        print("|cff8865ffForeverLoot|r " .. msg);
     end
 end
 
@@ -111,8 +111,8 @@ function RollTracker.ProcessRoll(message)
 
             debugPrint(("ROLL %s rolls %d (%d-%d) [%s]"):format(rollerBase, roll, low, high, classification));
 
-            if (ZL.UI.RollWindow and ZL.UI.RollWindow.Refresh) then
-                ZL.UI.RollWindow.Refresh();
+            if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+                FL.UI.RollWindow.Refresh();
             end
         end
     end
@@ -149,7 +149,7 @@ local function applyStart(Message)
     -- Whether *we* soft-reserved this item - drives the louder sound/orange
     -- border pop below, so our own reserved item up for roll doesn't get
     -- missed among everything else going on.
-    local isSelfSR = ZL.SoftRes ~= nil and ZL.SoftRes.PlayerHasReservedItem(Util.stripRealm(UnitName("player")), itemID);
+    local isSelfSR = FL.SoftRes ~= nil and FL.SoftRes.PlayerHasReservedItem(Util.stripRealm(UnitName("player")), itemID);
 
     nextRollOffId = nextRollOffId + 1;
 
@@ -205,13 +205,13 @@ local function applyStart(Message)
     -- warning chime. Bundled as its own file (rather than a SOUNDKIT id)
     -- since UI_EPICLOOT_TOAST isn't available on TBC clients.
     if (isSelfSR) then
-        Util.playSoundFile("Interface\\AddOns\\ZerpyLoot\\Media\\Sounds\\SonicRing.ogg", "Master");
+        Util.playSoundFile("Interface\\AddOns\\ForeverLoot\\Media\\Sounds\\SonicRing.ogg", "Master");
     else
         Util.playSound(SOUNDKIT.RAID_WARNING, "Master");
     end
 
-    if (ZL.UI.RollWindow and ZL.UI.RollWindow.Show) then
-        ZL.UI.RollWindow.Show();
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Show) then
+        FL.UI.RollWindow.Show();
     end
 
     debugPrint(("Roll-off started by %s for %s (%ds)"):format(Message.senderFqn or "?", content.item, content.time));
@@ -241,8 +241,8 @@ function RollTracker.LocalStop()
         end
     end
 
-    if (ZL.UI.RollWindow and ZL.UI.RollWindow.Refresh) then
-        ZL.UI.RollWindow.Refresh();
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+        FL.UI.RollWindow.Refresh();
     end
 end
 
@@ -255,12 +255,12 @@ function RollTracker.StartRollOff(itemLink, seconds)
     seconds = tonumber(seconds);
 
     if (not Util.isValidItemLink(itemLink)) then
-        print("|cff8865ffZerpyLoot|r Invalid item link.");
+        print("|cff8865ffForeverLoot|r Invalid item link.");
         return false;
     end
 
     if (not seconds or seconds < 5) then
-        print("|cff8865ffZerpyLoot|r Timer needs to be 5 seconds or more.");
+        print("|cff8865ffForeverLoot|r Timer needs to be 5 seconds or more.");
         return false;
     end
 
@@ -278,9 +278,9 @@ function RollTracker.StartRollOff(itemLink, seconds)
 
     -- Announce SoftRes reservations for this item too, if we know of any (parity with Gargul).
     local reservedChannel = Util.GroupChatChannel();
-    if (reservedChannel and ZL.SoftRes and ZL.SoftRes.GetReservationsForItemID) then
+    if (reservedChannel and FL.SoftRes and FL.SoftRes.GetReservationsForItemID) then
         local itemID = Util.itemIDFromLink(itemLink);
-        local reservations = itemID and ZL.SoftRes.GetReservationsForItemID(itemID);
+        local reservations = itemID and FL.SoftRes.GetReservationsForItemID(itemID);
         if (reservations and #reservations > 0) then
             local names = {};
             for _, r in ipairs(reservations) do
@@ -321,7 +321,7 @@ function RollTracker.AwardItem(playerName, rollData)
     -- anyone but the initiator, but enforce it here too since this is the
     -- function that actually hands the item out.
     if (not RollOff.initiatorIsMe) then
-        print("|cff8865ffZerpyLoot|r Only the player who started this roll-off can award it.");
+        print("|cff8865ffForeverLoot|r Only the player who started this roll-off can award it.");
         return;
     end
 
@@ -331,8 +331,8 @@ function RollTracker.AwardItem(playerName, rollData)
     RollOff.awardedIsSR = rollData and rollData.isSR;
     RollOff.awardedClass = rollData and rollData.class;
 
-    if (ZL.UI.RollWindow and ZL.UI.RollWindow.Refresh) then
-        ZL.UI.RollWindow.Refresh();
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+        FL.UI.RollWindow.Refresh();
     end
 
     local awardChannel = Util.GroupChatChannel();
@@ -345,9 +345,9 @@ function RollTracker.AwardItem(playerName, rollData)
     -- (not just itemLink) so a second, separate roll-off for an identical
     -- item (it dropped twice) queues its own entry instead of wiping out the
     -- first roll-off's still-pending one.
-    ZL.Trade.QueueRemoveByRollOff(RollOff.id);
+    FL.Trade.QueueRemoveByRollOff(RollOff.id);
 
-    ZL.Trade.QueueAdd({
+    FL.Trade.QueueAdd({
         itemLink = RollOff.item,
         itemIcon = RollOff.itemIcon,
         itemID = RollOff.itemID,
@@ -358,20 +358,20 @@ function RollTracker.AwardItem(playerName, rollData)
         winnerClass = rollData and rollData.class,
     });
 
-    ZL.Trade.AttemptTrade(playerName, RollOff.item, function(success, reason)
+    FL.Trade.AttemptTrade(playerName, RollOff.item, function(success, reason)
         if (success) then
-            print(("|cff8865ffZerpyLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(RollOff.item, playerName));
+            print(("|cff8865ffForeverLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(RollOff.item, playerName));
             return;
         end
 
         debugPrint(("Auto-trade to %s failed: %s"):format(playerName, tostring(reason)));
 
-        print(("|cff8865ffZerpyLoot|r Couldn't trade %s to %s (%s) - it stays in the trade queue."):format(
+        print(("|cff8865ffForeverLoot|r Couldn't trade %s to %s (%s) - it stays in the trade queue."):format(
             RollOff.item, playerName, tostring(reason)
         ));
 
-        if (ZL.UI.TradeQueueWindow and ZL.UI.TradeQueueWindow.Show) then
-            ZL.UI.TradeQueueWindow.Show();
+        if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
+            FL.UI.TradeQueueWindow.Show();
         end
     end);
 end
@@ -415,8 +415,8 @@ local function onItemClick(itemLink)
         return;
     end
 
-    if (ZL.UI.RollWindow and ZL.UI.RollWindow.ShowStartPrompt) then
-        ZL.UI.RollWindow.ShowStartPrompt(itemLink);
+    if (FL.UI.RollWindow and FL.UI.RollWindow.ShowStartPrompt) then
+        FL.UI.RollWindow.ShowStartPrompt(itemLink);
     end
 end
 
@@ -443,8 +443,8 @@ local function refreshItemDataIfNeeded()
     RollOff.itemName = RollOff.itemName or itemName;
     RollOff.itemQuality = RollOff.itemQuality or itemQuality;
 
-    if (ZL.UI.RollWindow and ZL.UI.RollWindow.Refresh) then
-        ZL.UI.RollWindow.Refresh();
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+        FL.UI.RollWindow.Refresh();
     end
 end
 

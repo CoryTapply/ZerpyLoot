@@ -6,9 +6,9 @@ behavior that is the same for every skin - dragging, pixel-snapped
 positioning and sizing.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
-local Pixel = ZL.Pixel;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
+local Pixel = FL.Pixel;
 local Helpers = Theme.Helpers;
 
 local function skin()

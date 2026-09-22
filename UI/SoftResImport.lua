@@ -4,10 +4,10 @@ players previews live as you paste (before anything is committed), then
 "Import & Broadcast" commits it and sends it to the group.
 ]]
 
-local ZL = ZerpyLoot;
-local SoftResImport = ZL.UI.SoftResImport;
-local SoftRes = ZL.SoftRes;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local SoftResImport = FL.UI.SoftResImport;
+local SoftRes = FL.SoftRes;
+local Util = FL.Util;
 
 local MAX_PREVIEW_ROWS = 30;
 local ROW_HEIGHT = 38;
@@ -23,12 +23,12 @@ local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 -- its data arrives - unless the button has since moved on to another item.
 local function setIconQuality(iconButton, itemID)
     local quality = Util.GetItemQuality(itemID);
-    ZL.Theme.SetIconBorderQuality(iconButton.iconBorder, quality);
+    FL.Theme.SetIconBorderQuality(iconButton.iconBorder, quality);
     if (quality) then return; end
 
     Item:CreateFromItemID(itemID):ContinueOnItemLoad(function()
         if (iconButton.itemID == itemID) then
-            ZL.Theme.SetIconBorderQuality(iconButton.iconBorder, Util.GetItemQuality(itemID));
+            FL.Theme.SetIconBorderQuality(iconButton.iconBorder, Util.GetItemQuality(itemID));
         end
     end);
 end
@@ -50,24 +50,24 @@ local PREVIEW_MAX_HEIGHT = 480 - 166 - 76;
 local function ensureFrame()
     if (frame) then return; end
 
-    local savedPosition = ZL.Settings.GetWindowPosition(POSITION_KEY);
-    frame = ZL.Theme.CreateWindow("ZerpyLootSoftResImport", 440, 480,
+    local savedPosition = FL.Settings.GetWindowPosition(POSITION_KEY);
+    frame = FL.Theme.CreateWindow("ForeverLootSoftResImport", 440, 480,
         savedPosition and savedPosition.x or 0, savedPosition and savedPosition.y or 0,
-        function(x, y) ZL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
+        function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     frame:SetFrameStrata("DIALOG");
     frame:Hide();
 
-    local title = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.title);
+    local title = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.title);
     title:SetPoint("TOP", 0, -10);
-    title:SetText("ZerpyLoot - Import SoftRes");
+    title:SetText("ForeverLoot - Import SoftRes");
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton");
     closeButton:SetSize(20, 20);
     closeButton:SetPoint("TOPRIGHT", -4, -4);
     closeButton:SetScript("OnClick", function() frame:Hide(); end);
-    ZL.Theme.SkinCloseButton(closeButton);
+    FL.Theme.SkinCloseButton(closeButton);
 
-    local hint = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.disableSmall);
+    local hint = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.disableSmall);
     hint:SetPoint("TOP", 0, -30);
     hint:SetText("Paste the softres.it 'Gargul Export' string below:");
 
@@ -75,20 +75,20 @@ local function ensureFrame()
     -- transparent so it can sit inside a ScrollFrame, so the flat, dark,
     -- Cell-style input look is drawn onto a background frame behind it.
     local pasteBg = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-    ZL.Theme.SkinInputBackground(pasteBg);
+    FL.Theme.SkinInputBackground(pasteBg);
     pasteBg:SetPoint("TOPLEFT", 14, -48);
     pasteBg:SetPoint("TOPRIGHT", -12, -48);
     pasteBg:SetHeight(94);
 
-    local pasteScrollFrame = ZL.Theme.CreateScrollFrame(frame);
+    local pasteScrollFrame = FL.Theme.CreateScrollFrame(frame);
     pasteScrollFrame:SetPoint("TOPLEFT", pasteBg, "TOPLEFT", 6, -6);
     pasteScrollFrame:SetPoint("BOTTOMRIGHT", pasteBg, "BOTTOMRIGHT", -24, 6);
     pasteScrollFrame:SetFrameLevel(pasteBg:GetFrameLevel() + 1);
-    ZL.Theme.SkinScrollBar(pasteScrollFrame);
+    FL.Theme.SkinScrollBar(pasteScrollFrame);
 
     editBox = CreateFrame("EditBox", nil, pasteScrollFrame);
     editBox:SetMultiLine(true);
-    editBox:SetFontObject(_G[ZL.Theme.fonts.input]);
+    editBox:SetFontObject(_G[FL.Theme.fonts.input]);
     editBox:SetWidth(380);
     editBox:SetAutoFocus(false);
     editBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); end);
@@ -113,19 +113,19 @@ local function ensureFrame()
     pasteScrollFrame:SetScript("OnMouseDown", function() editBox:SetFocus(); end);
 
     -- Preview section (middle - fills the remaining space)
-    local previewLabel = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.normalSmall);
+    local previewLabel = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.normalSmall);
     previewLabel:SetPoint("TOPLEFT", 16, -148);
     previewLabel:SetText("Preview:");
 
-    previewHint = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.disableSmall);
+    previewHint = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.disableSmall);
     previewHint:SetPoint("TOPLEFT", 16, -166);
     previewHint:SetText("Paste a valid export above to preview its reservations here.");
 
-    previewScrollFrame = ZL.Theme.CreateScrollFrame(frame);
+    previewScrollFrame = FL.Theme.CreateScrollFrame(frame);
     previewScrollFrame:SetPoint("TOPLEFT", 16, -166);
     previewScrollFrame:SetPoint("TOPRIGHT", -34, -166);
     previewScrollFrame:SetHeight(PREVIEW_MAX_HEIGHT);
-    ZL.Theme.SkinScrollBar(previewScrollFrame);
+    FL.Theme.SkinScrollBar(previewScrollFrame);
 
     -- Width tracks the scroll frame's own visible width (same trick
     -- RollWindow's and TradeQueueWindow's row lists use) so rows always
@@ -154,7 +154,7 @@ local function ensureFrame()
         rowHighlight:SetColorTexture(1, 1, 1, 0.08);
         row:SetHighlightTexture(rowHighlight);
 
-        row.text = row:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightMedium);
+        row.text = row:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightMedium);
         row.text:SetPoint("LEFT", 4, 0);
         row.text:SetWidth(NAME_WIDTH);
         row.text:SetJustifyH("LEFT");
@@ -180,7 +180,7 @@ local function ensureFrame()
             -- iconBorder) so it doesn't get painted over by the icon's own
             -- ARTWORK-layer texture.
             iconButton.iconBorder = CreateFrame("Frame", nil, iconButton, "BackdropTemplate");
-            ZL.Theme.SkinIconBorder(iconButton.iconBorder, iconButton);
+            FL.Theme.SkinIconBorder(iconButton.iconBorder, iconButton);
 
             iconButton:SetScript("OnEnter", function(self)
                 if (not self.itemID) then return; end
@@ -206,7 +206,7 @@ local function ensureFrame()
             row.icons[j] = iconButton;
         end
 
-        row.overflowText = row:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.disableSmall);
+        row.overflowText = row:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.disableSmall);
         row.overflowText:SetPoint("LEFT", row.icons[MAX_ICONS_PER_ROW], "RIGHT", 4, 0);
         row.overflowText:Hide();
 
@@ -221,11 +221,11 @@ local function ensureFrame()
         previewRows[i] = createPreviewRow();
     end
 
-    statusText = frame:CreateFontString(nil, "OVERLAY", ZL.Theme.fonts.highlightSmall);
+    statusText = frame:CreateFontString(nil, "OVERLAY", FL.Theme.fonts.highlightSmall);
     statusText:SetPoint("BOTTOM", 0, 46);
     statusText:SetWidth(400);
 
-    local importButton = ZL.Theme.CreateButton(frame);
+    local importButton = FL.Theme.CreateButton(frame);
     importButton:SetSize(150, 22);
     importButton:SetPoint("BOTTOMLEFT", 20, 14);
     importButton:SetText("Import & Broadcast");
@@ -240,9 +240,9 @@ local function ensureFrame()
             statusText:SetText("|cffff4444" .. tostring(err) .. "|r");
         end
     end);
-    ZL.Theme.SkinButton(importButton);
+    FL.Theme.SkinButton(importButton);
 
-    local reportMissingButton = ZL.Theme.CreateButton(frame);
+    local reportMissingButton = FL.Theme.CreateButton(frame);
     reportMissingButton:SetSize(130, 22);
     reportMissingButton:SetPoint("LEFT", importButton, "RIGHT", 10, 0);
     reportMissingButton:SetText("Report Missing");
@@ -257,9 +257,9 @@ local function ensureFrame()
             statusText:SetText(("|cffffcc00Missing soft-reserves from: %s|r"):format(table.concat(missing, ", ")));
         end
     end);
-    ZL.Theme.SkinButton(reportMissingButton);
+    FL.Theme.SkinButton(reportMissingButton);
 
-    local clearButton = ZL.Theme.CreateButton(frame);
+    local clearButton = FL.Theme.CreateButton(frame);
     clearButton:SetSize(70, 22);
     clearButton:SetPoint("LEFT", reportMissingButton, "RIGHT", 10, 0);
     clearButton:SetText("Clear");
@@ -269,7 +269,7 @@ local function ensureFrame()
         SoftRes.Clear();
         statusText:SetText("|cff33ff33SoftRes data cleared - tooltips will no longer show reservations.|r");
     end);
-    ZL.Theme.SkinButton(clearButton);
+    FL.Theme.SkinButton(clearButton);
 end
 
 -- Shared by RefreshPreview's empty/error states and by SyncExternalImport
@@ -455,6 +455,6 @@ function SoftResImport.Toggle()
 end
 
 function SoftResImport.ResetPosition()
-    ZL.Settings.ClearWindowPosition(POSITION_KEY);
-    if (frame) then ZL.Theme.ResetWindowPosition(frame); end
+    FL.Settings.ClearWindowPosition(POSITION_KEY);
+    if (frame) then FL.Theme.ResetWindowPosition(frame); end
 end

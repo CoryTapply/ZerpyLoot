@@ -1,5 +1,5 @@
-local ZL = ZerpyLoot;
-local Constants = ZL.Constants;
+local FL = ForeverLoot;
+local Constants = FL.Constants;
 
 -- Gargul's addon-comm prefix (Data/Constants.lua in Gargul). We register/send/listen
 -- on this exact same prefix to interoperate with real Gargul clients.

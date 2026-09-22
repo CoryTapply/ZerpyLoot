@@ -1,5 +1,5 @@
-local ZL = ZerpyLoot;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local Util = FL.Util;
 
 -- Turn a Blizzard global format string (e.g. RANDOM_ROLL_RESULT, containing
 -- %s/%d or positional %1$s/%2$d tokens) into a Lua match pattern with capture

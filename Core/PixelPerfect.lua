@@ -5,15 +5,15 @@ scale:
 
     physicalPixels = unitSize * frame:GetEffectiveScale()
 
-None of ZerpyLoot's windows set a custom :SetScale(), so every frame's
+None of ForeverLoot's windows set a custom :SetScale(), so every frame's
 effective scale is just UIParent's live UIScale - reading it at runtime
 (rather than assuming a fixed value) keeps borders exactly 1 physical pixel
 on any monitor, resolution, or UIScale setting without hardcoding any of
 them.
 ]]
 
-local ZL = ZerpyLoot;
-local Pixel = ZL.Pixel;
+local FL = ForeverLoot;
+local Pixel = FL.Pixel;
 
 local EPSILON = 1e-4;
 local windows = {};

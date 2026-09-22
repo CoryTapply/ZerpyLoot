@@ -23,9 +23,9 @@ semi-protected client behavior and that's a known-working reference:
   "for security reasons"; that step is always left to the human.
 ]]
 
-local ZL = ZerpyLoot;
-local Trade = ZL.Trade;
-local Util = ZL.Util;
+local FL = ForeverLoot;
+local Trade = FL.Trade;
+local Util = FL.Util;
 
 local TRADE_OPEN_TIMEOUT = 1;
 local BOUNCE_WINDOW = 0.6; -- slightly past Gargul's own 0.5s bounce window
@@ -60,11 +60,11 @@ end
 -- window didn't open, or we simply didn't have the item at award time).
 -- {itemLink, itemIcon, itemID, winner, rollOffId, rollAmount, classification, winnerClass}
 --
--- Backed directly by ZL.DB.tradeQueue (see Trade.Init) - every entry here is
+-- Backed directly by FL.DB.tradeQueue (see Trade.Init) - every entry here is
 -- plain serializable data (strings/numbers, no frames or closures), so
 -- pointing this at the saved-variable table itself means every existing
 -- table.insert/table.remove call below already persists it, with no separate
--- save step needed. Defaults to a plain local table here since ZL.DB isn't
+-- save step needed. Defaults to a plain local table here since FL.DB isn't
 -- set until ADDON_LOADED, well before Trade.Init reassigns it.
 Trade.Queue = {};
 
@@ -75,8 +75,8 @@ function Trade.QueueAdd(entry)
     -- this, an item added while the window happened to be open (or was open
     -- from an earlier award) simply wouldn't appear until manually reopened,
     -- which looks indistinguishable from "never got queued at all."
-    if (ZL.UI.TradeQueueWindow and ZL.UI.TradeQueueWindow.Refresh) then
-        ZL.UI.TradeQueueWindow.Refresh();
+    if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Refresh) then
+        FL.UI.TradeQueueWindow.Refresh();
     end
 end
 
@@ -216,10 +216,10 @@ end
 -- Fires whenever a queued item is confirmed actually traded away (not just
 -- placed). Used to notify the player and refresh the trade queue window.
 local function onItemActuallyTraded(entry)
-    print(("|cff8865ffZerpyLoot|r Confirmed: %s traded to %s."):format(entry.itemLink or "?", entry.winner or "?"));
+    print(("|cff8865ffForeverLoot|r Confirmed: %s traded to %s."):format(entry.itemLink or "?", entry.winner or "?"));
 
-    if (ZL.UI.TradeQueueWindow and ZL.UI.TradeQueueWindow.Refresh) then
-        ZL.UI.TradeQueueWindow.Refresh();
+    if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Refresh) then
+        FL.UI.TradeQueueWindow.Refresh();
     end
 end
 
@@ -240,14 +240,14 @@ local function onTradeComplete()
 end
 
 function Trade.Init()
-    ZL.DB.tradeQueue = ZL.DB.tradeQueue or {};
-    Trade.Queue = ZL.DB.tradeQueue;
+    FL.DB.tradeQueue = FL.DB.tradeQueue or {};
+    Trade.Queue = FL.DB.tradeQueue;
 
     -- Queued items persist in the saved variables across a login/reload, so
     -- surface the window immediately instead of leaving already-owed trades
     -- silently sitting in the queue until it's manually opened.
-    if (#Trade.Queue > 0 and ZL.UI.TradeQueueWindow and ZL.UI.TradeQueueWindow.Show) then
-        ZL.UI.TradeQueueWindow.Show();
+    if (#Trade.Queue > 0 and FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
+        FL.UI.TradeQueueWindow.Show();
     end
 
     local sessionFrame = CreateFrame("Frame");

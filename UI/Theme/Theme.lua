@@ -13,8 +13,8 @@ skin only lists what it changes. A skin can never affect another skin except
 by being that skin's base.
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
 
 Theme.Helpers = Theme.Helpers or {};
 

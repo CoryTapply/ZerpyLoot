@@ -9,8 +9,8 @@ Other skins can build on this one with `base = "blizzard"` (see
 BlizzardThin.lua, which changes only the window frame art).
 ]]
 
-local ZL = ZerpyLoot;
-local Theme = ZL.Theme;
+local FL = ForeverLoot;
+local Theme = FL.Theme;
 local Helpers = Theme.Helpers;
 
 local Skin = {};

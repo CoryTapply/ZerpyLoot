@@ -6,20 +6,20 @@ button art, same as the default popup and ElvUI's LootRoll.lua) - each
 showing a live count of how many players picked it, and listing their
 class-colored names on hover. One bar per simultaneous roll, stacking
 vertically below a small draggable anchor header whose position is persisted
-the same way every other ZerpyLoot window's position is (see
-ZL.Settings.GetWindowPosition/SetWindowPosition).
+the same way every other ForeverLoot window's position is (see
+FL.Settings.GetWindowPosition/SetWindowPosition).
 
 Bars themselves have no background/border of their own (their contents float
 directly over whatever sits behind them, matching ElvUI's look) and aren't
-full ZL.Theme.CreateWindow windows - only the anchor header needs to be
+full FL.Theme.CreateWindow windows - only the anchor header needs to be
 draggable/pixel-registered; the bars underneath just follow it.
 ]]
 
-local ZL = ZerpyLoot;
-local GroupLootRollBars = ZL.UI.GroupLootRollBars;
-local GroupLootRoll = ZL.GroupLootRoll;
-local Util = ZL.Util;
-local Theme = ZL.Theme;
+local FL = ForeverLoot;
+local GroupLootRollBars = FL.UI.GroupLootRollBars;
+local GroupLootRoll = FL.GroupLootRoll;
+local Util = FL.Util;
+local Theme = FL.Theme;
 
 -- Same values RollOnLoot takes. Transmog (4) replaces Greed for items you
 -- can't need or greed.
@@ -267,7 +267,7 @@ local function createBar()
     -- than on top of them - same-level siblings would otherwise draw in
     -- creation order, and the buttons already exist by this point.
     countdownBar:SetFrameLevel(topRow:GetFrameLevel());
-    Theme.ApplyStatusBarTexture(countdownBar, ZL.Settings.GetStatusBarTexture());
+    Theme.ApplyStatusBarTexture(countdownBar, FL.Settings.GetStatusBarTexture());
     countdownBar:SetStatusBarColor(unpack(Theme.colors.accent));
     countdownBar:SetMinMaxValues(0, 1);
     countdownBar:SetValue(0);
@@ -358,10 +358,10 @@ end
 local function ensureAnchor()
     if (anchor) then return; end
 
-    local savedPosition = ZL.Settings.GetWindowPosition(POSITION_KEY);
-    anchor = Theme.CreateWindow("ZerpyLootGroupLootRollAnchor", BAR_WIDTH, ANCHOR_HEIGHT,
+    local savedPosition = FL.Settings.GetWindowPosition(POSITION_KEY);
+    anchor = Theme.CreateWindow("ForeverLootGroupLootRollAnchor", BAR_WIDTH, ANCHOR_HEIGHT,
         savedPosition and savedPosition.x or 0, savedPosition and savedPosition.y or 200,
-        function(x, y) ZL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
+        function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     anchor:Hide();
 
     local label = anchor:CreateFontString(nil, "OVERLAY", Theme.fonts.title);
@@ -388,7 +388,7 @@ local function layout()
     -- Locked hides the header (nothing left to drag once it's positioned) -
     -- the bars below still stack off it since a hidden frame keeps whatever
     -- position it was last anchored/dragged to.
-    if (ZL.Settings.GetGroupLootRollLocked()) then
+    if (FL.Settings.GetGroupLootRollLocked()) then
         anchor:Hide();
     else
         anchor:Show();
@@ -498,6 +498,6 @@ function GroupLootRollBars.RefreshLock()
 end
 
 function GroupLootRollBars.ResetPosition()
-    ZL.Settings.ClearWindowPosition(POSITION_KEY);
+    FL.Settings.ClearWindowPosition(POSITION_KEY);
     if (anchor) then Theme.ResetWindowPosition(anchor); end
 end
