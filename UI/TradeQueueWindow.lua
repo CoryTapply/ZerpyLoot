@@ -150,8 +150,12 @@ local function ensureFrame()
         -- bounds via IsMouseOver - which works on any region, no dedicated
         -- click/motion handling required - so the icon area stays part of
         -- the same clickable row instead of a competing hit-test target.
+        -- Also required to be within scrollFrame's own bounds (see
+        -- Util.IsMouseOverVisible) - a row scrolled out of the visible list
+        -- still occupies its original on-screen rect as far as IsMouseOver
+        -- is concerned, since ScrollFrame only clips rendering.
         row:SetScript("OnUpdate", function(self)
-            if (self.entry and self.icon:IsMouseOver()) then
+            if (self.entry and Util.IsMouseOverVisible(self.icon, scrollFrame)) then
                 GameTooltip:SetOwner(self.icon, "ANCHOR_RIGHT");
                 GameTooltip:SetHyperlink(self.entry.itemLink);
                 GameTooltip:Show();

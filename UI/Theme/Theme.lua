@@ -124,9 +124,15 @@ function Theme.CreateScrollFrame(parent)
     return activeSkin().CreateScrollFrame(parent);
 end
 
---- Skin a button created by Theme.CreateButton.
-Theme.SkinButton = deferUntilReady(function(button)
-    activeSkin().SkinButton(button, "normal");
+--- Skin a button created by Theme.CreateButton. `color`, if given, is a
+--- { r, g, b } table applied instead of the skin's normal button look (each
+--- skin decides how - e.g. a fully-colored backdrop vs. a translucent tint
+--- over native art) - used for the loot council response buttons, one color
+--- per response option. Safe to call again later with a different color to
+--- recolor an already-skinned button (e.g. toggling a response button
+--- between its assigned color and a shared "unselected" grey).
+Theme.SkinButton = deferUntilReady(function(button, color)
+    activeSkin().SkinButton(button, color or "normal");
 end);
 
 --- Skin a button with the accent fill, for one that should stand out from the

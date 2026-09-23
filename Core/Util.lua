@@ -250,6 +250,21 @@ function Util.isValidItemLink(itemLink)
     return type(itemLink) == "string" and string.match(itemLink, "item:%d+") ~= nil;
 end
 
+-- IsMouseOver on a region only tests the cursor against that region's own
+-- rect - it has no idea the region sits inside a ScrollFrame, so a pooled
+-- row icon scrolled up past the top (or down past the bottom) of the visible
+-- list still reports "mouse over" if the cursor happens to be wherever that
+-- icon would have been on screen, even well outside the scroll frame (or the
+-- window entirely). Blizzard's ScrollFrame only clips rendering, not mouse
+-- hit-testing. Used by every scrollable icon list's tooltip poll (TradeQueue,
+-- LootCouncilAddItems, LootCouncilResponse) instead of a bare
+-- icon:IsMouseOver() - also requiring the cursor to be within the
+-- scrollFrame's own (unscrolled, always-visible-viewport) bounds confines the
+-- tooltip to icons actually on screen.
+function Util.IsMouseOverVisible(region, scrollFrame)
+    return region:IsMouseOver() and scrollFrame:IsMouseOver();
+end
+
 -- Shared shift/ctrl-click behavior for every item-icon button in the addon
 -- (RollWindow, TradeQueueWindow, SoftResImport): shift-click inserts the
 -- item's chat link into the open chat edit box, ctrl-click opens the

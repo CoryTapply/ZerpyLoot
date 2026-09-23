@@ -52,6 +52,7 @@ UI\GroupLootRollBars.lua
 UI\SoftResImport.lua
 UI\TradeQueueWindow.lua
 UI\LootCouncilAddItemsWindow.lua
+UI\LootCouncilResponseWindow.lua
 
 # Debug / slash commands
 Debug.lua

@@ -97,6 +97,26 @@ function Settings.SetTradeQueueWindowHeight(height)
     FL.DB.settings.tradeQueueWindowHeight = height;
 end
 
+-- Loot council "Add Items" window height (in UI units), set by dragging its
+-- bottom edge - re-used as that window's height the next time it's created.
+function Settings.GetLootCouncilAddItemsWindowHeight()
+    return FL.DB and FL.DB.settings and FL.DB.settings.lootCouncilAddItemsWindowHeight;
+end
+
+function Settings.SetLootCouncilAddItemsWindowHeight(height)
+    FL.DB.settings.lootCouncilAddItemsWindowHeight = height;
+end
+
+-- Loot council "Respond" window height (in UI units), set by dragging its
+-- bottom edge - re-used as that window's height the next time it's created.
+function Settings.GetLootCouncilResponseWindowHeight()
+    return FL.DB and FL.DB.settings and FL.DB.settings.lootCouncilResponseWindowHeight;
+end
+
+function Settings.SetLootCouncilResponseWindowHeight(height)
+    FL.DB.settings.lootCouncilResponseWindowHeight = height;
+end
+
 -- Window positions (x/y, the same CENTER-relative convention
 -- Theme.CreateWindow's own x/y parameters use), set by dragging - re-used as
 -- that window's position the next time it's created. Keyed by a short

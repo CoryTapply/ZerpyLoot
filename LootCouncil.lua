@@ -6,10 +6,11 @@ then flows into the existing trade queue (Trade.lua) exactly like a roll-off
 award does, and is recorded to a persistent history log.
 
 This file currently implements Phase 1 (building the local, unbroadcast item
-list - see UI/LootCouncilAddItemsWindow.lua) and Phase 2 (broadcasting that
-list to the raid over a dedicated comm channel, populating CurrentSession on
-every client). Responses, voting, and awarding are added in later phases; see
-the plan this was built from for the full design.
+list - see UI/LootCouncilAddItemsWindow.lua), Phase 2 (broadcasting that list
+to the raid over a dedicated comm channel, populating CurrentSession on every
+client), and Phase 3 (collecting each raider's response - see
+UI/LootCouncilResponseWindow.lua). Voting and awarding are added in later
+phases; see the plan this was built from for the full design.
 ]]
 
 local FL = ForeverLoot;
@@ -42,6 +43,44 @@ local LC_PREFIX = "ForeverLootLC";
 LootCouncil.CommActions = {}; -- action name (string) -> handler(Message)
 LootCouncil.debugEnabled = false;
 
+--------------------------------------------------------------------------
+-- Late item-info arrival - deferred from Phase 2 (see applySessionStart's
+-- comment below). Generalized to loop over Session.items (an array, not a
+-- single tracked item like RollTracker.lua's rollOff) since duplicate
+-- itemIDs across different session items are allowed by design (Phase 1's
+-- "duplicates allowed on purpose" delta).
+--------------------------------------------------------------------------
+
+local function refreshSessionItemData(itemID)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session) then return; end
+
+    local changed = false;
+    for _, item in ipairs(Session.items) do
+        if (item.itemID == itemID and not item.itemIcon) then
+            local itemName, _, itemQuality, _, _, _, _, _, _, itemIcon = Util.GetItemInfo(item.itemLink);
+            if (itemIcon) then
+                item.itemIcon = itemIcon;
+                item.itemName = item.itemName or itemName;
+                item.itemQuality = item.itemQuality or itemQuality;
+                changed = true;
+            end
+        end
+    end
+
+    if (changed and FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
+        FL.UI.LootCouncilResponseWindow.Refresh();
+    end
+end
+
+local function ensureItemInfoFrame()
+    local itemInfoFrame = CreateFrame("Frame");
+    itemInfoFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED");
+    itemInfoFrame:SetScript("OnEvent", function(_, _, itemID, success)
+        if (success) then refreshSessionItemData(itemID); end
+    end);
+end
+
 function LootCouncil.Init()
     FL.DB.lootCouncil = FL.DB.lootCouncil or {
         roster = {},
@@ -64,6 +103,8 @@ function LootCouncil.Init()
     LibDeflate = LibStub("LibDeflate");
     LibSerialize = LibStub("LibSerialize");
     AceComm:RegisterComm(LC_PREFIX, onLCMessage);
+
+    ensureItemInfoFrame();
 end
 
 --------------------------------------------------------------------------
@@ -330,6 +371,7 @@ local function applySessionStart(Message)
             awardedTo = nil,
             awardedAt = nil,
             candidates = {},
+            sendFailed = false,
         };
     end
 
@@ -345,6 +387,10 @@ local function applySessionStart(Message)
     LootCouncil.CurrentSession = FL.DB.lootCouncil.session;
 
     lcDebugPrint(("Loot council session %d started by %s (%d items)"):format(content.sessionId, Message.senderFqn or "?", #items));
+
+    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.MaybeAutoShow) then
+        FL.UI.LootCouncilResponseWindow.MaybeAutoShow();
+    end
 end
 LootCouncil.CommActions.sessionStart = applySessionStart;
 
@@ -367,3 +413,104 @@ function LootCouncil.SendToRaid()
 
     return true;
 end
+
+--------------------------------------------------------------------------
+-- Responses (Phase 3)
+--------------------------------------------------------------------------
+
+--- Sends this client's response for one item in the current session.
+--- Applies the response to CurrentSession locally FIRST (optimistic update -
+--- same shape applyResponse below builds, respondedAt/approvals preserved
+--- the same way), so the response window can reorder the item immediately
+--- instead of waiting on the round trip through the server and back (the
+--- self-looped broadcast that used to be the only thing that mutated local
+--- state here). applyResponse still reconciles this entry - and clears
+--- sendFailed - when that echo actually arrives.
+--- If the send itself errors, the optimistic entry is rolled back to
+--- whatever candidate entry existed before (nil for a first-time response)
+--- and item.sendFailed is set so UI/LootCouncilResponseWindow.lua can show
+--- "Failed to send" and sort the item to the bottom of the pending list
+--- instead of leaving it looking answered.
+---@param itemSession number
+---@param responseId string one of Constants.LOOT_COUNCIL_RESPONSES ids
+---@param note string|nil
+function LootCouncil.SubmitResponse(itemSession, responseId, note)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.status ~= "active") then return; end
+    local item = Session.items[itemSession];
+    if (not item) then return; end
+    if (not FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[responseId]) then return; end
+
+    local myName = Util.stripRealm(UnitName("player"));
+    local _, classFile = UnitClass("player");
+
+    local previous = item.candidates[myName];
+    item.candidates[myName] = {
+        class = classFile,
+        response = responseId,
+        note = note or "",
+        respondedAt = (previous and previous.respondedAt) or GetServerTime(),
+        approvals = (previous and previous.approvals) or {},
+    };
+    item.sendFailed = false;
+
+    local ok = pcall(lcSend, "response", {
+        sessionId = Session.id,
+        itemSession = itemSession,
+        response = responseId,
+        note = note or "",
+        class = classFile,
+    }, "GROUP");
+
+    if (not ok) then
+        item.candidates[myName] = previous;
+        item.sendFailed = true;
+    end
+
+    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
+        FL.UI.LootCouncilResponseWindow.Refresh();
+    end
+end
+
+-- Applied locally by every client (sender included, via the self-looped
+-- broadcast) when a response message is processed. respondedAt and approvals
+-- are preserved from any existing entry on an update, not reset - this is
+-- what keeps a raider's position in the "Responded" section fixed once
+-- crossed (see UI/LootCouncilResponseWindow.lua), and keeps any council
+-- votes already cast (Phase 5) from being wiped out by a later response edit.
+local function applyResponse(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or not content.sessionId or not content.itemSession
+        or not content.response) then
+        return;
+    end
+
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.id ~= content.sessionId) then return; end -- stale/foreign session
+
+    local item = Session.items[content.itemSession];
+    if (not item) then return; end
+
+    local existing = item.candidates[Message.senderName];
+    item.candidates[Message.senderName] = {
+        class = content.class,
+        response = content.response,
+        note = content.note or "",
+        respondedAt = (existing and existing.respondedAt) or GetServerTime(),
+        approvals = (existing and existing.approvals) or {},
+    };
+
+    -- Authoritative confirmation that SubmitResponse's optimistic send above
+    -- actually made it out and back - clears any stale failure marker even
+    -- if a later retry's own pcall result got missed for some reason.
+    if (Message.isSelf) then
+        item.sendFailed = false;
+    end
+
+    lcDebugPrint(("%s responded %s to item %d"):format(Message.senderName, tostring(content.response), content.itemSession));
+
+    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
+        FL.UI.LootCouncilResponseWindow.Refresh();
+    end
+end
+LootCouncil.CommActions.response = applyResponse;

@@ -16,7 +16,8 @@ local FALLBACK_ICON = LootCouncil.FALLBACK_ICON;
 local ROW_BUTTON_SIZE = 20;
 
 local WINDOW_WIDTH = 300;
-local WINDOW_HEIGHT = 400;
+local DEFAULT_HEIGHT = 400;
+local MAX_HEIGHT = 700;
 
 -- Key this window's saved position is stored under (see Settings.GetWindowPosition/SetWindowPosition).
 local POSITION_KEY = "lootCouncilAddItemsWindow";
@@ -32,7 +33,8 @@ local function ensureFrame()
     if (frame) then return; end
 
     local savedPosition = FL.Settings.GetWindowPosition(POSITION_KEY);
-    frame = FL.Theme.CreateWindow("ForeverLootLootCouncilAddItemsWindow", WINDOW_WIDTH, WINDOW_HEIGHT,
+    frame = FL.Theme.CreateWindow("ForeverLootLootCouncilAddItemsWindow", WINDOW_WIDTH,
+        FL.Settings.GetLootCouncilAddItemsWindowHeight() or DEFAULT_HEIGHT,
         savedPosition and savedPosition.x or 0, savedPosition and savedPosition.y or 0,
         function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     frame:Hide();
@@ -128,6 +130,12 @@ local function ensureFrame()
     scrollFrame:SetPoint("BOTTOMRIGHT", -30, 40);
     FL.Theme.SkinScrollBar(scrollFrame);
 
+    -- Shrinking to minimum should leave exactly one row visible, not the
+    -- whole list - measured off the frame/scroll frame's own current heights
+    -- (same trick TradeQueueWindow.lua uses) so it can't drift out of sync
+    -- with the layout above.
+    local minHeight = frame:GetHeight() - scrollFrame:GetHeight() + ROW_HEIGHT;
+
     scrollChild = CreateFrame("Frame", nil, scrollFrame);
     scrollChild:SetSize(scrollFrame:GetWidth(), MAX_ROWS * ROW_HEIGHT);
     scrollFrame:SetScrollChild(scrollChild);
@@ -149,6 +157,21 @@ local function ensureFrame()
         row.iconBorder = CreateFrame("Frame", nil, row, "BackdropTemplate");
         FL.Theme.SkinIconBorder(row.iconBorder, row.icon);
 
+        -- Shift-click to chat-link the item, ctrl-click to dress it up
+        -- (shared with RollWindow's/TradeQueueWindow's/SoftResImport's icons
+        -- via Util). A separate Button laid exactly over the icon texture
+        -- (which itself can't receive clicks) rather than making `row`
+        -- itself a Button - row has no click behavior of its own here, so
+        -- there's nothing for this to steal focus from.
+        row.iconButton = CreateFrame("Button", nil, row);
+        row.iconButton:SetAllPoints(row.icon);
+        row.iconButton:RegisterForClicks("LeftButtonUp");
+        row.iconButton:SetScript("OnClick", function(self)
+            local parentRow = self:GetParent();
+            if (not parentRow.entry) then return; end
+            Util.HandleItemLinkClick(parentRow.entry.itemLink);
+        end);
+
         -- Same delete/trash button as the trade queue window, everywhere.
         row.removeButton = FL.Theme.CreateDeleteButton(row, ROW_BUTTON_SIZE);
         row.removeButton:SetPoint("RIGHT", -2, 0);
@@ -165,8 +188,12 @@ local function ensureFrame()
         row.itemText:SetJustifyH("LEFT");
         row.itemText:SetWordWrap(false);
 
+        -- Also required to be within scrollFrame's own bounds (see
+        -- Util.IsMouseOverVisible) - a row scrolled out of the visible list
+        -- still occupies its original on-screen rect as far as IsMouseOver
+        -- is concerned, since ScrollFrame only clips rendering.
         row:SetScript("OnUpdate", function(self)
-            if (self.entry and self.icon:IsMouseOver()) then
+            if (self.entry and Util.IsMouseOverVisible(self.icon, scrollFrame)) then
                 GameTooltip:SetOwner(self.icon, "ANCHOR_RIGHT");
                 GameTooltip:SetHyperlink(self.entry.itemLink);
                 GameTooltip:Show();
@@ -194,6 +221,10 @@ local function ensureFrame()
     statusText:SetPoint("RIGHT", frame, "RIGHT", -12, 0);
     statusText:SetJustifyH("LEFT");
     statusText:SetWordWrap(false);
+
+    FL.Theme.MakeBottomResizable(frame, WINDOW_WIDTH, minHeight, MAX_HEIGHT, function(height)
+        FL.Settings.SetLootCouncilAddItemsWindowHeight(height);
+    end);
 end
 
 function AddItemsWindow.Refresh()

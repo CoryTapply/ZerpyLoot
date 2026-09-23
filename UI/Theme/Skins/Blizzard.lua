@@ -313,12 +313,268 @@ end
 -- Buttons
 -- ---------------------------------------------------------------------------
 
+-- Custom recolored replacement for the stock "128-RedButton" atlas art
+-- (Media/Buttons/128RedButton.tga) - same 512x2048 layout as the game's own
+-- underlying file (FileDataID 1536801/7367529, confirmed against the live
+-- UiTextureAtlas/UiTextureAtlasMember DB2 data, since this addon has no
+-- registered atlas of its own to draw on and there's no supported way to
+-- register a brand new named atlas from an addon). ThreeSliceButtonMixin
+-- only ever addresses this art by ATLAS NAME ("128-redbutton-left" etc,
+-- resolved against the client's compiled atlas table), so instead this
+-- overrides the Left/Right/Center regions' texture + tex-coords directly,
+-- by hand, using the exact same pixel rectangles the real atlas entries use
+-- (so the custom art lines up exactly where the stock art did) - reapplied
+-- every time ThreeSliceButtonMixin:UpdateButton re-runs SetAtlas on those
+-- regions, via the same OnMouseDown/OnMouseUp/OnEnable/OnDisable/OnShow
+-- hooks already used for the color tint below (HookScript chains onto
+-- whatever UpdateButton() is already wired to those events).
+local CUSTOM_BUTTON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Buttons\\128RedButton.tga";
+local CUSTOM_BUTTON_CANVAS_WIDTH, CUSTOM_BUTTON_CANVAS_HEIGHT = 512, 2048;
+
+-- { left, right, top, bottom } pixel rects, copied verbatim from the live
+-- UiTextureAtlasMember DB2 rows for 128-redbutton-left/-right/
+-- _128-redbutton-center (and their -pressed/-disabled variants) and
+-- 128-redbutton-highlight - same canvas, same rectangles, just read out of
+-- our own file instead of the client's.
+--
+-- Left.PUSHED is the one exception: the DB2 row places it at
+-- { 391, 505, 1171, 1299 }, but in this custom file that spot is blank -
+-- the actual left-pressed art was drawn at { 378, 492, 1042, 1170 } instead
+-- (confirmed visually, not from DB2 - this custom file's own layout, not
+-- Blizzard's). Left.DISABLED's canonical DB2 slot overlaps this same art
+-- almost entirely (391-505,1041-1169 vs 378-492,1042-1170), so the
+-- "disabled" look may turn out to be this same pressed art rather than a
+-- distinct grey-out - not yet confirmed, only PUSHED has been fixed here.
+local CUSTOM_BUTTON_RECTS = {
+    Left = {
+        NORMAL   = { 391, 505, 911, 1039 },
+        PUSHED   = { 378, 491, 1041, 1169 },
+        DISABLED = { 262, 376, 1041, 1169 },
+    },
+    Right = {
+        NORMAL   = { 0, 293, 521, 649 },
+        PUSHED   = { 0, 293, 781, 909 },
+        DISABLED = { 0, 293, 651, 779 },
+    },
+    Center = {
+        NORMAL   = { 0, 64, 1, 129 },
+        PUSHED   = { 0, 64, 261, 389 },
+        DISABLED = { 0, 64, 131, 259 },
+    },
+};
+local CUSTOM_BUTTON_HIGHLIGHT_RECT = { 1, 442, 391, 519 };
+
+-- Every rect above is 128px tall, and the carved-stone border trim reads as
+-- a uniform ~20px band on whichever edge is an outer edge of the button (top
+-- and bottom on all three pieces; additionally the left edge of Left and the
+-- right edge of Right - their other edge butts against Center, where there's
+-- no border) - confirmed by sampling 128RedButton.tga directly (a flat black
+-- seam separates the border trim from the face bevel at ~20px in from each
+-- such edge, consistently). CUSTOM_BUTTON_FACE_RECTS below insets each rect
+-- by that amount on its border edges only, giving a "face only" crop used to
+-- tint just the interior (see applyCustomButtonFillArt) while
+-- Left/Right/Center keep showing this same art un-desaturated, so the trim
+-- reads as a constant neutral stone frame regardless of tint color.
+local BORDER_TRIM_PX = 20;
+
+local function insetRect(rect, left, right, top, bottom)
+    return { rect[1] + left, rect[2] - right, rect[3] + top, rect[4] - bottom };
+end
+
+local CUSTOM_BUTTON_FACE_RECTS = { Left = {}, Right = {}, Center = {} };
+for state, rect in pairs(CUSTOM_BUTTON_RECTS.Left) do
+    CUSTOM_BUTTON_FACE_RECTS.Left[state] = insetRect(rect, BORDER_TRIM_PX, 0, BORDER_TRIM_PX, BORDER_TRIM_PX);
+end
+for state, rect in pairs(CUSTOM_BUTTON_RECTS.Right) do
+    CUSTOM_BUTTON_FACE_RECTS.Right[state] = insetRect(rect, 0, BORDER_TRIM_PX, BORDER_TRIM_PX, BORDER_TRIM_PX);
+end
+for state, rect in pairs(CUSTOM_BUTTON_RECTS.Center) do
+    CUSTOM_BUTTON_FACE_RECTS.Center[state] = insetRect(rect, 0, 0, BORDER_TRIM_PX, BORDER_TRIM_PX);
+end
+
+local function setCustomRegionTexture(region, rect)
+    if (not region or not rect) then return; end
+    region:SetTexture(CUSTOM_BUTTON_TEXTURE);
+    region:SetTexCoord(
+        rect[1] / CUSTOM_BUTTON_CANVAS_WIDTH, rect[2] / CUSTOM_BUTTON_CANVAS_WIDTH,
+        rect[3] / CUSTOM_BUTTON_CANVAS_HEIGHT, rect[4] / CUSTOM_BUTTON_CANVAS_HEIGHT
+    );
+end
+
+-- Mirrors ThreeSliceButtonMixin:UpdateButton's own state resolution
+-- (ThreeSliceButtonTemplate.lua) so the piece picked here always matches
+-- what Blizzard's own code just set via SetAtlas, right before this
+-- overrides it: `buttonState = buttonState or self:GetButtonState()`, then
+-- forced to DISABLED regardless if the button isn't enabled. `explicitState`
+-- mirrors the parameter that call takes - callers matching Blizzard's own
+-- OnMouseDown/OnMouseUp scripts (which pass "PUSHED"/"NORMAL" directly
+-- rather than reading GetButtonState()) MUST pass it too: GetButtonState()
+-- is not guaranteed to already read "PUSHED" the instant OnMouseDown's
+-- HookScript handler runs (nor "NORMAL" the instant OnMouseUp's does) - that
+-- mismatch was showing up as the pressed art flashing in a frame late (after
+-- mouseup instead of during mousedown) and, since our two art layers
+-- (border via applyCustomButtonArt, face via applyCustomButtonFillArt) could
+-- each land on a different stale read, an occasional mismatched Left crop.
+-- Shared by applyCustomButtonArt and applyCustomButtonFillArt, since both
+-- need to pick the same NORMAL/PUSHED/DISABLED rect.
+local function resolveButtonArtState(button, explicitState)
+    local buttonState = explicitState or button:GetButtonState();
+    if (not button:IsEnabled()) then buttonState = "DISABLED"; end
+    return buttonState;
+end
+
+local function applyCustomButtonArt(button, explicitState)
+    if (not button.Left or not button.Right or not button.Center) then
+        return; -- not a ThreeSliceButtonTemplate (classic UIPanelButtonTemplate fallback)
+    end
+
+    local buttonState = resolveButtonArtState(button, explicitState);
+    setCustomRegionTexture(button.Left, CUSTOM_BUTTON_RECTS.Left[buttonState] or CUSTOM_BUTTON_RECTS.Left.NORMAL);
+    setCustomRegionTexture(button.Right, CUSTOM_BUTTON_RECTS.Right[buttonState] or CUSTOM_BUTTON_RECTS.Right.NORMAL);
+    setCustomRegionTexture(button.Center, CUSTOM_BUTTON_RECTS.Center[buttonState] or CUSTOM_BUTTON_RECTS.Center.NORMAL);
+end
+
+-- The inset "face only" counterpart to applyCustomButtonArt above - lays a
+-- second, smaller copy of the same art over just the interior of each piece
+-- (see CUSTOM_BUTTON_FACE_RECTS), on separate texture regions
+-- (button.zlFillLeft/Center/Right, created by ensureButtonFillTextures) so
+-- it can be desaturated/tinted independently of the border trim underneath.
+local function applyCustomButtonFillArt(button, explicitState)
+    local buttonState = resolveButtonArtState(button, explicitState);
+    setCustomRegionTexture(button.zlFillLeft, CUSTOM_BUTTON_FACE_RECTS.Left[buttonState] or CUSTOM_BUTTON_FACE_RECTS.Left.NORMAL);
+    setCustomRegionTexture(button.zlFillRight, CUSTOM_BUTTON_FACE_RECTS.Right[buttonState] or CUSTOM_BUTTON_FACE_RECTS.Right.NORMAL);
+    setCustomRegionTexture(button.zlFillCenter, CUSTOM_BUTTON_FACE_RECTS.Center[buttonState] or CUSTOM_BUTTON_FACE_RECTS.Center.NORMAL);
+end
+
+-- Native height, in the source art's pixels, of every rect above (confirmed
+-- against the live DB2 rows the same way CUSTOM_BUTTON_RECTS was) - lets
+-- BORDER_TRIM_PX convert to an on-screen inset via the button's actual
+-- current height, whatever size this particular button template uses
+-- (SharedButtonSmallTemplate is 28px tall, others differ - see
+-- ThreeSliceButtonTemplate.xml).
+local BUTTON_PIECE_NATIVE_HEIGHT = 128;
+
+-- Lazily creates the inset "face" overlays the first time a button is
+-- tinted, and anchors them inset from their corresponding Left/Center/Right
+-- piece by the border trim's on-screen thickness. Left only insets its outer
+-- (left) edge, Right only its outer (right) edge - neither insets the edge
+-- that butts against Center, since there's no border there to exclude - and
+-- Center insets neither side edge, only top/bottom (see CUSTOM_BUTTON_FACE_RECTS).
+-- Anchored once: none of this addon's buttons resize after creation, and the
+-- anchors track Left/Center/Right's own rendered edges (including
+-- ThreeSliceButtonMixin:UpdateScale's width-clipping), so they stay correct
+-- even though this only runs once.
+local function ensureButtonFillTextures(button)
+    if (button.zlFillLeft) then return; end
+    if (not button.Left or not button.Right or not button.Center) then return; end
+
+    local insetPx = BORDER_TRIM_PX * (button:GetHeight() / BUTTON_PIECE_NATIVE_HEIGHT);
+
+    local fillLeft = button:CreateTexture(nil, "ARTWORK");
+    fillLeft:SetPoint("TOPLEFT", button.Left, "TOPLEFT", insetPx, -insetPx);
+    fillLeft:SetPoint("BOTTOMRIGHT", button.Left, "BOTTOMRIGHT", 0, insetPx);
+
+    local fillCenter = button:CreateTexture(nil, "ARTWORK");
+    fillCenter:SetPoint("TOPLEFT", button.Center, "TOPLEFT", 0, -insetPx);
+    fillCenter:SetPoint("BOTTOMRIGHT", button.Center, "BOTTOMRIGHT", 0, insetPx);
+
+    local fillRight = button:CreateTexture(nil, "ARTWORK");
+    fillRight:SetPoint("TOPLEFT", button.Right, "TOPLEFT", 0, -insetPx);
+    fillRight:SetPoint("BOTTOMRIGHT", button.Right, "BOTTOMRIGHT", -insetPx, insetPx);
+
+    button.zlFillLeft, button.zlFillCenter, button.zlFillRight = fillLeft, fillCenter, fillRight;
+end
+
+-- Set once (per button, the first time it's tinted, tracked via
+-- zlCustomHighlightApplied below) - unlike Left/Right/Center, the highlight
+-- texture isn't re-applied per interaction state, just shown/hidden by the
+-- Button widget's own built-in highlight mechanism. Untinted buttons never
+-- call this, so they keep the template's stock highlight art.
+local function applyCustomButtonHighlight(button)
+    local highlightTexture = button.GetHighlightTexture and button:GetHighlightTexture();
+    setCustomRegionTexture(highlightTexture, CUSTOM_BUTTON_HIGHLIGHT_RECT);
+end
+
 --- The current retail SharedButtonSmallTemplate, falling back to the classic
---- template on clients without it.
+--- template on clients without it. Left with the template's own stock
+--- "128-RedButton" art untouched - the custom recolorable texture (see
+--- CUSTOM_BUTTON_TEXTURE above) is only swapped in for buttons that end up
+--- tinted, via SkinButton/applyButtonTint below, so an untinted button still
+--- reads as the standard Blizzard red.
 function Skin.CreateButton(parent)
     local ok, button = pcall(CreateFrame, "Button", nil, parent, "SharedButtonSmallTemplate");
-    if (ok and button) then return button; end
+    if (ok and button) then
+        return button;
+    end
     return CreateFrame("Button", nil, parent, "UIPanelButtonTemplate");
+end
+
+-- A translucent color rectangle laid over the button's native art read as a
+-- flat, muddy block (the art's own colors and the wash multiplying together
+-- under it), so this tints the actual face textures instead: desaturate them
+-- first, then apply a clean vertex-color tint - the same trick
+-- Theme.MakeBottomResizable's tintChrome uses for the window border's resize
+-- highlight (see chromeFrame:SetResizeHighlight above), just applied
+-- directly to the button's own textures rather than a duplicate.
+--
+-- SharedButtonSmallTemplate is a ThreeSliceButtonTemplate under the hood
+-- (Blizzard_SharedXML/Shared/Button/ThreeSliceButtonTemplate.xml/.lua,
+-- confirmed against the client source) - its face art is three regions
+-- parentKey'd "Left"/"Right"/"Center" (NOT "Middle", the older
+-- UIPanelButtonTemplate's naming this originally - and wrongly - reused).
+-- Those regions themselves are left un-desaturated always (see
+-- applyCustomButtonArt) so their border trim reads as a constant neutral
+-- stone frame - only the inset "face" overlays over them
+-- (zlFillLeft/Center/Right, see ensureButtonFillTextures/
+-- applyCustomButtonFillArt) get tinted here. The UIPanelButtonTemplate
+-- fallback (older clients without SharedButtonSmallTemplate) has no such
+-- split; its GetNormalTexture()/GetPushedTexture() slots are tinted
+-- directly, uncropped, as before.
+local BUTTON_FILL_KEYS = { "zlFillLeft", "zlFillRight", "zlFillCenter" };
+
+local function forEachButtonFaceTexture(button, fn)
+    if (button.GetNormalTexture) then fn(button:GetNormalTexture()); end
+    if (button.GetPushedTexture) then fn(button:GetPushedTexture()); end
+    for _, key in ipairs(BUTTON_FILL_KEYS) do
+        fn(button[key]);
+    end
+end
+
+-- The native art (SharedButtonSmallTemplate's "128-RedButton" atlas) is a
+-- fairly dark red/maroon stone texture - desaturating it produces a fairly
+-- dark grey, and multiplying a fully-saturated response color onto that
+-- comes out dark and muddy. Mixing the tint color toward white first (same
+-- helper Theme.MakeBottomResizable's tintChrome uses for the window
+-- border's resize highlight) keeps the result light enough to read clearly
+-- against the dark base art while still clearly carrying that hue.
+local BUTTON_TINT_STRENGTH = 1;
+
+local function applyButtonTint(button, explicitState)
+    local color = button.zlTintColor;
+
+    -- Only a tinted button swaps in the custom recolorable art - an
+    -- untinted one keeps the stock "128-RedButton" look Skin.CreateButton
+    -- left it with, native atlas and all.
+    if (color) then
+        applyCustomButtonArt(button, explicitState);
+        ensureButtonFillTextures(button);
+        applyCustomButtonFillArt(button, explicitState);
+        if (not button.zlCustomHighlightApplied) then
+            applyCustomButtonHighlight(button);
+            button.zlCustomHighlightApplied = true;
+        end
+    end
+
+    forEachButtonFaceTexture(button, function(tex)
+        if (not tex or not tex.SetDesaturated) then return; end
+        if (color) then
+            tex:SetDesaturated(true);
+            tex:SetVertexColor(Helpers.MixWithWhite(color, BUTTON_TINT_STRENGTH));
+        else
+            tex:SetDesaturated(false);
+            tex:SetVertexColor(1, 1, 1);
+        end
+    end);
 end
 
 --- Keeps the template's own artwork exactly as shipped and only swaps in this
@@ -326,14 +582,53 @@ end
 --- normal / white highlight / grey disabled, same as Blizzard's own
 --- GameFontNormal/Highlight/Disable button labels. The stock close button art
 --- is left completely untouched.
+---
+--- `variant` may also be a custom { r, g, b } color table (e.g. one loot
+--- council response option's color) - applied as a desaturate + vertex-color
+--- tint over the native face art (see applyButtonTint above) rather than the
+--- Default skin's full flat-backdrop recolor, since there's no flat backdrop
+--- here to replace. Font setup only ever needs to run once (tracked
+--- separately via zlFontSkinned) so the tint itself can still be freely
+--- reapplied/changed afterwards, e.g. to grey out an unselected loot council
+--- response button. Re-applied on every interaction-state change too, in
+--- case the template's own scripts repaint the face art the way
+--- UIPanelButtonTemplate's do (see the Default skin's hideAllTextures for
+--- that exact, confirmed failure mode on a different template).
 function Skin.SkinButton(button, variant)
-    if (button.zlSkinned) then return; end
-
-    if (variant ~= "close") then
+    if (variant ~= "close" and not button.zlFontSkinned) then
         button:SetNormalFontObject(Theme.fonts.normal);
         button:SetHighlightFontObject(Theme.fonts.highlight);
         button:SetDisabledFontObject(Theme.fonts.buttonDisabled);
+        button.zlFontSkinned = true;
     end
+
+    button.zlTintColor = (type(variant) == "table") and variant or nil;
+    applyButtonTint(button);
+
+    if (not button.zlTintHooked) then
+        -- OnMouseDown/OnMouseUp get their state passed explicitly, matching
+        -- ThreeSliceButtonMixin:OnMouseDown/OnMouseUp (which call
+        -- UpdateButton("PUSHED")/UpdateButton("NORMAL") directly rather than
+        -- reading GetButtonState()) - see resolveButtonArtState above for
+        -- why that matters. OnEnable/OnDisable/OnShow have no explicit state
+        -- of their own to pass (Blizzard wires them straight to
+        -- UpdateButton with no argument too), so they fall through to
+        -- GetButtonState(), same as Blizzard's own resolution there.
+        local EVENT_STATES = { OnMouseDown = "PUSHED", OnMouseUp = "NORMAL" };
+        for _, script in ipairs({ "OnMouseDown", "OnMouseUp", "OnEnable", "OnDisable", "OnShow" }) do
+            local explicitState = EVENT_STATES[script];
+            -- Only re-applies the custom art (it re-sets the region's
+            -- SetTexture/SetTexCoord, which UpdateButton's own SetAtlas call
+            -- just overwrote) when the button is tinted - see
+            -- applyButtonTint above. An untinted button is left alone here,
+            -- so it keeps whatever stock atlas UpdateButton just set.
+            button:HookScript(script, function(self)
+                applyButtonTint(self, explicitState);
+            end);
+        end
+        button.zlTintHooked = true;
+    end
+
     button.zlSkinned = true;
 end
 

@@ -26,6 +26,7 @@ FL.UI.GroupLootRollBars = FL.UI.GroupLootRollBars or {};
 FL.UI.SoftResImport = FL.UI.SoftResImport or {};
 FL.UI.TradeQueueWindow = FL.UI.TradeQueueWindow or {};
 FL.UI.LootCouncilAddItemsWindow = FL.UI.LootCouncilAddItemsWindow or {};
+FL.UI.LootCouncilResponseWindow = FL.UI.LootCouncilResponseWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.Vendor = FL.Vendor or {};
 

@@ -51,7 +51,7 @@ User-confirmed design decisions (asked directly, not assumed):
 |---|---|---|
 | 1 Add items to the list | yes | commit `e50ae2b`; confirmed working in-game by the user |
 | 2 Broadcast to raid | yes | dedicated `"ForeverLootLC"` prefix, `Util.GroupDistribution` extracted, `SendToRaid`/`applySessionStart` implemented as designed, no deltas from plan |
-| 3 Raider response | no | |
+| 3 Raider response | yes | `UI/LootCouncilResponseWindow.lua` added, `SubmitResponse`/`applyResponse` implemented as designed, `GET_ITEM_INFO_RECEIVED` refresh listener added (deferred from Phase 2); one implementation-level addition not spelled out in the original design (see deltas below); pending in-game verification |
 | 4 Council review (read-only) | no | |
 | 5 Voting | no | |
 | 6 Award + trade queue + history | no | |
@@ -486,6 +486,86 @@ handler, pending/responded sort-and-separator behavior (§4b), and the
 click response, confirm it moves below the "Responded" separator and stays put even if the
 response selection is later changed; confirm other clients'
 `CurrentSession.items[1].candidates["Name"].response`/`.class` updates.
+
+Deltas from the original design, made during implementation:
+- **Pooled rows are indexed by `item.session`, not by sorted display position.**
+  `Session.items` is a dense, stable array for the session's whole lifetime, so
+  `rows[item.session]` gives each item a permanent widget identity; sorting only
+  determines each row's *Y-offset* on refresh. This wasn't spelled out in the original
+  mockup/design, but was necessary to avoid a real data-loss bug: assigning rows by
+  sorted position instead would reassign a row's widget (and thus its note `EditBox`) to a
+  *different* item the moment an earlier item in session order crosses into "Responded"
+  and reshuffles everyone after it - silently wiping any note another raider was
+  mid-typing in that row for an unrelated item.
+- `respondedAt` and `approvals` are explicitly preserved (not reset) on a response
+  update in `applyResponse` - `respondedAt` is what keeps a row pinned below the
+  "Responded" separator once it first crosses over; `approvals` is carried forward purely
+  so a future Phase 5 vote isn't erased by an unrelated response edit (nothing populates
+  `approvals` yet in Phase 3).
+
+Follow-up UI polish (requested after the initial Phase 3 landing, not in the original
+mockup):
+- **Both loot council windows are now vertically resizable** (`FL.Theme.MakeBottomResizable`,
+  same pattern as `TradeQueueWindow`/`RollWindow`), with the height persisted via new
+  `Settings.GetLootCouncilAddItemsWindowHeight`/`GetLootCouncilResponseWindowHeight` and
+  their setters.
+- **The response window's width is computed, not hardcoded** - `computeLayout()` in
+  `UI/LootCouncilResponseWindow.lua` measures each `Constants.LOOT_COUNCIL_RESPONSES`
+  label's rendered text width (via a throwaway probe button skinned/measured once in
+  `ensureFrame()`) and sizes the 5 response buttons - and so the window - to fit whatever
+  the option set's labels actually need, rather than a number hand-tuned for today's 5
+  options. Means a future options-panel phase that lets the response list grow/shrink
+  doesn't also require a matching manual width tweak here.
+- **Response buttons carry a per-response color** (`Constants.LOOT_COUNCIL_RESPONSES[i].color`,
+  a placeholder pick pending a future options-panel override) and switch to a shared grey
+  (`Constants.LOOT_COUNCIL_RESPONSE_UNSELECTED_COLOR`) for every option except the one
+  actually chosen, once an item has moved into "Responded". This needed a real fix to the
+  Theme skin layer, not just the window file: `Skin.SkinButton` in both `Default.lua` and
+  `Blizzard.lua` previously only applied a button's color the *first* time it was skinned
+  (an early-return on `button.zlSkinned` silently no-op'd any later re-skin call) - so
+  Phase 3's original selected-response highlighting (`SkinAccentButton` vs `SkinButton`)
+  never actually worked past the first render. Both skins now always re-apply color on a
+  later call; `Theme.SkinButton(button, color)` accepts a `{ r, g, b }` table for this.
+  - **Default skin:** applied as a fully opaque flat backdrop color - works well, no
+    further changes needed.
+  - **Blizzard skin:** a translucent color wash laid over the native art read as a flat,
+    muddy block, so this instead desaturates the button's actual face art - the `Left`/
+    `Right`/`Center` regions (confirmed via `wow-ui-source-live`'s
+    `ThreeSliceButtonTemplate.xml`/`.lua` - `SharedButtonSmallTemplate` is a
+    `ThreeSliceButtonTemplate` under the hood, and those are its real region names, not the
+    older `UIPanelButtonTemplate` naming `Middle` this originally - and wrongly - reused,
+    which is why the button's center wasn't tinting at first) - then applies a clean
+    vertex-color tint, the same "desaturate first" trick
+    `Theme.MakeBottomResizable`'s `tintChrome` uses for the window border's resize highlight.
+    The native art (the `128-RedButton` atlas) is fairly dark, so a fully-saturated tint
+    color multiplied onto it still read dark; the tint color is mixed toward white first
+    (`Helpers.MixWithWhite`, `BUTTON_TINT_STRENGTH = 0.6` in `Blizzard.lua`) to keep it
+    legible - the dial to reach for if it still reads too light or too dark. Re-applied on
+    every interaction-state change (`OnMouseDown`/`OnMouseUp`/`OnEnable`/`OnDisable`/
+    `OnShow`) in case the template's own scripts repaint the face art the way
+    `UIPanelButtonTemplate`'s do (the Default skin's `hideAllTextures` hit this exact issue).
+  - **The base art itself is now a custom file** (`Media/Buttons/128RedButton.tga`, a
+    recolored export of the stock `128-RedButton` atlas), not stock Blizzard art with a
+    runtime tint layered over it - the tint above still applies on top, unchanged. Since an
+    addon can't register a new named atlas, `Skin.CreateButton`/`Skin.SkinButton` override
+    the button's `Left`/`Right`/`Center` (and `Highlight`) regions' texture + tex-coords by
+    hand instead of relying on `SetAtlas`, using pixel rectangles read out of the live
+    `UiTextureAtlasMember` DB2 table (via wago.tools, since neither `wow-ui-source-live` nor
+    the `Gethe/wow-ui-textures` mirror publish atlas slicing coordinates - only the compiled
+    client data has them) for `128-redbutton-left`/`-right`/`_128-redbutton-center` (each
+    ×normal/pressed/disabled) and `128-redbutton-highlight` - confirmed the custom file's
+    512x2048 canvas matches the real atlas sheet's (`FileDataID` 1536801/7367529) exactly,
+    so the same rectangles line up. Re-applied via the same interaction-state hooks as the
+    tint, since `ThreeSliceButtonMixin:UpdateButton` re-runs `SetAtlas` (reverting to stock
+    art) on every one of those events.
+- **The "Sent" indicator does a small jump animation** (`AnimationGroup` of two
+  `Translation` animations) whenever a row's response is actually sent or re-sent - detected
+  by comparing a `response\30note` signature against the row's last-seen one, so it fires
+  once per genuine change and never replays on an unrelated refresh or a `/reload` restoring
+  already-existing data.
+- **The "Responded" section is a click-to-reveal divider**, collapsed every time the window
+  is (re)opened (`respondedExpanded`, reset in `.Show()`), labeled "Click to change
+  selections" instead of a static "Responded" separator.
 
 **Phase 4 — Council review (read-only)**
 `UI/LootCouncilReviewWindow.lua` (list + candidate table, vote/award controls disabled),

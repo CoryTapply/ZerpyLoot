@@ -163,8 +163,23 @@ end
 -- disabled textures plus the Left/Right/Middle pieces UIPanelButtonTemplate
 -- draws them from) and replaces it with a flat, solid-color backdrop that
 -- lightens on hover - the same recipe Cell uses for its own buttons.
+--
+-- Safe to call more than once on the same button with a different
+-- color/hoverColor: the one-time texture/hook setup below is skipped on a
+-- later call (button.zlSkinned already true), but the color itself is always
+-- (re)applied - callers rely on this to recolor an already-skinned button
+-- (e.g. the loot council response buttons toggling between their assigned
+-- color and a shared "unselected" grey). button.zlColor/zlHoverColor are
+-- read by the OnEnter/OnLeave hooks below at hover time, not captured once
+-- into the closure, so a later recolor also takes effect on hover.
 local function skinButtonBackdrop(button, color, hoverColor)
-    if (button.zlSkinned) then return; end
+    button.zlColor = color;
+    button.zlHoverColor = hoverColor;
+
+    if (button.zlSkinned) then
+        button:SetBackdropColor(unpack(color));
+        return;
+    end
 
     Helpers.EnsureBackdrop(button);
 
@@ -210,10 +225,10 @@ local function skinButtonBackdrop(button, color, hoverColor)
     Helpers.SetFlatBackdrop(button, color, Theme.colors.buttonBorder, 1);
 
     button:HookScript("OnEnter", function()
-        if (button:IsEnabled()) then button:SetBackdropColor(unpack(hoverColor)); end
+        if (button:IsEnabled()) then button:SetBackdropColor(unpack(button.zlHoverColor)); end
     end);
     button:HookScript("OnLeave", function()
-        button:SetBackdropColor(unpack(color));
+        button:SetBackdropColor(unpack(button.zlColor));
     end);
 
     -- With the pushed texture hidden above, the only remaining "pressed"
@@ -250,13 +265,32 @@ local function skinButtonBackdrop(button, color, hoverColor)
     button.zlSkinned = true;
 end
 
+-- Lightens a { r, g, b } color for a custom-colored button's hover state -
+-- there's no pre-defined hover color for an arbitrary color the way there is
+-- for the built-in "accent"/"close" ones.
+local HOVER_LIGHTEN_AMOUNT = 0.15;
+local function lightenColor(color)
+    return {
+        math.min((color[1] or 0) + HOVER_LIGHTEN_AMOUNT, 1),
+        math.min((color[2] or 0) + HOVER_LIGHTEN_AMOUNT, 1),
+        math.min((color[3] or 0) + HOVER_LIGHTEN_AMOUNT, 1),
+        color[4] or 1,
+    };
+end
+
 --- `variant` is "normal" (Cell's flat button), "accent" (solid accent fill,
---- e.g. "Start Roll") or "close" (Cell's reddish close button with its own
---- close.tga icon, copied into this addon's Media folder).
+--- e.g. "Start Roll"), "close" (Cell's reddish close button with its own
+--- close.tga icon, copied into this addon's Media folder), or a custom
+--- { r, g, b } color table (e.g. one loot council response option's color) -
+--- applied as a fully-opaque flat backdrop, same as "normal" but with this
+--- color instead of the default grey. Hover is this color lightened.
 function Skin.SkinButton(button, variant)
     local colors = Theme.colors;
 
-    if (variant == "accent") then
+    if (type(variant) == "table") then
+        local color = { variant[1], variant[2], variant[3], variant[4] or 1 };
+        skinButtonBackdrop(button, color, lightenColor(color));
+    elseif (variant == "accent") then
         skinButtonBackdrop(button, colors.accent, colors.accentHover);
     elseif (variant == "close") then
         skinButtonBackdrop(button, colors.close, colors.closeHover);
@@ -311,16 +345,43 @@ function Skin.SkinBorder(frame)
     Helpers.SetFlatBackdrop(frame, nil, Theme.colors.outline, 1);
 end
 
---- The thin flat outline pulled 1px outside the icon.
+--- The thin flat black outline pulled 1px outside the icon, plus a second
+--- outline (frame.zlRarityBorder) pulled another 1px further out for the
+--- item's rarity color (see SetIconBorderQuality) - hidden until a quality
+--- is actually set, so an icon with no known rarity just shows the single
+--- black outline as before.
 function Skin.SkinIconBorder(frame, icon)
     frame:ClearAllPoints();
     frame:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1);
     frame:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1);
     Theme.SkinBorder(frame);
+
+    if (not frame.zlRarityBorder) then
+        frame.zlRarityBorder = CreateFrame("Frame", nil, frame, "BackdropTemplate");
+    end
+    local rarityBorder = frame.zlRarityBorder;
+    rarityBorder:ClearAllPoints();
+    rarityBorder:SetPoint("TOPLEFT", frame, "TOPLEFT", -1, 1);
+    rarityBorder:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 1, -1);
+    Theme.SkinBorder(rarityBorder);
+    rarityBorder:Hide();
 end
 
---- The flat outline has no rarity art, so this is a no-op.
-function Skin.SetIconBorderQuality() end
+--- Shows/colors the rarity outline just outside the flat black one (see
+--- SkinIconBorder) with the item's rarity color, hiding it again when the
+--- quality is unknown so only the black outline remains.
+function Skin.SetIconBorderQuality(frame, quality)
+    local rarityBorder = frame.zlRarityBorder;
+    if (not rarityBorder) then return; end
+
+    if (quality) then
+        local r, g, b = FL.Util.GetItemQualityColor(quality);
+        rarityBorder:SetBackdropBorderColor(r, g, b);
+        rarityBorder:Show();
+    else
+        rarityBorder:Hide();
+    end
+end
 
 --- The thin flat outline pulled 1px outside the bar.
 function Skin.SkinBarBorder(frame, bar)

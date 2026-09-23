@@ -23,6 +23,7 @@ Theme.fonts = {
     normalLarge = "ForeverLootFontNormalLarge",
     normalSmall = "ForeverLootFontNormalSmall",
     highlight = "ForeverLootFontHighlight",
+    highlightLarge = "ForeverLootFontHighlightLarge",
     highlightMedium = "ForeverLootFontHighlightMedium",
     highlightSmall = "ForeverLootFontHighlightSmall",
     disableSmall = "ForeverLootFontDisableSmall",
@@ -69,6 +70,9 @@ DefineFont(Theme.fonts.normalMedium, 14, COLOR_GOLD);
 DefineFont(Theme.fonts.normalLarge, 16, COLOR_GOLD);
 DefineFont(Theme.fonts.normalSmall, 10, COLOR_GOLD);
 DefineFont(Theme.fonts.highlight, 12, COLOR_WHITE);
+-- Same recipe as highlight, just dialed up to 14pt - used where highlight
+-- (12pt) reads too small (the loot council response window's item names).
+DefineFont(Theme.fonts.highlightLarge, 14, COLOR_WHITE);
 -- Same recipe as highlightSmall, just dialed up to 12pt - used where
 -- highlightSmall (10pt) reads too small (the SoftRes preview's player names).
 DefineFont(Theme.fonts.highlightMedium, 12, COLOR_WHITE);
