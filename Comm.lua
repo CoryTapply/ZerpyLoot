@@ -82,7 +82,7 @@ local function onMessage(prefix, encoded, distribution, senderName)
     end
 
     -- Not meant for us (whisper forcefully routed through raid/party channel)
-    local myName = UnitName("player");
+    local myName = Util.UnitName("player");
     local myFqn = Util.playerFqn();
     if (payload.r and not Util.iEquals(payload.r, myFqn) and not Util.iEquals(payload.r, myName)) then
         return;

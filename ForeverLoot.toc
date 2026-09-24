@@ -46,6 +46,7 @@ UI\Theme\Window.lua
 UI\Theme\Skins\Default.lua
 UI\Theme\Skins\Blizzard.lua
 UI\Theme\Skins\BlizzardThin.lua
+UI\ConfigWindow.lua
 UI\OptionsPanel.lua
 UI\RollWindow.lua
 UI\GroupLootRollBars.lua
@@ -53,6 +54,7 @@ UI\SoftResImport.lua
 UI\TradeQueueWindow.lua
 UI\LootCouncilAddItemsWindow.lua
 UI\LootCouncilResponseWindow.lua
+UI\LootCouncilReviewWindow.lua
 
 # Debug / slash commands
 Debug.lua

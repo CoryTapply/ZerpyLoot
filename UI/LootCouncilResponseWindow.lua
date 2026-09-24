@@ -247,7 +247,7 @@ local function ensureFrame()
             local parentRow = self:GetParent();
             local newText = self:GetText();
             if (not parentRow.entry or newText == self.textAtFocus) then return; end
-            local myName = Util.stripRealm(UnitName("player"));
+            local myName = Util.stripRealm(Util.UnitName("player"));
             local candidate = parentRow.entry.candidates[myName];
             if (not candidate) then return; end
             LootCouncil.SubmitResponse(parentRow.entry.session, candidate.response, newText);
@@ -344,7 +344,7 @@ function ResponseWindow.Refresh()
         return;
     end
 
-    local myName = Util.stripRealm(UnitName("player"));
+    local myName = Util.stripRealm(Util.UnitName("player"));
 
     -- sorted[] determines each row's Y-order only; row WIDGET identity is
     -- always rows[item.session], never sorted position (see comment above
@@ -411,7 +411,10 @@ function ResponseWindow.Refresh()
                 or item.itemLink or "?");
 
             local candidate = item.candidates[myName];
-            if (item.sendFailed) then
+            if (item.awardedTo) then
+                row.sentText:SetText("|cff888888Awarded|r");
+                row.sentText:Show();
+            elseif (item.sendFailed) then
                 row.sentText:SetText("|cffff4444Failed to send|r");
                 row.sentText:Show();
             elseif (candidate) then
@@ -445,6 +448,7 @@ function ResponseWindow.Refresh()
                 else
                     FL.Theme.SkinButton(btn, btn.color);
                 end
+                if (item.awardedTo) then btn:Disable(); else btn:Enable(); end
             end
 
             row:SetShown(visible);
@@ -481,7 +485,7 @@ function ResponseWindow.MaybeAutoShow()
     local Session = LootCouncil.CurrentSession;
     if (not Session) then return; end
 
-    local myName = Util.stripRealm(UnitName("player"));
+    local myName = Util.stripRealm(Util.UnitName("player"));
     for _, item in ipairs(Session.items) do
         if (not item.candidates[myName]) then
             ResponseWindow.Show();

@@ -12,7 +12,7 @@ local LSM = LibStub("LibSharedMedia-3.0");
 -- TEMPORARY: forces this theme regardless of the saved setting (the saved
 -- value isn't touched, so it comes back once this is set to nil). Set to nil
 -- to revert to the normal saved/default theme behaviour.
-local FORCED_THEME = "blizzardthin";
+local FORCED_THEME = "default";
 
 function Settings.Init()
     FL.DB.settings = FL.DB.settings or {};
@@ -115,6 +115,16 @@ end
 
 function Settings.SetLootCouncilResponseWindowHeight(height)
     FL.DB.settings.lootCouncilResponseWindowHeight = height;
+end
+
+-- Loot council "Review & Vote" window height (in UI units), set by dragging
+-- its bottom edge - re-used as that window's height the next time it's created.
+function Settings.GetLootCouncilReviewWindowHeight()
+    return FL.DB and FL.DB.settings and FL.DB.settings.lootCouncilReviewWindowHeight;
+end
+
+function Settings.SetLootCouncilReviewWindowHeight(height)
+    FL.DB.settings.lootCouncilReviewWindowHeight = height;
 end
 
 -- Window positions (x/y, the same CENTER-relative convention

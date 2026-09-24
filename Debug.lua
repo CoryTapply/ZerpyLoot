@@ -74,17 +74,38 @@ local function resetAllWindowPositions()
     if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.ResetPosition) then FL.UI.TradeQueueWindow.ResetPosition(); end
     if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.ResetPosition) then FL.UI.LootCouncilAddItemsWindow.ResetPosition(); end
     if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.ResetPosition) then FL.UI.LootCouncilResponseWindow.ResetPosition(); end
+    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.ResetPosition) then FL.UI.LootCouncilReviewWindow.ResetPosition(); end
+    if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.ResetPosition) then FL.UI.ConfigWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
 
--- Loot Council entry point. Phase 1: with no arguments, always opens the
--- leader's Add Items window. Later phases extend the no-argument case to show
--- the raider response window (if a session is active) or a "no active
--- session" panel with a request button (Phase 9) instead, depending on the
--- player's role and local session state.
+-- Loot Council entry point. With no arguments: council members (and a
+-- session initiator who forgot to add themselves to the roster - see
+-- LootCouncil.CanAccessReviewWindow) get the Review & Vote window (Phase 4);
+-- everyone else still gets the leader's Add Items window (Phase 1). Later
+-- phases extend this further - a raider-facing "no active session" panel
+-- with a request button (Phase 9) - depending on role and local session
+-- state.
+-- Shared between "/flc help" and "/fl"'s full command dump below, so the
+-- two lists can't drift out of sync with each other.
+local function printLootCouncilHelp()
+    print("|cff8865ffForeverLoot|r loot council commands:");
+    print("  /flc - open the loot council window");
+    print("  /flc add [item link] [item link] ... - add item(s) to the loot council list");
+    print("  /flc council add [name] - add a player (or yourself, if no name) to the council roster");
+    print("  /flc council remove <name> - remove a player from the council roster");
+    print("  /flc council list - list current council roster members");
+    print("  /flc help - show this list");
+end
+
 SLASH_FOREVERLOOTLC1 = "/flc";
 SlashCmdList["FOREVERLOOTLC"] = function(msg)
     local firstWord, rest = string.match(strtrim(msg or ""), "^(%S*)%s*(.-)$");
+
+    if (firstWord and string.lower(firstWord) == "help") then
+        printLootCouncilHelp();
+        return;
+    end
 
     if (firstWord and string.lower(firstWord) == "add") then
         local added, skipped, found = FL.LootCouncil.DraftAddItemsFromText(rest);
@@ -100,6 +121,47 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
         return;
     end
 
+    -- Roster management stopgap ahead of Phase 7's dedicated UI window.
+    if (firstWord and string.lower(firstWord) == "council") then
+        local subCmd, name = string.match(rest, "^(%S*)%s*(.-)$");
+        subCmd = string.lower(subCmd or "");
+        name = strtrim(name or "");
+
+        if (subCmd == "add") then
+            if (name == "") then name = UnitName("player"); end
+            if (FL.LootCouncil.RosterAdd(name)) then
+                print(("|cff8865ffForeverLoot|r Added %s to the loot council roster."):format(name));
+            else
+                print(("|cff8865ffForeverLoot|r %s is already on the loot council roster."):format(name));
+            end
+        elseif (subCmd == "remove") then
+            if (name == "") then
+                print("|cff8865ffForeverLoot|r Usage: /flc council remove <name>");
+            elseif (FL.LootCouncil.RosterRemove(name)) then
+                print(("|cff8865ffForeverLoot|r Removed %s from the loot council roster."):format(name));
+            else
+                print(("|cff8865ffForeverLoot|r %s is not on the loot council roster."):format(name));
+            end
+        elseif (subCmd == "list") then
+            local names = FL.LootCouncil.RosterNames();
+            if (#names == 0) then
+                print("|cff8865ffForeverLoot|r Loot council roster is empty.");
+            else
+                print(("|cff8865ffForeverLoot|r Loot council roster: %s"):format(table.concat(names, ", ")));
+            end
+        else
+            print("|cff8865ffForeverLoot|r Usage: /flc council add|remove|list [name]");
+        end
+        return;
+    end
+
+    if (FL.LootCouncil.CanAccessReviewWindow and FL.LootCouncil.CanAccessReviewWindow()) then
+        if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Toggle) then
+            FL.UI.LootCouncilReviewWindow.Toggle();
+        end
+        return;
+    end
+
     if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.Toggle) then
         FL.UI.LootCouncilAddItemsWindow.Toggle();
     end
@@ -110,8 +172,8 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
     msg = string.lower(strtrim(msg or ""));
 
     if (msg == "") then
-        if (FL.UI.OptionsPanel and FL.UI.OptionsPanel.Open) then
-            FL.UI.OptionsPanel.Open();
+        if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.Show) then
+            FL.UI.ConfigWindow.Show();
         end
     elseif (msg == "commdebug") then
         FL.Comm.debugEnabled = not FL.Comm.debugEnabled;
@@ -129,7 +191,11 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Toggle) then
             FL.UI.TradeQueueWindow.Toggle();
         end
-    elseif (msg == "options" or msg == "config" or msg == "settings") then
+    elseif (msg == "config" or msg == "c" or msg == "settings") then
+        if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.Show) then
+            FL.UI.ConfigWindow.Show();
+        end
+    elseif (msg == "options") then
         if (FL.UI.OptionsPanel and FL.UI.OptionsPanel.Open) then
             FL.UI.OptionsPanel.Open();
         end
@@ -144,9 +210,9 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("  /fl roll - toggle the roll tracker window");
         print("  /fl softres - open the SoftRes import window");
         print("  /fl tradequeue - open the trade queue window");
-        print("  /flc - open the loot council window");
-        print("  /flc add [item link] [item link] ... - add item(s) to the loot council list");
-        print("  /fl options - open the settings panel");
+        printLootCouncilHelp();
+        print("  /fl config (or /fl c) - open ForeverLoot's settings window");
+        print("  /fl options - open the Blizzard-side options panel (Escape menu)");
         print("  /fl resetpositions - reset all window positions to their defaults");
         print("  /fl testdisabled - show/hide a test window with disabled buttons (tinted, accent, normal)");
     end

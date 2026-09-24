@@ -52,9 +52,9 @@ User-confirmed design decisions (asked directly, not assumed):
 | 1 Add items to the list | yes | commit `e50ae2b`; confirmed working in-game by the user |
 | 2 Broadcast to raid | yes | dedicated `"ForeverLootLC"` prefix, `Util.GroupDistribution` extracted, `SendToRaid`/`applySessionStart` implemented as designed, no deltas from plan |
 | 3 Raider response | yes | `UI/LootCouncilResponseWindow.lua` added, `SubmitResponse`/`applyResponse` implemented as designed, `GET_ITEM_INFO_RECEIVED` refresh listener added (deferred from Phase 2); one implementation-level addition not spelled out in the original design (see deltas below); pending in-game verification |
-| 4 Council review (read-only) | no | |
-| 5 Voting | no | |
-| 6 Award + trade queue + history | no | |
+| 4 Council review (read-only) | yes | `UI/LootCouncilReviewWindow.lua` added, `LootCouncil.IsCouncilMember`/`CanAccessReviewWindow` implemented as designed; see deltas below; pending in-game verification |
+| 5 Voting | yes | `ToggleVote`/`applyVote` added, `vote` comm handler wired, `Util.tcount` added, review window vote button live; pending in-game verification |
+| 6 Award + trade queue + history | yes | `AwardItem`/`applyAward`/`RecordHistory` added, `award` comm handler wired; see deltas below; pending in-game verification |
 | 7 Roster config UI | no | |
 | 8 History browser (stretch) | no | |
 | 9 Harden session sharing for late/reconnecting raiders | no | |
@@ -166,8 +166,10 @@ voter's current state is X" message self-heals on retransmit or relog.
 **`history`** — persistent record (Phase 6+):
 ```lua
 history[i] = {
-    id = "3-1",                  -- "%d-%d":format(sessionId, itemSession), dedupes if an award
-                                  -- broadcast is processed twice
+    id = "3-1-1",                 -- "%d-%d-%d":format(sessionId, itemSession, awardSeq), one id
+                                   -- per AWARD EVENT (not per item - an item can be re-awarded,
+                                   -- each award gets its own row) - dedupes if an award broadcast
+                                   -- is processed twice. See §7 Phase 6 deltas.
     itemLink = "...", itemID = 19019, itemIcon = "...",
     awardedTo = "Jaina", awardedToClass = "MAGE",   -- NOT "winner"/"winnerClass" — matches the
                                                      -- item entry's own `awardedTo` field name
@@ -204,10 +206,11 @@ Action names (plain strings, no Gargul-numeric-id constraint):
 
 | Action | Direction | Channel | Payload | Phase |
 |---|---|---|---|---|
-| `sessionStart` | leader → raid | GROUP | `{ sessionId, items = { itemLink, ... } }` | 2 (done) |
+| `sessionStart` | leader → raid | GROUP | `{ sessionId, items = { itemLink, ... }, names = { rosterName, ... } }` | 2 (done); `names` added in 5 |
 | `response` | raider → raid | GROUP | `{ sessionId, itemSession, response, note, class }` | 3 |
 | `vote` | council member → raid | GROUP | `{ sessionId, itemSession, targetPlayer, approved }` | 5 |
-| `award` | leader → raid | GROUP | `{ sessionId, itemSession, winner }` | 6 |
+| `councilRoster` | any client → raid | GROUP | `{ names = { rosterName, ... } }` (full-replace snapshot) | 5, not in original design - see §7 Phase 5 deltas |
+| `award` | leader → raid | GROUP | `{ sessionId, itemSession, winner, awardSeq }` | 6, `awardSeq` not in original design - see §7 Phase 6 deltas |
 | `stopSession` | leader → raid | GROUP | `{ sessionId }` (optional/stretch — cancel) | — |
 | `sessionRequest` | raider → raid | GROUP | `{}` | 9 |
 | `catchUpRequest` / `catchUpResponse` | initiator ↔ raid | GROUP / WHISPER | | 10 |
@@ -430,6 +433,12 @@ end
 ```
 `Trade.lua`, `UI/TradeQueueWindow.lua`, and `Tooltip.lua` need **no code changes**.
 
+Note: the sketch above is the original pre-implementation design and no longer matches the
+shipped `LootCouncil.AwardItem`/`applyAward` - it predates the re-award/`awardSeq`/chat
+announcement decisions made during implementation. See §7 Phase 6 deltas, and
+`ForeverLoot/LootCouncil.lua`'s actual `AwardItem`/`applyAward`/`RecordHistory`, for the
+real behavior.
+
 ---
 
 ## 7. Phased build order (each phase independently shippable/testable)
@@ -567,24 +576,148 @@ mockup):
   is (re)opened (`respondedExpanded`, reset in `.Show()`), labeled "Click to change
   selections" instead of a static "Responded" separator.
 
-**Phase 4 — Council review (read-only)**
+**Phase 4 — Council review (read-only)** ✅ DONE (pending in-game verification)
 `UI/LootCouncilReviewWindow.lua` (list + candidate table, vote/award controls disabled),
 gated entirely behind `LootCouncil.IsCouncilMember`.
 *Verify:* council member (stopgap: `/run FL.DB.lootCouncil.roster["Name"]=true` before
 Phase 7's UI exists) sees every response+note populate live; confirm a non-council client
 has no way to open the window at all.
 
-**Phase 5 — Voting**
+Deltas from the original design, made during implementation:
+- **Window gate widened to `LootCouncil.CanAccessReviewWindow()`**, not the raw
+  `IsCouncilMember` the phase heading names — `IsCouncilMember(me) OR
+  CurrentSession.initiatorIsMe` — resolving the "nuance" §4(c) flagged (a leader who forgot
+  to add themselves to the roster couldn't otherwise open the window at all). `IsCouncilMember`
+  itself still exists exactly as specified, unchanged, since Phase 5's `vote` handler needs
+  the pure roster check against the sender.
+- **`/flc` (no args) now routes by role**: `LootCouncil.CanAccessReviewWindow()` true → toggles
+  the Review window; otherwise unchanged (Add Items window). This wasn't spelled out in the
+  original design (§3 only says the window "spans Phases 4–6"); `/flc add <link>` is
+  untouched, so a council-member leader can still always reach the Add Items window that way.
+- **First two-pane (list + detail) window in the codebase** — no existing file had this layout
+  to copy, so the split geometry (left item list, divider, right candidate table with a static
+  header row above a separate scrolling list) was designed fresh, reusing every other
+  `FL.Theme.*`/pooled-row/`OnUpdate`-tooltip convention from `UI/LootCouncilResponseWindow.lua`
+  and `UI/TradeQueueWindow.lua`.
+- **Candidate rows are the union of `Util.groupMembers()` and `item.candidates`**, not
+  `groupMembers()` alone — a responder who has since left the group/logged off still shows
+  their response instead of silently disappearing (their `class` was sent explicitly in the
+  `response` payload for exactly this reason, per §2). Sorted responded-first, then
+  non-responders, alphabetically within each group — not specified further by the mockup.
+- **Vote count is an inline `pairs()` loop over `candidate.approvals`** this phase, not
+  `Util.tcount` — that helper is still deliberately deferred to Phase 5 per §3, and
+  `approvals` is always empty today anyway since nothing populates it yet.
+- **Response id → color lookup (`RESPONSE_COLOR_BY_ID`) is a small local table built in the
+  window file itself**, not added to `Core/Constants.lua` — `Constants` only publishes an
+  id → label map (`LOOT_COUNCIL_RESPONSE_LABELS`), no id → color equivalent, and this stayed
+  presentation-local rather than growing the shared constants surface.
+
+**Phase 5 — Voting** ✅ DONE (pending in-game verification)
 `ToggleVote`, `vote` handler (with sender-is-council-member check), wire toggle + live
 tally into the review window. Add `Util.tcount(t)` to `Core/Util.lua`.
 *Verify:* two council clients toggle different candidates for the same item, tallies match
 on both screens live; confirm a non-council client's toggle is rejected.
 
-**Phase 6 — Award + trade queue + history**
+`ToggleVote` mirrors `SubmitResponse`'s optimistic-mutate -> pcall-send -> rollback-on-failure
+-> refresh shape, sending the voter's resulting absolute approval state (never a delta), and
+only refreshes `LootCouncilReviewWindow` (votes have no presence in the response window).
+`applyVote` mirrors `applyResponse`'s shape but additionally re-verifies the sender may vote
+before applying - `content.approved` validation checks `type(...) == "boolean"` rather than a
+truthy check, since `false` (unapprove) is a valid, common value.
+
+Delta from the original design, made after initial landing based on user feedback: **voting
+eligibility is `LootCouncil.CanVote(name, fqn)`, not the bare `IsCouncilMember`** the phase
+heading and §2's comm design notes both named. `CanVote` = council member OR the session's
+own initiator (verified by comparing `fqn` against `Session.initiatorFqn`, so the identical
+function checks both the local player in `ToggleVote` and a remote sender's claimed identity
+in `applyVote`) - mirroring the exact widening `CanAccessReviewWindow` already does for
+window visibility (Phase 4), for the same reason: a leader who forgot to add themselves to
+the roster should still be able to vote in the session they started, not just view it.
+`IsCouncilMember` itself is unchanged and still the narrow roster-only check other code
+relies on. The vote button in `UI/LootCouncilReviewWindow.lua` is enabled per-row via
+`CanVote` and recolors via the same `FL.Theme.SkinButton(button, color)` toggle convention
+the response window's buttons already use, reusing
+`Constants.LOOT_COUNCIL_RESPONSE_UNSELECTED_COLOR` for "not approved by me" and a new
+window-local `VOTE_APPROVED_COLOR` for "approved by me".
+
+Also added, not in the original design: **`LootCouncil.RosterAdd`/`RosterRemove`/`RosterNames`**
+and a `/flc council add|remove|list [name]` slash command (`Debug.lua`) as a stopgap ahead of
+Phase 7's dedicated roster UI - manually editing the saved-variable roster table via `/run`
+was the only option otherwise, since Phase 7 hadn't landed yet.
+
+**Also added, not in the original design: roster sync.** The roster (`FL.DB.lootCouncil.roster`)
+is a per-client SavedVariable with no comm traffic in the original design at all - meaning
+`applyVote`'s independent per-receiving-client `CanVote` check would silently diverge across
+the raid unless every client's local roster happened to already match. Fixed with a new
+`councilRoster` action (`{ names = {...} }`, full-replace snapshot, same idempotent
+convention as everything else in this module) sent two ways: (1) live, from `RosterAdd`/
+`RosterRemove` themselves (`broadcastRosterSync`), so a roster edit propagates immediately
+without waiting for a session; and (2) embedded in `sessionStart`'s own payload
+(`names = LootCouncil.RosterNames()`) as a backstop for anyone who missed the live push (e.g.
+was offline/reloading when it went out). No permission gating on receipt - mirrors
+`sessionStart`'s own existing trust model (anyone can technically call `RosterAdd`/
+`SendToRaid`; the wire layer only guarantees sender identity, not sender intent). If the live
+sync adds the local player to the roster while a session is already active, `applyCouncilRoster`
+auto-opens `LootCouncilReviewWindow` for them (mirrors the existing "broadcast pops the
+window" convention `MaybeAutoShow` already uses on `sessionStart`) - otherwise a newly-added
+council member would have no way to know they need to open `/flc` themselves.
+
+Left intentionally consistent with Phase 3's precedent: neither `ToggleVote`/`applyVote` nor
+`SubmitResponse`/`applyResponse` guard against out-of-order delivery of the same sender's own
+rapid, repeated messages (no sequence number/timestamp) - concurrent votes from *different*
+council members are still fully safe regardless of ordering, since `approvals` is a set keyed
+by voter name, not a shared counter.
+
+**Phase 6 — Award + trade queue + history** ✅ DONE (pending in-game verification)
 `AwardItem`, `FOREVERLOOT_LC_AWARD_CONFIRM` popup, `award` handler, `RecordHistory`.
 *Verify:* Award → confirm popup → item appears in `TradeQueueWindow`; complete/fail trade,
 confirm existing `Trade.lua` behavior is unchanged; `/dump ForeverLootDB.lootCouncil.history`
 shows the new entry **on every client**, not just the leader's.
+
+Deltas from the original design, made during implementation:
+
+- **The doc's own `AwardItem` sketch left `applyAward` un-written (elided as `...`) and
+  called `RecordHistory` directly from `AwardItem`.** Implemented instead as this file's
+  established optimistic-mutate + self-loop-reconcile pattern
+  (`SubmitResponse`/`applyResponse`, `ToggleVote`/`applyVote`): `AwardItem` optimistically
+  mutates `CurrentSession`, does the `FL.Trade` work and calls `RecordHistory` locally, then
+  broadcasts `award`; `applyAward` is what every client (leader included, via the
+  self-looped broadcast) actually converges through - a no-op on the leader's own echo, the
+  only path that runs on every other client. `applyAward` independently re-verifies the
+  sender is `Session.initiatorFqn`, mirroring `applyVote`'s never-trust-the-sender's-own-claim
+  check.
+- **Award target is chosen by right-clicking a candidate row** in
+  `UI/LootCouncilReviewWindow.lua` (hover-highlighted, mirrors `UI/RollWindow.lua`'s
+  roll-off award rows exactly - `RegisterForClicks("RightButtonUp")` + `HIGHLIGHT`-layer
+  texture + `StaticPopup_Show` on click), not §4(c)'s mockup `[Award to X (N votes)]`
+  button - there is no separate Award button in the shipped window at all.
+- **Re-awarding is supported**: an already-awarded item can be awarded again to someone
+  else (no "already awarded" guard in `AwardItem`/`applyAward`/the row's click handler).
+  This required widening the `award` payload and `history[i].id` scheme from §1/§2's
+  original `"sessionId-itemSession"` (one id per *item*) to a leader-generated, per-item
+  monotonic `awardSeq` field - `award`'s payload is
+  `{ sessionId, itemSession, winner, awardSeq }` (not just `{ sessionId, itemSession, winner }`),
+  and `history[i].id` is `"%d-%d-%d"`:format(sessionId, itemSession, awardSeq) - one id per
+  award *event*, so a re-award appends a new history row instead of being deduped against
+  the first award. `applyAward`'s idempotency guard is `content.awardSeq <= item.awardCount`
+  (a no-op for the leader's own echo, since it already applied that exact `awardSeq`; a
+  *greater* `awardSeq` always goes through, on every client - that's what makes re-award
+  propagate).
+- **Awards are announced to party/raid chat** (`"%s was awarded to %s!"` with the item link
+  and winner's name) - not in the original design, added per explicit direction, reusing
+  `RollTracker.AwardItem`'s own existing `Util.GroupChatChannel()` + `SendChatMessage`
+  pattern verbatim. Leader's client only (inside `AwardItem`, never `applyAward`) - same
+  "only the sender's own client" rule the Trade calls already follow, since every client
+  independently announcing would spam the raid with duplicate lines.
+- **The currently-awarded candidate's row is highlighted green**, persistently (not just on
+  hover), in `UI/LootCouncilReviewWindow.lua` - not in the original mockup. Reuses the
+  existing `VOTE_APPROVED_COLOR` for visual consistency with the vote-approved button state.
+- **`SubmitResponse` and `UI/LootCouncilResponseWindow.lua` now guard on `item.awardedTo`** -
+  a raider can no longer submit/edit a response, and response buttons are disabled, for an
+  item that's already been awarded (row shows "Awarded" instead of "Sent"/"Failed to send").
+  Not called out in the original Phase 6 bullet list, but a direct consequence of
+  `awardedTo` getting its first real writer - before Phase 6 this field never left `nil`, so
+  neither file had any reason to check it.
 
 **Phase 7 — Roster config UI**
 `UI/LootCouncilRosterWindow.lua`, replacing the `/run` stopgap.

@@ -149,7 +149,7 @@ local function applyStart(Message)
     -- Whether *we* soft-reserved this item - drives the louder sound/orange
     -- border pop below, so our own reserved item up for roll doesn't get
     -- missed among everything else going on.
-    local isSelfSR = FL.SoftRes ~= nil and FL.SoftRes.PlayerHasReservedItem(Util.stripRealm(UnitName("player")), itemID);
+    local isSelfSR = FL.SoftRes ~= nil and FL.SoftRes.PlayerHasReservedItem(Util.stripRealm(Util.UnitName("player")), itemID);
 
     nextRollOffId = nextRollOffId + 1;
 

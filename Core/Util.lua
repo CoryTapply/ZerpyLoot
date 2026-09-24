@@ -46,6 +46,15 @@ function Util.iEquals(a, b)
     return string.lower(a) == string.lower(b);
 end
 
+-- Counts the keys in a set/table - #t only works for a dense array, never a
+-- set with arbitrary keys. t may be nil (e.g. a candidate that hasn't voted).
+function Util.tcount(t)
+    if (not t) then return 0; end
+    local count = 0;
+    for _ in pairs(t) do count = count + 1; end
+    return count;
+end
+
 -- Forever characters have two names separated by a space ("First Last"), and
 -- different sources (roll messages, roster, unit names, trade window) report
 -- either the full pair or just one half. All name comparisons go through the
@@ -82,6 +91,36 @@ function Util.namesMatch(a, b, loose)
     return false;
 end
 
+-- Forever's UnitName(unit) returns the character's first and last name as
+-- two separate values (unlike standard UnitName, whose second return is the
+-- realm) - every caller in this addon that wants the player's whole name
+-- goes through this wrapper instead of calling UnitName directly, which
+-- would silently drop the last name whenever the call isn't in tail
+-- position (the common case: passed as a non-final argument, or the result
+-- of `local x = UnitName(unit)`).
+function Util.UnitName(unit)
+    local firstName, lastName = UnitName(unit);
+    if (not firstName or Util.isSecret(firstName)) then return firstName; end
+    if (lastName and lastName ~= "" and not Util.isSecret(lastName)) then
+        return firstName .. " " .. lastName;
+    end
+    return firstName;
+end
+
+-- Picks whichever of two same-player name strings has more space-separated
+-- name parts (a Forever character's full name is "First Last" - see the
+-- comment on nameParts above - but GetRaidRosterInfo's `name` field and the
+-- matching unit token's UnitName don't always agree on full-vs-half for the
+-- same raid member). Either side may be nil or a secret value.
+local function fullerName(a, b)
+    if (not a or Util.isSecret(a)) then a = nil; end
+    if (not b or Util.isSecret(b)) then b = nil; end
+    if (not a) then return b; end
+    if (not b) then return a; end
+    if (#nameParts(b) > #nameParts(a)) then return b; end
+    return a;
+end
+
 -- Returns a map of base-name -> class token ("WARRIOR", "MAGE", ...) for
 -- everyone currently in our group (raid, party, or just ourselves if solo).
 -- The class is false when it isn't known yet, so membership can be tested
@@ -97,19 +136,23 @@ function Util.groupMembers()
     if (IsInRaid()) then
         for i = 1, GetNumGroupMembers() do
             local name, _, _, _, _, classFile = GetRaidRosterInfo(i);
+            local unit = "raid" .. i;
+            if (UnitExists(unit)) then
+                name = fullerName(name, Util.UnitName(unit));
+            end
             add(name, classFile);
         end
     elseif (IsInGroup()) then
-        add(UnitName("player"), select(2, UnitClass("player")));
+        add(Util.UnitName("player"), select(2, UnitClass("player")));
 
         for i = 1, (GetNumGroupMembers() or 1) - 1 do
             local unit = "party" .. i;
             if (UnitExists(unit)) then
-                add(UnitName(unit), select(2, UnitClass(unit)));
+                add(Util.UnitName(unit), select(2, UnitClass(unit)));
             end
         end
     else
-        add(UnitName("player"), select(2, UnitClass("player")));
+        add(Util.UnitName("player"), select(2, UnitClass("player")));
     end
 
     return members;
@@ -166,7 +209,7 @@ function Util.unitTokenForName(name)
     -- share one name never get confused with each other.
     for _, loose in ipairs({ false, true }) do
         for _, unit in ipairs(units) do
-            if (UnitExists(unit) and Util.namesMatch(UnitName(unit), name, loose)) then
+            if (UnitExists(unit) and Util.namesMatch(Util.UnitName(unit), name, loose)) then
                 return unit;
             end
         end
@@ -315,13 +358,13 @@ function Util.GroupDistribution(channel, recipient)
         return "PARTY", recipient;
     end
 
-    return "WHISPER", UnitName("player");
+    return "WHISPER", Util.UnitName("player");
 end
 
 function Util.playerFqn()
     local realm = GetRealmName();
     realm = realm and string.gsub(realm, "%s+", "") or "";
-    return UnitName("player") .. "-" .. realm;
+    return Util.UnitName("player") .. "-" .. realm;
 end
 
 -- Wraps PlaySound in a pcall so a bad/unavailable sound kit ID never breaks

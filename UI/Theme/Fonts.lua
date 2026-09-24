@@ -32,6 +32,9 @@ Theme.fonts = {
     -- DefineFont calls below for why these get their own dedicated colors.
     title = "ForeverLootFontTitle",
     titleLarge = "ForeverLootFontTitleLarge",
+    -- The big centered addon-name display on the Blizzard-side options panel
+    -- (OptionsPanel.lua) - not used anywhere text needs to fit tightly.
+    hero = "ForeverLootFontHero",
     button = "ForeverLootFontButton",
     buttonDisabled = "ForeverLootFontButtonDisabled",
     input = "ForeverLootFontInput",
@@ -84,6 +87,7 @@ DefineFont(Theme.fonts.disableSmall, 10, COLOR_GREY);
 -- one (the skin's colors.title, or its accent) at Theme.Init.
 DefineFont(Theme.fonts.title, 12, COLOR_GOLD);
 DefineFont(Theme.fonts.titleLarge, 16, COLOR_GOLD);
+DefineFont(Theme.fonts.hero, 40, COLOR_GOLD);
 
 -- Button labels: plain white, applied to every flat-skinned button instead of
 -- whatever font object the button's template shipped with.
@@ -102,6 +106,7 @@ function Theme.ApplyFontColors()
     local color = Theme.colors.title or Theme.colors.accent;
     _G[Theme.fonts.title]:SetTextColor(unpack(color));
     _G[Theme.fonts.titleLarge]:SetTextColor(unpack(color));
+    _G[Theme.fonts.hero]:SetTextColor(unpack(color));
 end
 
 -- Swaps the font FACE (via SharedMedia) on every mirrored font object,

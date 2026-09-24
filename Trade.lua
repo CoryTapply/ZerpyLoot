@@ -9,9 +9,11 @@ semi-protected client behavior and that's a known-working reference:
   failure (out of range, player not found) is inferred purely from the
   native TRADE_SHOW event not firing within ~1 second (Gargul's own timeout
   constant).
-- Once TRADE_SHOW fires, the trade partner's name is read via UnitName("NPC")
-  - that's the real unit token WoW exposes for "the other side of an active
-  trade", regardless of them being a player.
+- Once TRADE_SHOW fires, the trade partner's name is read via Util.UnitName("NPC")
+  - "NPC" is the real unit token WoW exposes for "the other side of an active
+  trade", regardless of them being a player. Goes through the wrapper (not a
+  bare UnitName call) since Forever's UnitName returns first/last name as two
+  separate values that need combining - see Core/Util.lua.
 - Items are placed with UseContainerItem(bag, slot) while the trade window
   is open (WoW auto-routes a "used" item into the next free trade slot) -
   NOT PickupContainerItem + a cursor drop.
@@ -134,7 +136,7 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
     end
 
     local tradeAlreadyOpen = TradeFrame and TradeFrame:IsShown();
-    local currentPartner = tradeAlreadyOpen and UnitName("NPC");
+    local currentPartner = tradeAlreadyOpen and Util.UnitName("NPC");
 
     if (tradeAlreadyOpen and not (currentPartner and Util.namesMatch(currentPartner, playerName, true))) then
         onResult(false, "You're already trading with someone else.");
@@ -185,7 +187,7 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
         if (finished) then return; end
 
         if (event == "TRADE_SHOW") then
-            local partner = UnitName("NPC");
+            local partner = Util.UnitName("NPC");
             if (not partner or not Util.namesMatch(partner, playerName, true)) then
                 return; -- some other trade window opened, not ours - keep waiting
             end
@@ -269,7 +271,7 @@ function Trade.Init()
     -- spurious ERR_TRADE_COMPLETE in the meantime.
     sessionFrame:SetScript("OnEvent", function(_, event, ...)
         if (event == "TRADE_SHOW") then
-            activeSession.partner = UnitName("NPC");
+            activeSession.partner = Util.UnitName("NPC");
             activeSession.placedItemLinks = {};
         elseif (event == "UI_INFO_MESSAGE") then
             local _, message = ...;
