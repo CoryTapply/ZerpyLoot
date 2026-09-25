@@ -4,6 +4,7 @@
 ## Author: Zerpy
 ## Version: 0.1.0
 ## SavedVariables: ForeverLootDB
+## SavedVariablesPerCharacter: ForeverLootDBChar
 ## DefaultState: enabled
 
 # Vendored libraries (each carries its own separate open-source license, see file headers)
@@ -34,9 +35,12 @@ GroupLootRoll.lua
 SoftRes.lua
 Trade.lua
 LootCouncil.lua
+LootCouncilRoster.lua
 Tooltip.lua
+Session\SessionItems.lua
 
 # UI
+UI\Sizes.lua
 UI\Theme\Theme.lua
 UI\Theme\Fonts.lua
 UI\Theme\Helpers.lua
@@ -46,14 +50,25 @@ UI\Theme\Window.lua
 UI\Theme\Skins\Default.lua
 UI\Theme\Skins\Blizzard.lua
 UI\Theme\Skins\BlizzardThin.lua
-UI\ConfigWindow.lua
+UI\SettingsWindow\Colors.lua
+UI\SettingsWindow\Skin.lua
+UI\SettingsWindow\Widgets.lua
+UI\SettingsWindow\Registry.lua
+UI\SettingsWindow\Init.lua
+UI\SettingsWindow\Pages\General.lua
+UI\SettingsWindow\Pages\Appearance.lua
+UI\SettingsWindow\Pages\LootRolls.lua
+UI\SettingsWindow\Pages\LootCouncil.lua
+UI\SettingsWindow\Pages\Announcements.lua
+UI\SettingsWindow\Pages\Profiles.lua
+UI\SettingsWindow\Pages\About.lua
 UI\OptionsPanel.lua
 UI\RollWindow.lua
 UI\GroupLootRollBars.lua
 UI\SoftResImport.lua
 UI\TradeQueueWindow.lua
-UI\LootCouncilAddItemsWindow.lua
-UI\LootCouncilResponseWindow.lua
+UI\StartSessionWindow.lua
+UI\RespondWindow.lua
 UI\LootCouncilReviewWindow.lua
 
 # Debug / slash commands

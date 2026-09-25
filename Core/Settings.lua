@@ -15,12 +15,23 @@ local LSM = LibStub("LibSharedMedia-3.0");
 local FORCED_THEME = "default";
 
 function Settings.Init()
+    -- Forward-looking safety net for future saved-variable migrations - no
+    -- migration is needed yet, this just establishes the field.
+    FL.DB.version = FL.DB.version or 1;
+
     FL.DB.settings = FL.DB.settings or {};
     local s = FL.DB.settings;
 
-    s.font = s.font or LSM:GetDefault("font");
+    s.font = s.font or FL.Theme.DEFAULT_FONT_KEY;
     s.statusbar = s.statusbar or LSM:GetDefault("statusbar");
     s.theme = FL.Theme.THEMES[s.theme] and s.theme or FL.Theme.DEFAULT_THEME;
+    s.windowScale = s.windowScale or 1.0;
+
+    s.lootCouncil = s.lootCouncil or {};
+    local lc = s.lootCouncil;
+    lc.includeOfficers = (lc.includeOfficers == true);
+    lc.includeRaidLeader = (lc.includeRaidLeader == true);
+    lc.officerRankThreshold = lc.officerRankThreshold or 1;
 
     -- The theme is what this session's windows get skinned with, so it's
     -- locked in here once (before any window exists) rather than re-read -
@@ -28,6 +39,7 @@ function Settings.Init()
     FL.Theme.Init(FORCED_THEME or s.theme);
     FL.Theme.ApplyFont(s.font);
     FL.Theme.RefreshStatusBars(s.statusbar);
+    FL.Pixel.SetGlobalScale(Settings.GetWindowScale());
 end
 
 -- FL.DB isn't set until ADDON_LOADED fires, but UIDropDownMenu_Initialize
@@ -97,26 +109,6 @@ function Settings.SetTradeQueueWindowHeight(height)
     FL.DB.settings.tradeQueueWindowHeight = height;
 end
 
--- Loot council "Add Items" window height (in UI units), set by dragging its
--- bottom edge - re-used as that window's height the next time it's created.
-function Settings.GetLootCouncilAddItemsWindowHeight()
-    return FL.DB and FL.DB.settings and FL.DB.settings.lootCouncilAddItemsWindowHeight;
-end
-
-function Settings.SetLootCouncilAddItemsWindowHeight(height)
-    FL.DB.settings.lootCouncilAddItemsWindowHeight = height;
-end
-
--- Loot council "Respond" window height (in UI units), set by dragging its
--- bottom edge - re-used as that window's height the next time it's created.
-function Settings.GetLootCouncilResponseWindowHeight()
-    return FL.DB and FL.DB.settings and FL.DB.settings.lootCouncilResponseWindowHeight;
-end
-
-function Settings.SetLootCouncilResponseWindowHeight(height)
-    FL.DB.settings.lootCouncilResponseWindowHeight = height;
-end
-
 -- Loot council "Review & Vote" window height (in UI units), set by dragging
 -- its bottom edge - re-used as that window's height the next time it's created.
 function Settings.GetLootCouncilReviewWindowHeight()
@@ -173,4 +165,83 @@ end
 
 function Settings.SetGroupLootRollLocked(locked)
     FL.DB.settings.groupLootRollLocked = locked and true or false;
+end
+
+--------------------------------------------------------------------------
+-- Loot Council settings page (UI/SettingsWindow/Pages/LootCouncil.lua)
+--------------------------------------------------------------------------
+
+-- Whether "Select Officers" (and any future auto-roster logic) always
+-- includes guild officers at/under the officer rank threshold.
+function Settings.GetIncludeGuildOfficers()
+    return (FL.DB and FL.DB.settings and FL.DB.settings.lootCouncil and FL.DB.settings.lootCouncil.includeOfficers) and true or false;
+end
+
+function Settings.SetIncludeGuildOfficers(v)
+    FL.DB.settings.lootCouncil.includeOfficers = v and true or false;
+end
+
+-- Whether "Select Officers" (and any future auto-roster logic) always
+-- includes the current raid leader.
+function Settings.GetIncludeRaidLeader()
+    return (FL.DB and FL.DB.settings and FL.DB.settings.lootCouncil and FL.DB.settings.lootCouncil.includeRaidLeader) and true or false;
+end
+
+function Settings.SetIncludeRaidLeader(v)
+    FL.DB.settings.lootCouncil.includeRaidLeader = v and true or false;
+end
+
+-- Guild rank index (0 = Guild Master, lower = higher rank) at or below which
+-- a guild member counts as an "officer" for LootCouncilRoster.SelectOfficers.
+function Settings.GetOfficerRankThreshold()
+    local n = FL.DB and FL.DB.settings and FL.DB.settings.lootCouncil and FL.DB.settings.lootCouncil.officerRankThreshold;
+    return n or 1;
+end
+
+function Settings.SetOfficerRankThreshold(n)
+    FL.DB.settings.lootCouncil.officerRankThreshold = n;
+end
+
+-- Whole-window zoom (UI/SettingsWindow/Pages/Appearance.lua's "Window Scale"
+-- slider), applied via Pixel.SetGlobalScale to every ForeverLoot window at
+-- once. Stored account-wide (FL.DB.settings), like every other setting in
+-- this file.
+function Settings.GetWindowScale()
+    return (FL.DB and FL.DB.settings and FL.DB.settings.windowScale) or 1.0;
+end
+
+function Settings.SetWindowScale(scale)
+    FL.DB.settings.windowScale = scale;
+    FL.Pixel.SetGlobalScale(scale);
+end
+
+--------------------------------------------------------------------------
+-- Dotted-path accessors (UI/SettingsWindow/Widgets.lua's Section:Checkbox
+-- and Section:Dropdown read/write settings by a "key" path string, e.g.
+-- "loot.replacePopup", rather than calling a named getter/setter directly -
+-- this table maps each known path onto the real getter/setter above without
+-- moving or renaming any of them, so every other file that already calls
+-- e.g. Settings.GetGroupLootRollEnabled() directly keeps working unchanged.
+--------------------------------------------------------------------------
+
+local PATHS = {
+    ["appearance.theme"] = { get = Settings.GetTheme, set = Settings.SetTheme },
+    ["appearance.font"] = { get = Settings.GetFont, set = Settings.SetFont },
+    ["appearance.statusbar"] = { get = Settings.GetStatusBarTexture, set = Settings.SetStatusBarTexture },
+    ["appearance.windowScale"] = { get = Settings.GetWindowScale, set = Settings.SetWindowScale },
+    ["loot.replacePopup"] = { get = Settings.GetGroupLootRollEnabled, set = Settings.SetGroupLootRollEnabled },
+    ["loot.lockRolls"] = { get = Settings.GetGroupLootRollLocked, set = Settings.SetGroupLootRollLocked },
+    ["lootCouncil.includeOfficers"] = { get = Settings.GetIncludeGuildOfficers, set = Settings.SetIncludeGuildOfficers },
+    ["lootCouncil.includeRaidLeader"] = { get = Settings.GetIncludeRaidLeader, set = Settings.SetIncludeRaidLeader },
+    ["lootCouncil.officerRankThreshold"] = { get = Settings.GetOfficerRankThreshold, set = Settings.SetOfficerRankThreshold },
+};
+
+function Settings.GetPath(path)
+    local entry = PATHS[path];
+    return entry and entry.get();
+end
+
+function Settings.SetPath(path, value)
+    local entry = PATHS[path];
+    if (entry) then entry.set(value); end
 end

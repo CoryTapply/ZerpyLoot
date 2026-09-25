@@ -120,6 +120,7 @@ local function fullerName(a, b)
     if (#nameParts(b) > #nameParts(a)) then return b; end
     return a;
 end
+Util.FullerName = fullerName;
 
 -- Returns a map of base-name -> class token ("WARRIOR", "MAGE", ...) for
 -- everyone currently in our group (raid, party, or just ourselves if solo).
@@ -254,6 +255,19 @@ local CLASS_NAME_TO_TOKEN = {
 function Util.classNameToToken(className)
     if (not className) then return nil; end
     return CLASS_NAME_TO_TOKEN[string.lower(className)];
+end
+
+-- Joins only the non-empty parts with " · ", collapsing them to one if both
+-- sides are the same word. equipLoc's own global (e.g. INVTYPE_NON_EQUIP)
+-- resolves to "" rather than nil for non-equippable items - a plain "and"
+-- chain treats that "" as truthy and produces a leading " · " with nothing
+-- before it, hence the explicit non-empty checks here. Shared by
+-- StartSessionWindow and RespondWindow's item type-line rendering.
+function Util.JoinTypeParts(primary, subType)
+    local parts = {};
+    if (primary and primary ~= "") then tinsert(parts, primary); end
+    if (subType and subType ~= "" and subType ~= primary) then tinsert(parts, subType); end
+    return table.concat(parts, " \194\183 "); -- "Back · Cloth" / "Recipe · Alchemy"
 end
 
 -- True when `value` is a secret value (the client hides chat text from

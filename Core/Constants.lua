@@ -38,7 +38,7 @@ Constants.DEFAULT_BRACKETS = {
 -- Loot council response options (Phase 3). This project's own dedicated
 -- "ForeverLootLC" comm prefix uses plain string ids, not Gargul's numeric
 -- action ids, so a simple ordered array is enough - order here is also the
--- button display order in LootCouncilResponseWindow.
+-- button display order in UI/RespondWindow.lua.
 --
 -- `color` ({ r, g, b }, no alpha - each skin decides how strongly to apply
 -- it) is a placeholder pick, one per response, purely so each response

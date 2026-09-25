@@ -18,6 +18,50 @@ local Pixel = FL.Pixel;
 local EPSILON = 1e-4;
 local windows = {};
 
+-- SetPoint's (and AdjustPointsOffset's) numeric offsets are measured in the
+-- CALLING frame's own effective scale, not the frame it's anchored to - so
+-- the same offset value resolves to a different physical distance depending
+-- on that frame's own :SetScale(). Every other position value in this file
+-- (layout.x/y, and whatever Pixel.Snap/ApplyLayout compute) is worked out in
+-- plain UIParent-local units instead (as if the frame's own scale were
+-- always 1), so it has to be converted through the frame's own scale right
+-- before it's handed to SetPoint/AdjustPointsOffset, or the anchor lands in
+-- the wrong place for any window whose scale isn't 1.
+local function ToSelfOffset(frame, value)
+    return value / frame:GetScale();
+end
+
+-- Window Scale (UI/SettingsWindow/Pages/Appearance.lua's slider) applies a
+-- plain frame:SetScale() on top of everything above - it's a coarse,
+-- whole-window zoom, not a pixel-grid concept, so it deliberately does NOT
+-- feed into Pixel.Unit()/PixelSize() (those keep reading UIParent's own
+-- scale). Borders stay pixel-crisp at the default 1.0 and only lose that
+-- crispness at other scales, same trade-off any addon's own UI-scale slider
+-- has - not something this pass attempts to fix.
+local currentScale = 1.0;
+
+function Pixel.GetGlobalScale()
+    return currentScale;
+end
+
+--- Applies `scale` to every registered window immediately, and remembers it
+--- so a window registered later (opened for the first time after the slider
+--- moved) still picks it up - see Pixel.RegisterWindow below.
+---
+--- Re-runs Pixel.ApplyLayout (which factors currentScale into its position
+--- math - see below) instead of just calling frame:SetScale(), so each
+--- window's layout.x/y center stays fixed on screen across a scale change
+--- rather than drifting toward its bottom-right corner. Works even for a
+--- currently-hidden window, since it's driven entirely by the stored layout
+--- table rather than the frame's live (unshown) on-screen position.
+function Pixel.SetGlobalScale(scale)
+    currentScale = scale;
+    for frame, entry in pairs(windows) do
+        frame:SetScale(scale);
+        Pixel.ApplyLayout(frame, entry.layout);
+    end
+end
+
 -- Size, in UIParent units, of exactly one physical screen pixel.
 function Pixel.Unit()
     return 1 / UIParent:GetEffectiveScale();
@@ -52,8 +96,14 @@ end
 -- rendering as 2px despite the correct math. So after anchoring, re-measure
 -- the frame's *actual* on-screen edges and nudge away any leftover drift.
 function Pixel.CorrectDrift(frame)
-    local left, top = frame:GetLeft(), frame:GetTop();
-    if (not left or not top) then return; end
+    -- GetLeft()/GetTop() are in this frame's own self-scaled coordinate
+    -- space (see ToSelfOffset above) - convert to true UIParent-local units
+    -- before working out the physical-pixel drift.
+    local selfLeft, selfTop = frame:GetLeft(), frame:GetTop();
+    if (not selfLeft or not selfTop) then return; end
+
+    local frameScale = frame:GetScale();
+    local left, top = selfLeft * frameScale, selfTop * frameScale;
 
     local scale = UIParent:GetEffectiveScale();
     local screenHeight = UIParent:GetHeight();
@@ -66,24 +116,35 @@ function Pixel.CorrectDrift(frame)
 
     if (driftLeft == 0 and driftTop == 0) then return; end
 
-    frame:AdjustPointsOffset(-driftLeft / scale, driftTop / scale);
+    frame:AdjustPointsOffset(ToSelfOffset(frame, -driftLeft / scale), ToSelfOffset(frame, driftTop / scale));
 end
 
 -- Applies a window's logical (unsnapped) layout - { width, height, x, y },
 -- with x/y following the SetPoint("CENTER", x, y) convention - by snapping
 -- its size and position onto the pixel grid and anchoring it TOPLEFT (so
 -- only width/height need snapping for every edge to land on the grid).
+--
+-- A frame's SetScale grows/shrinks it away from its TOPLEFT anchor rather
+-- than around its center (the anchor offset itself, in UIParent-local units,
+-- doesn't move - only how far the opposite corners render from it does). So
+-- the TOPLEFT anchor has to be solved backward from the *desired center*
+-- (screen-center + layout.x/y) through currentScale, not just through the
+-- window's raw unscaled width/height - otherwise the window's rendered
+-- center silently drifts off layout.x/y at any scale other than 1.0.
 function Pixel.ApplyLayout(frame, layout)
     local width = Pixel.SnapUp(layout.width);
     local height = Pixel.SnapUp(layout.height);
 
     local screenWidth, screenHeight = UIParent:GetWidth(), UIParent:GetHeight();
-    local left = Pixel.Snap((screenWidth - width) / 2 + (layout.x or 0));
-    local top = Pixel.Snap((layout.y or 0) - (screenHeight - height) / 2);
+    local centerX = screenWidth / 2 + (layout.x or 0);
+    local centerY = screenHeight / 2 + (layout.y or 0);
+
+    local left = Pixel.Snap(centerX - width * currentScale / 2);
+    local top = Pixel.Snap(centerY + height * currentScale / 2 - screenHeight);
 
     frame:SetSize(width, height);
     frame:ClearAllPoints();
-    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, top);
+    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", ToSelfOffset(frame, left), ToSelfOffset(frame, top));
     Pixel.CorrectDrift(frame);
 end
 
@@ -99,6 +160,7 @@ end
 -- x=200).
 function Pixel.RegisterWindow(frame, layout, onRescale)
     windows[frame] = { layout = layout, onRescale = onRescale, defaultX = layout.x or 0, defaultY = layout.y or 0 };
+    frame:SetScale(currentScale);
     Pixel.ApplyLayout(frame, layout);
     if (onRescale) then onRescale(); end
 end
@@ -134,21 +196,28 @@ end
 -- - if given - fires with those same CENTER-relative coordinates, letting
 -- callers persist the dragged position (e.g. to a saved-variable setting).
 function Pixel.SnapPosition(frame, onSnapped)
-    local left, top = frame:GetLeft(), frame:GetTop();
-    if (not left or not top) then return; end
+    -- GetLeft()/GetTop() are in this frame's own self-scaled coordinate
+    -- space (see ToSelfOffset above), same as everything SetPoint reads -
+    -- convert to true UIParent-local units before doing any layout math in
+    -- that convention (screenWidth/Height, layout.x/y, Pixel.Snap).
+    local selfLeft, selfTop = frame:GetLeft(), frame:GetTop();
+    if (not selfLeft or not selfTop) then return; end
+
+    local scale = frame:GetScale();
+    local left, top = selfLeft * scale, selfTop * scale;
 
     local x = Pixel.Snap(left);
     local y = Pixel.Snap(top - UIParent:GetHeight());
 
     frame:ClearAllPoints();
-    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", x, y);
+    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", ToSelfOffset(frame, x), ToSelfOffset(frame, y));
     Pixel.CorrectDrift(frame);
 
     local entry = windows[frame];
     local screenWidth, screenHeight = UIParent:GetWidth(), UIParent:GetHeight();
     local width, height = frame:GetWidth(), frame:GetHeight();
-    local centerX = x - (screenWidth - width) / 2;
-    local centerY = y + (screenHeight - height) / 2;
+    local centerX = x + width * scale / 2 - screenWidth / 2;
+    local centerY = y + screenHeight / 2 - height * scale / 2;
 
     if (entry) then
         entry.layout.x = centerX;

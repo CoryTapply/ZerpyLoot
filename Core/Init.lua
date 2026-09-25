@@ -17,6 +17,8 @@ FL.SoftRes = FL.SoftRes or {};
 FL.Tooltip = FL.Tooltip or {};
 FL.Trade = FL.Trade or {};
 FL.LootCouncil = FL.LootCouncil or {};
+FL.LootCouncilRoster = FL.LootCouncilRoster or {};
+FL.SessionItems = FL.SessionItems or {};
 FL.Pixel = FL.Pixel or {};
 FL.Theme = FL.Theme or {};
 FL.Settings = FL.Settings or {};
@@ -25,11 +27,11 @@ FL.UI.RollWindow = FL.UI.RollWindow or {};
 FL.UI.GroupLootRollBars = FL.UI.GroupLootRollBars or {};
 FL.UI.SoftResImport = FL.UI.SoftResImport or {};
 FL.UI.TradeQueueWindow = FL.UI.TradeQueueWindow or {};
-FL.UI.LootCouncilAddItemsWindow = FL.UI.LootCouncilAddItemsWindow or {};
-FL.UI.LootCouncilResponseWindow = FL.UI.LootCouncilResponseWindow or {};
+FL.UI.StartSessionWindow = FL.UI.StartSessionWindow or {};
+FL.UI.RespondWindow = FL.UI.RespondWindow or {};
 FL.UI.LootCouncilReviewWindow = FL.UI.LootCouncilReviewWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
-FL.UI.ConfigWindow = FL.UI.ConfigWindow or {};
+FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
 FL.Vendor = FL.Vendor or {};
 
 local bootstrapFrame = CreateFrame("Frame");
@@ -39,6 +41,8 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
     if (event == "ADDON_LOADED" and addonName == FL.name) then
         ForeverLootDB = ForeverLootDB or {};
         FL.DB = ForeverLootDB;
+        ForeverLootDBChar = ForeverLootDBChar or {};
+        FL.DBChar = ForeverLootDBChar;
     elseif (event == "PLAYER_LOGIN") then
         -- Each module is initialised in its own pcall so one module failing
         -- (e.g. registering an event this client doesn't have) can't stop
@@ -52,6 +56,7 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "Tooltip", FL.Tooltip },
             { "Trade", FL.Trade },
             { "LootCouncil", FL.LootCouncil },
+            { "SessionItems", FL.SessionItems },
         };
 
         for _, module in ipairs(modules) do

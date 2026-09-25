@@ -40,7 +40,7 @@ end
 
 -- Response id -> its index in Constants.LOOT_COUNCIL_RESPONSES, i.e. the same
 -- order the response buttons are shown to raiders in
--- (UI/LootCouncilResponseWindow.lua). The candidate table sorts responses by
+-- (UI/RespondWindow.lua). The candidate table sorts responses by
 -- this order below. Buttons aren't user-configurable yet, so this order is
 -- effectively hardcoded to match them - once a later phase lets users
 -- reorder/customize the buttons, this should derive from that config instead.
@@ -55,17 +55,17 @@ end
 -- "not approved by me" state.
 local VOTE_APPROVED_COLOR = { 0.25, 0.70, 0.30 };
 
-local WINDOW_WIDTH = 744; -- 620 * 1.2
-local DEFAULT_HEIGHT = 360;
+local WINDOW_WIDTH = FL.UI.Sizes.windows.reviewVote.width;
+local DEFAULT_HEIGHT = FL.UI.Sizes.windows.reviewVote.height;
 local MAX_HEIGHT = 700;
 
 local LEFT_PANE_WIDTH = 160;
 local PANE_GAP = 14;
-local ICON_SIZE = 28;
+local ICON_SIZE = FL.UI.Sizes.lists.itemGridIcon;
 local LEFT_ROW_HEIGHT = 36;
 local MAX_ITEM_ROWS = 30;
 
-local RIGHT_ROW_HEIGHT = 22;
+local RIGHT_ROW_HEIGHT = FL.UI.Sizes.lists.reviewRow;
 local MAX_CANDIDATE_ROWS = 45; -- generous over max raid size (40)
 
 -- Right-pane column widths, shared between the (unscrolled) header row and
@@ -92,9 +92,11 @@ local RIGHT_LIST_TOP_OFFSET = ITEM_TITLE_HEIGHT + DIVIDER_GAP + 1 + DIVIDER_GAP 
 -- on a candidate row (Phase 6), not a separate button.
 local BOTTOM_MARGIN = 12;
 
--- Must match the scroll frames' own TOPLEFT/BOTTOMRIGHT anchor offsets below
--- (see the comment on WINDOW_RIGHT_MARGIN in UI/LootCouncilResponseWindow.lua
--- for why this exact margin - scrollbar width/anchor plus breathing room).
+-- Must match the scroll frames' own TOPLEFT/BOTTOMRIGHT anchor offsets below.
+-- WINDOW_RIGHT_MARGIN is wide enough to clear the scrollbar: per
+-- UIPanelScrollFrameTemplate, the ScrollBar is anchored 6px right of the
+-- scrollFrame's own right edge and is 16px wide - 22px total - plus a little
+-- breathing room.
 local WINDOW_LEFT_MARGIN = 12;
 local WINDOW_RIGHT_MARGIN = 24;
 

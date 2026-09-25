@@ -72,17 +72,17 @@ local function resetAllWindowPositions()
     if (FL.UI.GroupLootRollBars and FL.UI.GroupLootRollBars.ResetPosition) then FL.UI.GroupLootRollBars.ResetPosition(); end
     if (FL.UI.SoftResImport and FL.UI.SoftResImport.ResetPosition) then FL.UI.SoftResImport.ResetPosition(); end
     if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.ResetPosition) then FL.UI.TradeQueueWindow.ResetPosition(); end
-    if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.ResetPosition) then FL.UI.LootCouncilAddItemsWindow.ResetPosition(); end
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.ResetPosition) then FL.UI.LootCouncilResponseWindow.ResetPosition(); end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.ResetPosition) then FL.UI.StartSessionWindow.ResetPosition(); end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.ResetPosition) then FL.UI.RespondWindow.ResetPosition(); end
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.ResetPosition) then FL.UI.LootCouncilReviewWindow.ResetPosition(); end
-    if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.ResetPosition) then FL.UI.ConfigWindow.ResetPosition(); end
+    if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.ResetPosition) then FL.UI.SettingsWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
 
 -- Loot Council entry point. With no arguments: council members (and a
 -- session initiator who forgot to add themselves to the roster - see
 -- LootCouncil.CanAccessReviewWindow) get the Review & Vote window (Phase 4);
--- everyone else still gets the leader's Add Items window (Phase 1). Later
+-- everyone else still gets the leader's Start Session window. Later
 -- phases extend this further - a raider-facing "no active session" panel
 -- with a request button (Phase 9) - depending on role and local session
 -- state.
@@ -108,14 +108,14 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
     end
 
     if (firstWord and string.lower(firstWord) == "add") then
-        local added, skipped, found = FL.LootCouncil.DraftAddItemsFromText(rest);
+        local added, skipped, found = FL.SessionItems.AddItemsFromText(rest);
         if (not found) then
             print("|cff8865ffForeverLoot|r No item link found. Usage: /flc add [item link] [item link] ...");
         else
             local suffix = skipped > 0 and (" (%d already in list)"):format(skipped) or "";
             print(("|cff8865ffForeverLoot|r Added %d item%s to the loot council list%s."):format(added, added == 1 and "" or "s", suffix));
-            if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.Show) then
-                FL.UI.LootCouncilAddItemsWindow.Show();
+            if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Show) then
+                FL.UI.StartSessionWindow.Show();
             end
         end
         return;
@@ -162,8 +162,8 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
         return;
     end
 
-    if (FL.UI.LootCouncilAddItemsWindow and FL.UI.LootCouncilAddItemsWindow.Toggle) then
-        FL.UI.LootCouncilAddItemsWindow.Toggle();
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Toggle) then
+        FL.UI.StartSessionWindow.Toggle();
     end
 end;
 
@@ -172,8 +172,8 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
     msg = string.lower(strtrim(msg or ""));
 
     if (msg == "") then
-        if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.Show) then
-            FL.UI.ConfigWindow.Show();
+        if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.Show) then
+            FL.UI.SettingsWindow.Show();
         end
     elseif (msg == "commdebug") then
         FL.Comm.debugEnabled = not FL.Comm.debugEnabled;
@@ -192,8 +192,8 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
             FL.UI.TradeQueueWindow.Toggle();
         end
     elseif (msg == "config" or msg == "c" or msg == "settings") then
-        if (FL.UI.ConfigWindow and FL.UI.ConfigWindow.Show) then
-            FL.UI.ConfigWindow.Show();
+        if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.Show) then
+            FL.UI.SettingsWindow.Show();
         end
     elseif (msg == "options") then
         if (FL.UI.OptionsPanel and FL.UI.OptionsPanel.Open) then

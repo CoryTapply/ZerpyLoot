@@ -17,6 +17,7 @@ local Util = FL.Util;
 
 local MAX_ROWS = 40;
 local ROW_HEIGHT = 20;
+local EQUIPPED_ICON_SIZE = FL.UI.Sizes.lists.equippedIcon;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DEFAULT_TIMER = 15;
 -- Shared with the trade queue window's delete icon - see Theme.colors.danger.
@@ -108,7 +109,7 @@ local function ensureFrame()
     itemRow:SetHeight(30);
 
     itemButton = CreateFrame("Button", nil, itemRow);
-    itemButton:SetSize(28, 28);
+    itemButton:SetSize(EQUIPPED_ICON_SIZE, EQUIPPED_ICON_SIZE);
     itemButton:SetPoint("LEFT", 0, 0);
 
     itemIcon = itemButton:CreateTexture(nil, "ARTWORK");

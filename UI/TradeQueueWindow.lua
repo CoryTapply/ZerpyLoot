@@ -10,7 +10,7 @@ local Util = FL.Util;
 
 local MAX_ROWS = 20;
 local ROW_HEIGHT = 34;
-local ICON_SIZE = 26;
+local ICON_SIZE = FL.UI.Sizes.lists.itemGridIcon;
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 local DELETE_BUTTON_SIZE = 20;
 

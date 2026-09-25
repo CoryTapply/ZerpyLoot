@@ -7,7 +7,17 @@ colors.accent), applied by Theme.ApplyFontColors at Theme.Init.
 
 local FL = ForeverLoot;
 local Theme = FL.Theme;
+local Sizes = FL.UI.Sizes.fonts;
 local LSM = LibStub("LibSharedMedia-3.0");
+
+-- Bundled font (Media/Fonts/Expressway.ttf), registered with SharedMedia so
+-- it shows up in the Appearance settings font dropdown like any other LSM
+-- font. This is ForeverLoot's own default (Settings.Init and the Appearance
+-- dropdown's "default" both point at this key) - it's NOT registered as the
+-- global LSM default, which would silently change the default font for
+-- every other addon sharing this LibSharedMedia instance.
+Theme.DEFAULT_FONT_KEY = "Expressway";
+LSM:Register(LSM.MediaType.FONT, Theme.DEFAULT_FONT_KEY, "Interface\\AddOns\\ForeverLoot\\Media\\Fonts\\Expressway.ttf");
 
 -- Named font objects every ForeverLoot FontString uses (instead of Blizzard's
 -- global GameFontXxx objects directly - overriding those would also reskin
@@ -65,39 +75,38 @@ local function DefineFont(name, size, color)
     return font;
 end
 
-DefineFont(Theme.fonts.normal, 12, COLOR_GOLD);
--- Same size/color/shadow recipe as normalLarge, just dialed down to 14pt -
--- used where normalLarge (16pt) reads slightly too big (the roll-off item
--- link).
-DefineFont(Theme.fonts.normalMedium, 14, COLOR_GOLD);
-DefineFont(Theme.fonts.normalLarge, 16, COLOR_GOLD);
-DefineFont(Theme.fonts.normalSmall, 10, COLOR_GOLD);
-DefineFont(Theme.fonts.highlight, 12, COLOR_WHITE);
--- Same recipe as highlight, just dialed up to 14pt - used where highlight
--- (12pt) reads too small (the loot council response window's item names).
-DefineFont(Theme.fonts.highlightLarge, 14, COLOR_WHITE);
--- Same recipe as highlightSmall, just dialed up to 12pt - used where
--- highlightSmall (10pt) reads too small (the SoftRes preview's player names).
-DefineFont(Theme.fonts.highlightMedium, 12, COLOR_WHITE);
-DefineFont(Theme.fonts.highlightSmall, 10, COLOR_WHITE);
-DefineFont(Theme.fonts.disableSmall, 10, COLOR_GREY);
+DefineFont(Theme.fonts.normal, Sizes.normal, COLOR_GOLD);
+-- Same size/color/shadow recipe as normalLarge, just dialed down - used
+-- where normalLarge reads slightly too big (the roll-off item link).
+DefineFont(Theme.fonts.normalMedium, Sizes.normalMedium, COLOR_GOLD);
+DefineFont(Theme.fonts.normalLarge, Sizes.normalLarge, COLOR_GOLD);
+DefineFont(Theme.fonts.normalSmall, Sizes.normalSmall, COLOR_GOLD);
+DefineFont(Theme.fonts.highlight, Sizes.highlight, COLOR_WHITE);
+-- Same recipe as highlight, just dialed up - used where highlight reads too
+-- small (the loot council response window's item names).
+DefineFont(Theme.fonts.highlightLarge, Sizes.highlightLarge, COLOR_WHITE);
+-- Same recipe as highlightSmall, just dialed up - used where highlightSmall
+-- reads too small (the SoftRes preview's player names).
+DefineFont(Theme.fonts.highlightMedium, Sizes.highlightMedium, COLOR_WHITE);
+DefineFont(Theme.fonts.highlightSmall, Sizes.highlightSmall, COLOR_WHITE);
+DefineFont(Theme.fonts.disableSmall, Sizes.disableSmall, COLOR_GREY);
 
 -- Window/panel titles. The color here is only a placeholder: no skin is
 -- registered yet when this file loads, so Theme.ApplyFontColors sets the real
 -- one (the skin's colors.title, or its accent) at Theme.Init.
-DefineFont(Theme.fonts.title, 12, COLOR_GOLD);
-DefineFont(Theme.fonts.titleLarge, 16, COLOR_GOLD);
-DefineFont(Theme.fonts.hero, 40, COLOR_GOLD);
+DefineFont(Theme.fonts.title, Sizes.title, COLOR_GOLD);
+DefineFont(Theme.fonts.titleLarge, Sizes.titleLarge, COLOR_GOLD);
+DefineFont(Theme.fonts.hero, Sizes.hero, COLOR_GOLD);
 
 -- Button labels: plain white, applied to every flat-skinned button instead of
 -- whatever font object the button's template shipped with.
-DefineFont(Theme.fonts.button, 12, COLOR_WHITE);
-DefineFont(Theme.fonts.buttonDisabled, 12, COLOR_GREY);
+DefineFont(Theme.fonts.button, Sizes.button, COLOR_WHITE);
+DefineFont(Theme.fonts.buttonDisabled, Sizes.buttonDisabled, COLOR_GREY);
 
--- SoftRes paste box text - fixed 14pt regardless of the player's own chat
+-- SoftRes paste box text - fixed size regardless of the player's own chat
 -- font size (this used to inherit ChatFontNormal, which tracks that
 -- setting).
-DefineFont(Theme.fonts.input, 14, COLOR_WHITE);
+DefineFont(Theme.fonts.input, Sizes.input, COLOR_WHITE);
 
 -- Titles follow the active skin (purple accent by default, Blizzard gold in
 -- the Blizzard skins); every FontString using these named fonts follows
@@ -109,16 +118,58 @@ function Theme.ApplyFontColors()
     _G[Theme.fonts.hero]:SetTextColor(unpack(color));
 end
 
+-- FontStrings styled via FL.UI.SetFont below don't inherit a shared font
+-- object (unlike everything using a Theme.fonts.* name), so Theme.ApplyFont
+-- can't reach them through the loop below - each one registers itself here
+-- instead, remembering its own size role so a later font-face change can
+-- re-apply "this face, at this widget's own role size".
+local roleFontStrings = {};
+
+-- The SharedMedia key last passed to Theme.ApplyFont (set at login by
+-- Settings.Init, and again whenever the user changes it on the Appearance
+-- page) - kept so FL.UI.SetFont can resolve the addon's own saved font
+-- instead of falling back to LSM's global default, which most players never
+-- touch and won't match ForeverLoot's selection.
+Theme.currentFontKey = nil;
+
+local function GetCurrentFontPath()
+    return (Theme.currentFontKey and LSM:Fetch("font", Theme.currentFontKey)) or LSM:Fetch("font") or "Fonts\\FRIZQT__.TTF";
+end
+
+--- Sizes `fontString` off FL.UI.Sizes.fonts[sizeKey] (see UI/Sizes.lua),
+--- using the currently-selected SharedMedia font face and the same
+--- outline/shadow every Theme.fonts object gets. Used by UI/SettingsWindow/*
+--- instead of a dedicated Theme.fonts object per size - color is left to the
+--- caller (SetTextColor), exactly like every other FontString in this addon.
+function FL.UI.SetFont(fontString, sizeKey)
+    local size = Sizes[sizeKey];
+    assert(size, "UI.SetFont: unknown size key '" .. tostring(sizeKey) .. "'");
+
+    local path = GetCurrentFontPath();
+    fontString:SetFont(path, size, FONT_OUTLINE);
+    fontString:SetShadowOffset(FONT_SHADOW_OFFSET_X, FONT_SHADOW_OFFSET_Y);
+    fontString:SetShadowColor(unpack(FONT_SHADOW_COLOR));
+
+    fontString.zlSizeKey = sizeKey;
+    roleFontStrings[fontString] = true;
+end
+
 -- Swaps the font FACE (via SharedMedia) on every mirrored font object,
 -- keeping each one's own size/color/shadow untouched.
 function Theme.ApplyFont(key)
     local path = (key and LSM:Fetch("font", key)) or LSM:Fetch("font");
     if (not path) then return; end
 
+    Theme.currentFontKey = key;
+
     for _, fontObjectName in pairs(Theme.fonts) do
         local fontObject = _G[fontObjectName];
         local _, size, flags = fontObject:GetFont();
         fontObject:SetFont(path, size, flags);
+    end
+
+    for fontString in pairs(roleFontStrings) do
+        fontString:SetFont(path, Sizes[fontString.zlSizeKey], FONT_OUTLINE);
     end
 end
 

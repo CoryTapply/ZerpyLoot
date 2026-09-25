@@ -5,26 +5,17 @@ manually-configured council vote per candidate, and award the item - which
 then flows into the existing trade queue (Trade.lua) exactly like a roll-off
 award does, and is recorded to a persistent history log.
 
-This file currently implements Phase 1 (building the local, unbroadcast item
-list - see UI/LootCouncilAddItemsWindow.lua), Phase 2 (broadcasting that list
-to the raid over a dedicated comm channel, populating CurrentSession on every
-client), and Phase 3 (collecting each raider's response - see
-UI/LootCouncilResponseWindow.lua). Voting and awarding are added in later
-phases; see the plan this was built from for the full design.
+This file currently implements Phase 2 (broadcasting the leader's session
+item list - built and owned by Session/SessionItems.lua - to the raid over a
+dedicated comm channel, populating CurrentSession on every client) and Phase 3
+(collecting each raider's response - see UI/RespondWindow.lua).
+Voting and awarding are added in later phases; see the plan this was built
+from for the full design.
 ]]
 
 local FL = ForeverLoot;
 local LootCouncil = FL.LootCouncil;
 local Util = FL.Util;
-
--- BIND_TRADE_TIME_REMAINING is the Blizzard global string shown in an item's
--- tooltip while it still has a trade timer (e.g. "You may trade this item
--- with players who were also eligible to loot it for the next %s."). Built
--- into a match pattern the same way RollTracker.lua does for
--- RANDOM_ROLL_RESULT, rather than hardcoding the wording, since global
--- strings can shift across client patches.
-local tradeTimePattern;
-local scanTooltip;
 
 -- Dedicated comm layer (see the "Broadcast" section below) - forward-declared
 -- so Init() can register them before their bodies are defined further down,
@@ -68,8 +59,8 @@ local function refreshSessionItemData(itemID)
         end
     end
 
-    if (changed and FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
-        FL.UI.LootCouncilResponseWindow.Refresh();
+    if (changed and FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
     end
 end
 
@@ -91,13 +82,8 @@ function LootCouncil.Init()
     local db = FL.DB.lootCouncil;
 
     LootCouncil.Roster = db.roster;
-    LootCouncil.Draft = db.draft;
     LootCouncil.History = db.history;
     LootCouncil.CurrentSession = db.session;
-
-    if (BIND_TRADE_TIME_REMAINING) then
-        tradeTimePattern = Util.createPattern(BIND_TRADE_TIME_REMAINING);
-    end
 
     AceComm = LibStub("AceComm-3.0");
     LibDeflate = LibStub("LibDeflate");
@@ -105,161 +91,6 @@ function LootCouncil.Init()
     AceComm:RegisterComm(LC_PREFIX, onLCMessage);
 
     ensureItemInfoFrame();
-end
-
---------------------------------------------------------------------------
--- Draft list (Phase 1 - local only, never touches comm)
---------------------------------------------------------------------------
-
---- Adds an item to the leader's in-progress, unbroadcast draft list. The same
---- item can be added more than once (it can drop more than once in a raid) -
---- each add becomes its own separate row rather than being merged/rejected.
----@param itemLink string
----@param source string|nil "manual" (default) or "bagscan"
----@return boolean success, string|nil message
-function LootCouncil.DraftAddItem(itemLink, source)
-    if (not Util.isValidItemLink(itemLink)) then
-        return false, "Invalid item link.";
-    end
-
-    table.insert(LootCouncil.Draft.items, {
-        itemLink = itemLink,
-        itemID = Util.itemIDFromLink(itemLink),
-        source = source or "manual",
-    });
-
-    return true;
-end
-
--- The "|Hitem:...|h[Name]|h" core is present in every item hyperlink
--- regardless of client version - the color wrapper around it isn't: classic
--- clients use an 8-hex-digit "|cffRRGGBB" code, but newer ones can use a
--- different (e.g. named-color) form, so a pattern that hardcodes the classic
--- shape can fail to match entirely on those clients. Matching just the core,
--- then opportunistically extending over whatever precedes/follows it, works
--- regardless of which wrapper format (or none at all) is actually present.
-local ITEM_LINK_CORE_PATTERN = "|Hitem:.-|h%[.-%]|h";
--- Generous upper bound on how far back a leading color escape could start -
--- both the classic and named-color forms are well under this.
-local COLOR_PREFIX_SEARCH_WINDOW = 32;
-
---- Every complete item hyperlink found in `text`, in the order they appear.
-function LootCouncil.ExtractItemLinks(text)
-    local links = {};
-    if (type(text) ~= "string") then return links; end
-
-    local searchFrom = 1;
-    while (true) do
-        local coreStart, coreEnd = string.find(text, ITEM_LINK_CORE_PATTERN, searchFrom);
-        if (not coreStart) then break; end
-
-        -- Extend backward over a "|c<anything but |>" immediately before the
-        -- core, if one is actually there.
-        local windowStart = math.max(1, coreStart - COLOR_PREFIX_SEARCH_WINDOW);
-        local before = string.sub(text, windowStart, coreStart - 1);
-        local colorPrefix = string.match(before, "|c[^|]*$");
-        local linkStart = colorPrefix and (coreStart - #colorPrefix) or coreStart;
-
-        -- Extend forward over a trailing "|r" reset, if present.
-        local linkEnd = (string.sub(text, coreEnd + 1, coreEnd + 2) == "|r") and (coreEnd + 2) or coreEnd;
-
-        table.insert(links, string.sub(text, linkStart, linkEnd));
-        searchFrom = linkEnd + 1;
-    end
-
-    return links;
-end
-
---- Adds every item link found in `text` to the draft, in order.
----@return number added, number skipped, boolean foundAny
-function LootCouncil.DraftAddItemsFromText(text, source)
-    local links = LootCouncil.ExtractItemLinks(text);
-    if (#links == 0) then
-        return 0, 0, false;
-    end
-
-    local added, skipped = 0, 0;
-    for _, link in ipairs(links) do
-        if (LootCouncil.DraftAddItem(link, source)) then
-            added = added + 1;
-        else
-            skipped = skipped + 1;
-        end
-    end
-
-    return added, skipped, true;
-end
-
---- Removes the draft item at `index`.
-function LootCouncil.DraftRemoveItem(index)
-    if (not LootCouncil.Draft.items[index]) then return; end
-    table.remove(LootCouncil.Draft.items, index);
-end
-
---------------------------------------------------------------------------
--- Bag scan ("Add All Tradeable From Bags")
---------------------------------------------------------------------------
-
-local function ensureScanTooltip()
-    if (scanTooltip) then return; end
-    scanTooltip = CreateFrame("GameTooltip", "ForeverLootLCScanTooltip", nil, "GameTooltipTemplate");
-    scanTooltip:SetOwner(UIParent, "ANCHOR_NONE");
-end
-
--- True if the bag item at (bag, slot) still shows a "you may trade this"
--- tooltip line - C_Container.GetContainerItemInfo's `isBound` flag alone
--- can't distinguish "still tradeable" from "timer already expired".
-local function isStillTradeable(bag, slot)
-    if (not tradeTimePattern) then return false; end
-
-    ensureScanTooltip();
-    scanTooltip:ClearLines();
-    scanTooltip:SetBagItem(bag, slot);
-
-    for i = 2, scanTooltip:NumLines() do
-        local line = _G["ForeverLootLCScanTooltipTextLeft" .. i];
-        local text = line and line:GetText();
-        if (text and string.match(text, tradeTimePattern)) then
-            return true;
-        end
-    end
-
-    return false;
-end
-
---- Scans the player's own bags for bound items that still have a tradeable
---- timer remaining. Returns an array of item links found (may contain
---- duplicates if the same item is stacked/split across multiple slots).
-function LootCouncil.ScanBagsForTradeable()
-    local found = {};
-
-    if (not tradeTimePattern) then
-        return found;
-    end
-
-    for bag = 0, 4 do
-        local numSlots = C_Container.GetContainerNumSlots(bag) or 0;
-        for slot = 1, numSlots do
-            local info = C_Container.GetContainerItemInfo(bag, slot);
-            if (info and info.isBound and info.hyperlink and isStillTradeable(bag, slot)) then
-                table.insert(found, info.hyperlink);
-            end
-        end
-    end
-
-    return found;
-end
-
---- Runs the bag scan and adds every newly-found item to the draft (skipping
---- ones already in it). Returns how many were actually added.
-function LootCouncil.DraftAddAllTradeable()
-    local added = 0;
-    for _, itemLink in ipairs(LootCouncil.ScanBagsForTradeable()) do
-        if (LootCouncil.DraftAddItem(itemLink, "bagscan")) then
-            added = added + 1;
-        end
-    end
-    return added;
 end
 
 --------------------------------------------------------------------------
@@ -431,6 +262,15 @@ function LootCouncil.RosterRemove(name)
     return true;
 end
 
+--- Removes every current council roster member. Returns the number removed.
+function LootCouncil.RosterClear()
+    local n = Util.tcount(LootCouncil.Roster);
+    if (n == 0) then return 0; end
+    wipe(LootCouncil.Roster);
+    broadcastRosterSync();
+    return n;
+end
+
 --- Applied by every client when a councilRoster sync arrives (the live push
 --- from RosterAdd/RosterRemove above). If this local player was just added
 --- mid-session, automatically pop the Review & Vote window open for them -
@@ -460,6 +300,29 @@ local function applyCouncilRoster(Message)
     end
 end
 LootCouncil.CommActions.councilRoster = applyCouncilRoster;
+
+--- Pushes the full council roster to the raid - distinct from SendToRaid
+--- below, which starts a new voting SESSION on the leader's draft item list.
+--- Only meaningful to call as the raid leader/assistant (see
+--- UI/SettingsWindow/Pages/LootCouncil.lua, which disables its "Sync to
+--- Raid" button otherwise) - not gated here, matching this module's existing
+--- trust model (see broadcastRosterSync's comment above).
+function LootCouncil.SyncCouncilSettings()
+    lcSend("councilSettingsSync", {
+        names = LootCouncil.RosterNames(),
+    }, "GROUP");
+end
+
+local function applyCouncilSettingsSync(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or type(content.names) ~= "table") then return; end
+
+    applyRosterNames(content.names);
+
+    print(("|cff8865ffForeverLoot|r Council settings synced from %s (%d members)."):format(
+        Message.senderFqn or "?", #content.names));
+end
+LootCouncil.CommActions.councilSettingsSync = applyCouncilSettingsSync;
 
 --------------------------------------------------------------------------
 -- Session lifecycle
@@ -526,8 +389,8 @@ local function applySessionStart(Message)
 
     lcDebugPrint(("Loot council session %d started by %s (%d items)"):format(content.sessionId, Message.senderFqn or "?", #items));
 
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.MaybeAutoShow) then
-        FL.UI.LootCouncilResponseWindow.MaybeAutoShow();
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
+        FL.UI.RespondWindow.MaybeAutoShow();
     end
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.MaybeAutoShow) then
         FL.UI.LootCouncilReviewWindow.MaybeAutoShow();
@@ -535,10 +398,12 @@ local function applySessionStart(Message)
 end
 LootCouncil.CommActions.sessionStart = applySessionStart;
 
---- Broadcasts the leader's current draft list to the raid as a new session.
+--- Broadcasts the leader's current session item list (owned by
+--- Session/SessionItems.lua) to the raid as a new session.
 ---@return boolean success
 function LootCouncil.SendToRaid()
-    if (#LootCouncil.Draft.items == 0) then
+    local sessionItems = FL.SessionItems.GetItems();
+    if (#sessionItems == 0) then
         print("|cff8865ffForeverLoot|r Add at least one item to the list first.");
         return false;
     end
@@ -546,7 +411,7 @@ function LootCouncil.SendToRaid()
     nextSessionId = nextSessionId + 1;
 
     local itemLinks = {};
-    for i, draftItem in ipairs(LootCouncil.Draft.items) do
+    for i, draftItem in ipairs(sessionItems) do
         itemLinks[i] = draftItem.itemLink;
     end
 
@@ -569,7 +434,7 @@ end
 --- sendFailed - when that echo actually arrives.
 --- If the send itself errors, the optimistic entry is rolled back to
 --- whatever candidate entry existed before (nil for a first-time response)
---- and item.sendFailed is set so UI/LootCouncilResponseWindow.lua can show
+--- and item.sendFailed is set so UI/RespondWindow.lua can show
 --- "Failed to send" and sort the item to the bottom of the pending list
 --- instead of leaving it looking answered.
 ---@param itemSession number
@@ -608,8 +473,8 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
         item.sendFailed = true;
     end
 
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
-        FL.UI.LootCouncilResponseWindow.Refresh();
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
     end
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
         FL.UI.LootCouncilReviewWindow.Refresh();
@@ -620,7 +485,7 @@ end
 -- broadcast) when a response message is processed. respondedAt and approvals
 -- are preserved from any existing entry on an update, not reset - this is
 -- what keeps a raider's position in the "Responded" section fixed once
--- crossed (see UI/LootCouncilResponseWindow.lua), and keeps any council
+-- crossed (see UI/RespondWindow.lua), and keeps any council
 -- votes already cast (Phase 5) from being wiped out by a later response edit.
 local function applyResponse(Message)
     local content = Message.content;
@@ -653,8 +518,8 @@ local function applyResponse(Message)
 
     lcDebugPrint(("%s responded %s to item %d"):format(Message.senderName, tostring(content.response), content.itemSession));
 
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
-        FL.UI.LootCouncilResponseWindow.Refresh();
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
     end
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
         FL.UI.LootCouncilReviewWindow.Refresh();
@@ -882,8 +747,8 @@ function LootCouncil.AwardItem(itemSession, playerName)
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
         FL.UI.LootCouncilReviewWindow.Refresh();
     end
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
-        FL.UI.LootCouncilResponseWindow.Refresh();
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
     end
 end
 
@@ -925,8 +790,8 @@ local function applyAward(Message)
     if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
         FL.UI.LootCouncilReviewWindow.Refresh();
     end
-    if (FL.UI.LootCouncilResponseWindow and FL.UI.LootCouncilResponseWindow.Refresh) then
-        FL.UI.LootCouncilResponseWindow.Refresh();
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
     end
 end
 LootCouncil.CommActions.award = applyAward;

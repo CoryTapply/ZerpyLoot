@@ -161,6 +161,10 @@ local function createBar()
     -- and stacked under the anchor header (see layout()).
     bar:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 0, 0);
     bar:Hide();
+    -- Parented to UIParent (not the anchor header), so Window Scale's
+    -- Pixel.RegisterWindow-based application (Core/PixelPerfect.lua) never
+    -- reaches it - applied directly here instead.
+    bar:SetScale(FL.Pixel.GetGlobalScale());
 
     -- Single row - icon, name, countdown bar and the three roll buttons all
     -- share the icon's own height, with the countdown bar inset beside the
