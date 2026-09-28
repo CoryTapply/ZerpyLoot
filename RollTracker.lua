@@ -27,6 +27,20 @@ local stopTimerHandle;
 -- other just because their itemLink strings happen to be identical.
 local nextRollOffId = 0;
 
+-- Dedicated comm layer for syncing RollOff.winners to other clients (see the
+-- "Winners sync" section below) - deliberately NOT the "GargulComm2" channel
+-- Comm.lua speaks. That channel's action ids are taken directly from real
+-- Gargul's own action table specifically for third-party interop; inventing
+-- a new id on it risks colliding with an actual Gargul action we have no
+-- source to check against. Mirrors LootCouncil.lua's own "ForeverLootLC"
+-- prefix for exactly the same reason.
+-- AceComm caps comm prefixes at 16 characters - "RS" for "Roll Sync",
+-- matching LootCouncil.lua's own "ForeverLootLC" naming (13 chars).
+local ROLL_SYNC_PREFIX = "ForeverLootRS";
+local rsSend, onRollSyncMessage;
+local RSAceComm, RSLibDeflate, RSLibSerialize;
+local RollSyncActions = {}; -- action name (string) -> handler(Message)
+
 local function debugPrint(msg)
     if (Comm.debugEnabled) then
         print("|cff8865ffForeverLoot|r " .. msg);
@@ -190,7 +204,7 @@ local function applyStart(Message)
                 C_Timer.After(delay, function()
                     if (RollTracker.CurrentRollOff == thisRollOff and thisRollOff.active) then
                         local channel = Util.GroupChatChannel();
-                        if (channel) then
+                        if (channel and not Util.IsChatMessageRestricted()) then
                             local text = i == 1 and "1 second to roll" or (i .. " seconds to roll");
                             pcall(SendChatMessage, text, channel);
                         end
@@ -235,8 +249,9 @@ function RollTracker.LocalStop()
         if (RollTracker.CurrentRollOff.initiatorIsMe) then
             local channel = Util.GroupChatChannel("RAID_WARNING");
             if (channel) then
-                local ok = pcall(SendChatMessage, "Stop your rolls!", channel);
-                if (not ok) then debugPrint("Could not announce roll stop (missing raid warning permission?)"); end
+                Util.SendChatMessageSafe("Stop your rolls!", channel, nil, nil, function()
+                    debugPrint("Could not announce roll stop (missing raid warning permission?)");
+                end);
             end
         end
     end
@@ -270,10 +285,20 @@ function RollTracker.StartRollOff(itemLink, seconds)
         SupportedRolls = Constants.DEFAULT_BRACKETS,
     }, "GROUP");
 
+    -- Captured locally (rather than read back off RollTracker.CurrentRollOff)
+    -- since that only gets set once this broadcast loops back through Comm's
+    -- own receive handler, which isn't guaranteed to have happened yet by the
+    -- time this runs - relying on it here made these announcements silently
+    -- drop themselves every time, not just when actually queued for combat.
+    local announceStartedAt = GetTime();
+
     local startChannel = Util.GroupChatChannel("RAID_WARNING");
     if (startChannel) then
-        local announce = ("You have %d seconds to roll on %s"):format(seconds, itemLink);
-        pcall(SendChatMessage, announce, startChannel);
+        Util.SendChatMessageSafe(function()
+            local remaining = math.max(0, math.floor(announceStartedAt + seconds - GetTime()));
+            if (remaining <= 0) then return nil; end
+            return ("You have %d seconds to roll on %s"):format(remaining, itemLink), startChannel;
+        end);
     end
 
     -- Announce SoftRes reservations for this item too, if we know of any (parity with Gargul).
@@ -286,7 +311,11 @@ function RollTracker.StartRollOff(itemLink, seconds)
             for _, r in ipairs(reservations) do
                 table.insert(names, r.count > 1 and ("%s (%dx)"):format(r.name, r.count) or r.name);
             end
-            pcall(SendChatMessage, "This item was reserved by: " .. table.concat(names, ", "), reservedChannel);
+            local text = "This item was reserved by: " .. table.concat(names, ", ");
+            Util.SendChatMessageSafe(function()
+                if (GetTime() - announceStartedAt >= seconds) then return nil; end
+                return text, reservedChannel;
+            end);
         end
     end
 
@@ -300,65 +329,135 @@ function RollTracker.StopRollOff()
 end
 
 --------------------------------------------------------------------------
--- Award (right-click a roll row -> confirm -> announce + auto-trade)
+-- Winners sync (private comm channel - see ROLL_SYNC_PREFIX above)
 --------------------------------------------------------------------------
 
---- Assign the current roll-off's item to a player: records it, announces it
---- to raid/party chat, unconditionally queues it in the trade queue (it's
---- only ever removed once a trade is actually confirmed complete - see
---- Trade.lua's completion watcher), and attempts to auto-trade it right away.
----@param playerName string
----@param rollData table|nil the winning roll entry (see RollWindow.lua's
---- buildRows) - amount/classification/isSR/class are recorded on the
---- roll-off purely so the "Awarded to" line can show what it was awarded for.
-function RollTracker.AwardItem(playerName, rollData)
+-- Mirrors LootCouncil.lua's lcSend/onLCMessage pipeline (serialize ->
+-- compress -> encode, same anti-spoof check), but on its own prefix and with
+-- its own tiny string-keyed action table - this feature has nothing to do
+-- with loot council sessions and shouldn't be coupled to that file.
+rsSend = function(action, content)
+    local distribution, target = Util.GroupDistribution("GROUP", nil);
+
+    local payload = { a = action, b = content, c = Util.playerFqn() };
+
+    local encoded = RSLibDeflate:EncodeForWoWAddonChannel(
+        RSLibDeflate:CompressDeflate(RSLibSerialize:Serialize(payload), { level = 5 }));
+
+    debugPrint(("SEND %s -> %s"):format(tostring(action), distribution));
+
+    RSAceComm:SendCommMessage(ROLL_SYNC_PREFIX, encoded, distribution, target, "NORMAL");
+end
+
+onRollSyncMessage = function(prefix, encoded, distribution, senderName)
+    if (prefix ~= ROLL_SYNC_PREFIX) then return; end
+
+    local ok, decompressed = pcall(function()
+        return RSLibDeflate:DecompressDeflate(RSLibDeflate:DecodeForWoWAddonChannel(encoded));
+    end);
+    if (not ok or not decompressed) then return; end
+
+    local deserializeOk, payload = RSLibSerialize:Deserialize(decompressed);
+    if (not deserializeOk or type(payload) ~= "table" or not payload.a) then return; end
+
+    -- Anti-spoofing: claimed sender must start with the real (server-supplied) sender name
+    if (payload.c and senderName) then
+        local claimed = string.lower(strtrim(payload.c));
+        local real = string.lower(strtrim(senderName));
+        if (string.sub(claimed, 1, #real) ~= real) then return; end
+    end
+
+    local Message = {
+        action = payload.a,
+        content = payload.b,
+        senderFqn = payload.c or senderName,
+        senderName = Util.stripRealm(payload.c or senderName),
+        channel = distribution,
+    };
+    Message.isSelf = Util.iEquals(Message.senderFqn, Util.playerFqn()) or Util.iEquals(Message.senderName, Util.UnitName("player"));
+
+    debugPrint(("RECV %s <- %s (%s)"):format(tostring(Message.action), Message.senderFqn or "?", distribution));
+
+    local handler = RollSyncActions[Message.action];
+    if (handler) then handler(Message); end
+end
+
+-- Broadcasts the CURRENT full winners list (not a delta) - safe/idempotent
+-- to resend since replacing a list with an identical list is a no-op, and
+-- only the initiator (the only one who can award/reassign) ever sends this.
+-- queueEntryId is stripped since it's meaningless on another client's queue.
+local function broadcastWinners(RollOff, kind)
+    local sanitized = {};
+    for _, w in ipairs(RollOff.winners) do
+        table.insert(sanitized, {
+            rollId = w.rollId, name = w.name, class = w.class,
+            amount = w.amount, classification = w.classification, isSR = w.isSR,
+        });
+    end
+
+    rsSend("winners", { rollOffId = RollOff.id, type = kind, winners = sanitized });
+end
+
+RollSyncActions.winners = function(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or not content.rollOffId or type(content.winners) ~= "table") then
+        return;
+    end
+
     local RollOff = RollTracker.CurrentRollOff;
-    if (not RollOff or not RollOff.item) then
+    if (not RollOff or RollOff.id ~= content.rollOffId) then
+        return; -- stale or foreign roll-off
+    end
+
+    -- Only the recorded initiator may move winners around - mirrors
+    -- stopRollOff's own initiator check above.
+    if (not Util.iEquals(Message.senderFqn, RollOff.initiatorFqn)) then
         return;
     end
 
-    -- Defense in depth: UI/RollWindow.lua already blocks the right-click for
-    -- anyone but the initiator, but enforce it here too since this is the
-    -- function that actually hands the item out.
-    if (not RollOff.initiatorIsMe) then
-        print("|cff8865ffForeverLoot|r Only the player who started this roll-off can award it.");
-        return;
-    end
-
-    RollOff.awardedTo = playerName;
-    RollOff.awardedAmount = rollData and rollData.amount;
-    RollOff.awardedClassification = rollData and rollData.classification;
-    RollOff.awardedIsSR = rollData and rollData.isSR;
-    RollOff.awardedClass = rollData and rollData.class;
+    RollOff.winners = content.winners;
 
     if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
         FL.UI.RollWindow.Refresh();
     end
+end
 
-    local awardChannel = Util.GroupChatChannel();
-    if (awardChannel) then
-        pcall(SendChatMessage, ("%s was awarded to %s!"):format(RollOff.item, playerName), awardChannel);
-    end
+--------------------------------------------------------------------------
+-- Award (right-click a roll row -> confirm -> announce + auto-trade)
+--------------------------------------------------------------------------
 
-    -- Re-awarding THIS SAME roll-off to someone else supersedes any earlier
-    -- attempt still sitting in the trade queue for it. Scoped by roll-off id
-    -- (not just itemLink) so a second, separate roll-off for an identical
-    -- item (it dropped twice) queues its own entry instead of wiping out the
-    -- first roll-off's still-pending one.
-    FL.Trade.QueueRemoveByRollOff(RollOff.id);
-
-    FL.Trade.QueueAdd({
+-- Builds this award's trade-queue entry (via the existing Trade.QueueAdd) and
+-- its corresponding winners-list entry, shared by both AwardItem and
+-- ReassignItem so the two stay in lockstep with each other's field shape.
+local function buildWinnerAndQueueEntry(RollOff, playerName, rollData)
+    local queueEntry = {
         itemLink = RollOff.item,
         itemIcon = RollOff.itemIcon,
         itemID = RollOff.itemID,
         winner = playerName,
         rollOffId = RollOff.id,
+        rollSessionId = RollOff.id,
         rollAmount = rollData and rollData.amount,
         classification = rollData and rollData.classification,
         winnerClass = rollData and rollData.class,
-    });
+    };
+    FL.Trade.QueueAdd(queueEntry); -- assigns queueEntry.id
 
-    FL.Trade.AttemptTrade(playerName, RollOff.item, function(success, reason)
+    local winnerEntry = {
+        rollId = rollData and rollData.arrivalIndex,
+        name = playerName,
+        class = rollData and rollData.class,
+        amount = rollData and rollData.amount,
+        classification = rollData and rollData.classification,
+        isSR = rollData and rollData.isSR,
+        queueEntryId = queueEntry.id,
+    };
+
+    return winnerEntry, queueEntry;
+end
+
+local function attemptAutoTrade(RollOff, playerName, queueEntry)
+    FL.Trade.AttemptTradeForQueueEntry(queueEntry, function(success, reason)
         if (success) then
             print(("|cff8865ffForeverLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(RollOff.item, playerName));
             return;
@@ -374,6 +473,139 @@ function RollTracker.AwardItem(playerName, rollData)
             FL.UI.TradeQueueWindow.Show();
         end
     end);
+end
+
+--- Assign the current roll-off's item to a player - either the first winner
+--- ("Award") or an additional copy ("Award Copy"), driven entirely by
+--- whether RollOff.winners is already non-empty. Never touches an existing
+--- winner or their trade-queue entry; use ReassignItem to replace winners
+--- instead.
+---@param playerName string
+---@param rollData table|nil the winning roll entry (see RollWindow.lua's
+--- buildRows) - amount/classification/isSR/class/arrivalIndex are recorded
+--- on the winner entry purely so the UI can show what it was awarded for.
+function RollTracker.AwardItem(playerName, rollData)
+    local RollOff = RollTracker.CurrentRollOff;
+    if (not RollOff or not RollOff.item) then
+        return;
+    end
+
+    -- Defense in depth: UI/RollWindow.lua already blocks the right-click for
+    -- anyone but the initiator, but enforce it here too since this is the
+    -- function that actually hands the item out.
+    if (not RollOff.initiatorIsMe) then
+        print("|cff8865ffForeverLoot|r Only the player who started this roll-off can award it.");
+        return;
+    end
+
+    RollOff.winners = RollOff.winners or {};
+
+    local winnerEntry, queueEntry = buildWinnerAndQueueEntry(RollOff, playerName, rollData);
+    table.insert(RollOff.winners, winnerEntry);
+
+    RollOff.lastAction = {
+        kind = "award",
+        winnerName = playerName,
+        winnerClass = rollData and rollData.class,
+        ordinal = #RollOff.winners,
+    };
+
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+        FL.UI.RollWindow.Refresh();
+    end
+
+    local awardChannel = Util.GroupChatChannel();
+    if (awardChannel) then
+        Util.SendChatMessageSafe(("%s was awarded to %s!"):format(RollOff.item, playerName), awardChannel);
+    end
+
+    broadcastWinners(RollOff, "add");
+    attemptAutoTrade(RollOff, playerName, queueEntry);
+end
+
+--- Replace every current winner of this roll-off with a single new one:
+--- drops each old winner's not-yet-traded queue entry (an already-traded
+--- one is left alone and reported back via RollOff.lastAction), then awards
+--- the item to the new player exactly like a first award.
+---@param playerName string
+---@param rollData table|nil see AwardItem
+function RollTracker.ReassignItem(playerName, rollData)
+    local RollOff = RollTracker.CurrentRollOff;
+    if (not RollOff or not RollOff.item) then
+        return;
+    end
+
+    if (not RollOff.initiatorIsMe) then
+        print("|cff8865ffForeverLoot|r Only the player who started this roll-off can award it.");
+        return;
+    end
+
+    if (not RollOff.winners or #RollOff.winners == 0) then
+        return; -- nothing to reassign - UI never offers Reassign in this state
+    end
+
+    local oldWinners = RollOff.winners;
+    local replacedNames, alreadyTradedNames = {}, {};
+
+    for _, w in ipairs(oldWinners) do
+        table.insert(replacedNames, { name = w.name, class = w.class });
+
+        local removed = FL.Trade.QueueRemoveByRollOffAndWinner(RollOff.id, w.name);
+        if (not removed) then
+            local wasTraded = false;
+            for _, tradedName in ipairs(RollOff.tradedWinnerNames or {}) do
+                if (Util.namesMatch(tradedName, w.name)) then
+                    wasTraded = true;
+                    break;
+                end
+            end
+
+            if (wasTraded) then
+                table.insert(alreadyTradedNames, { name = w.name, class = w.class });
+            end
+            -- else: manually removed from the Trade Queue window - nothing
+            -- to do, and per the task's own edge case, no error either.
+        end
+    end
+
+    local winnerEntry, queueEntry = buildWinnerAndQueueEntry(RollOff, playerName, rollData);
+    RollOff.winners = { winnerEntry };
+    RollOff.tradedWinnerNames = {};
+
+    RollOff.lastAction = {
+        kind = "reassign",
+        winnerName = playerName,
+        winnerClass = rollData and rollData.class,
+        replacedNames = replacedNames,
+        alreadyTradedNames = alreadyTradedNames,
+    };
+
+    if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
+        FL.UI.RollWindow.Refresh();
+    end
+
+    local awardChannel = Util.GroupChatChannel();
+    if (awardChannel) then
+        Util.SendChatMessageSafe(("%s was awarded to %s!"):format(RollOff.item, playerName), awardChannel);
+    end
+
+    broadcastWinners(RollOff, "reassign");
+    attemptAutoTrade(RollOff, playerName, queueEntry);
+end
+
+--- Called by Trade.lua whenever a queue entry created by a roll-off award is
+--- confirmed actually traded (not just placed) - lets a later Reassign tell
+--- "already traded" apart from "manually removed from the Trade Queue
+--- window", since both look identical as a simple "entry no longer exists".
+---@param entry table the Trade.Queue entry that was just traded away
+function RollTracker.OnQueueEntryTraded(entry)
+    local RollOff = RollTracker.CurrentRollOff;
+    if (not RollOff or not entry.rollSessionId or RollOff.id ~= entry.rollSessionId) then
+        return;
+    end
+
+    RollOff.tradedWinnerNames = RollOff.tradedWinnerNames or {};
+    table.insert(RollOff.tradedWinnerNames, entry.winner);
 end
 
 --------------------------------------------------------------------------
@@ -467,4 +699,9 @@ function RollTracker.Init()
     end);
 
     ensureItemInfoFrame();
+
+    RSAceComm = LibStub("AceComm-3.0");
+    RSLibDeflate = LibStub("LibDeflate");
+    RSLibSerialize = LibStub("LibSerialize");
+    RSAceComm:RegisterComm(ROLL_SYNC_PREFIX, onRollSyncMessage);
 end

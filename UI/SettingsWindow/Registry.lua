@@ -60,6 +60,13 @@ local function ensurePageBuilt(entry)
     if (entry.built) then return; end
 
     local frame = CreateFrame("Frame", nil, contentFrame);
+    -- Starts hidden (frames default to shown) so the Show() call below is a
+    -- real hidden->shown transition on first build - a page whose buildFunc
+    -- relies on OnShow to do its first refresh (LootCouncil.lua's roster
+    -- grid) would otherwise never fire it: the frame would already be
+    -- "shown" by the time SelectPage calls :Show(), since it's created
+    -- while already attached to visible ancestors.
+    frame:Hide();
     frame:SetPoint("TOPLEFT", contentFrame, "TOPLEFT", 0, 0);
     frame:SetPoint("TOPRIGHT", contentFrame, "TOPRIGHT", 0, 0);
 
@@ -147,11 +154,35 @@ function Registry.SelectPage(id)
 
     entry.page:Refresh();
     Registry.ApplySearch(currentSearchText);
+
+    -- On this client, a checkbox/radio item's wrapped helper text can
+    -- measure a line short on this very first pass (fonts/geometry not
+    -- fully settled yet) - re-running layout one frame later catches that
+    -- once things have actually settled. Guarded by the entry still being
+    -- current in case the player switches pages again before this fires.
+    C_Timer.After(0, function()
+        if (currentEntry == entry) then Registry.LayoutCurrentPage(); end
+    end);
 end
 
 function Registry.RefreshCurrentPage()
     if (currentEntry and currentEntry.page) then
         currentEntry.page:Refresh();
+        contentFrame:SetHeight(math.max(1, currentEntry.page:GetContentHeight()));
+        SettingsWindow.RefreshScrollBar();
+    end
+end
+
+--- Re-runs the current page's row/section positioning in place (see
+--- PageMethods:Layout) and resizes the scrollable content child to match -
+--- for the delayed re-layout in Registry.SelectPage above. Deliberately not
+--- wired to the content child's own OnSizeChanged (resizing a frame from
+--- inside its own OnSizeChanged handler is its own can of worms on this
+--- client) - this SetHeight call is one-shot, not a persistent reaction to
+--- itself.
+function Registry.LayoutCurrentPage()
+    if (currentEntry and currentEntry.page) then
+        currentEntry.page:Layout();
         contentFrame:SetHeight(math.max(1, currentEntry.page:GetContentHeight()));
         SettingsWindow.RefreshScrollBar();
     end

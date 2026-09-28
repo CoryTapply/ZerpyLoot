@@ -21,6 +21,7 @@ Libs\LibSerialize\LibSerialize.lua
 Core\Init.lua
 Core\Constants.lua
 Core\Util.lua
+Core\WindowReopenLinks.lua
 Core\PixelPerfect.lua
 Core\Settings.lua
 
@@ -31,6 +32,7 @@ Vendor\Base64.lua
 # Modules
 Comm.lua
 RollTracker.lua
+RollSession.lua
 GroupLootRoll.lua
 SoftRes.lua
 Trade.lua
@@ -38,6 +40,9 @@ LootCouncil.lua
 LootCouncilRoster.lua
 Tooltip.lua
 Session\SessionItems.lua
+Session\Awards.lua
+LootChat.lua
+AutoRoll.lua
 
 # UI
 UI\Sizes.lua
@@ -53,6 +58,7 @@ UI\Theme\Skins\BlizzardThin.lua
 UI\SettingsWindow\Colors.lua
 UI\SettingsWindow\Skin.lua
 UI\SettingsWindow\Widgets.lua
+UI\SettingsWindow\ItemListEditor.lua
 UI\SettingsWindow\Registry.lua
 UI\SettingsWindow\Init.lua
 UI\SettingsWindow\Pages\General.lua
@@ -64,12 +70,13 @@ UI\SettingsWindow\Pages\Profiles.lua
 UI\SettingsWindow\Pages\About.lua
 UI\OptionsPanel.lua
 UI\RollWindow.lua
-UI\GroupLootRollBars.lua
-UI\SoftResImport.lua
+UI\GroupLootFrame.lua
+UI\AutoRollPopup.lua
+UI\SoftResImportWindow.lua
 UI\TradeQueueWindow.lua
 UI\StartSessionWindow.lua
 UI\RespondWindow.lua
-UI\LootCouncilReviewWindow.lua
+UI\AwardWindow.lua
 
 # Debug / slash commands
 Debug.lua

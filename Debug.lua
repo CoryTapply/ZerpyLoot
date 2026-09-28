@@ -69,19 +69,19 @@ end
 -- Shared with the options panel's "Reset Window Positions" button.
 local function resetAllWindowPositions()
     if (FL.UI.RollWindow and FL.UI.RollWindow.ResetPosition) then FL.UI.RollWindow.ResetPosition(); end
-    if (FL.UI.GroupLootRollBars and FL.UI.GroupLootRollBars.ResetPosition) then FL.UI.GroupLootRollBars.ResetPosition(); end
-    if (FL.UI.SoftResImport and FL.UI.SoftResImport.ResetPosition) then FL.UI.SoftResImport.ResetPosition(); end
+    if (FL.UI.GroupLootFrame and FL.UI.GroupLootFrame.ResetPosition) then FL.UI.GroupLootFrame.ResetPosition(); end
+    if (FL.UI.SoftResImportWindow and FL.UI.SoftResImportWindow.ResetPosition) then FL.UI.SoftResImportWindow.ResetPosition(); end
     if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.ResetPosition) then FL.UI.TradeQueueWindow.ResetPosition(); end
     if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.ResetPosition) then FL.UI.StartSessionWindow.ResetPosition(); end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.ResetPosition) then FL.UI.RespondWindow.ResetPosition(); end
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.ResetPosition) then FL.UI.LootCouncilReviewWindow.ResetPosition(); end
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.ResetPosition) then FL.UI.AwardWindow.ResetPosition(); end
     if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.ResetPosition) then FL.UI.SettingsWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
 
 -- Loot Council entry point. With no arguments: council members (and a
 -- session initiator who forgot to add themselves to the roster - see
--- LootCouncil.CanAccessReviewWindow) get the Review & Vote window (Phase 4);
+-- LootCouncil.CanAccessReviewWindow) get the Review and Award window;
 -- everyone else still gets the leader's Start Session window. Later
 -- phases extend this further - a raider-facing "no active session" panel
 -- with a request button (Phase 9) - depending on role and local session
@@ -92,6 +92,7 @@ local function printLootCouncilHelp()
     print("|cff8865ffForeverLoot|r loot council commands:");
     print("  /flc - open the loot council window");
     print("  /flc add [item link] [item link] ... - add item(s) to the loot council list");
+    print("  /flc start - open the start session window");
     print("  /flc council add [name] - add a player (or yourself, if no name) to the council roster");
     print("  /flc council remove <name> - remove a player from the council roster");
     print("  /flc council list - list current council roster members");
@@ -104,6 +105,13 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
 
     if (firstWord and string.lower(firstWord) == "help") then
         printLootCouncilHelp();
+        return;
+    end
+
+    if (firstWord and string.lower(firstWord) == "start") then
+        if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Show) then
+            FL.UI.StartSessionWindow.Show();
+        end
         return;
     end
 
@@ -156,8 +164,8 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
     end
 
     if (FL.LootCouncil.CanAccessReviewWindow and FL.LootCouncil.CanAccessReviewWindow()) then
-        if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Toggle) then
-            FL.UI.LootCouncilReviewWindow.Toggle();
+        if (FL.UI.AwardWindow and FL.UI.AwardWindow.Toggle) then
+            FL.UI.AwardWindow.Toggle();
         end
         return;
     end
@@ -184,8 +192,8 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
             FL.UI.RollWindow.Toggle();
         end
     elseif (msg == "softres" or msg == "sr") then
-        if (FL.UI.SoftResImport and FL.UI.SoftResImport.Toggle) then
-            FL.UI.SoftResImport.Toggle();
+        if (FL.UI.SoftResImportWindow and FL.UI.SoftResImportWindow.Toggle) then
+            FL.UI.SoftResImportWindow.Toggle();
         end
     elseif (msg == "tradequeue" or msg == "tq" or msg == "trade") then
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Toggle) then
@@ -204,12 +212,15 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("|cff8865ffForeverLoot|r window positions reset to default.");
     elseif (msg == "testdisabled") then
         toggleTestDisabledFrame();
+    elseif (msg == "autoroll") then
+        FL.AutoRoll.HandleSlashAutoroll();
     else
         print("|cff8865ffForeverLoot|r commands:");
         print("  /fl commdebug - toggle printing of decoded comm traffic");
         print("  /fl roll - toggle the roll tracker window");
         print("  /fl softres - open the SoftRes import window");
         print("  /fl tradequeue - open the trade queue window");
+        print("  /fl autoroll - open the Automatic Rolls popup for your current raid");
         printLootCouncilHelp();
         print("  /fl config (or /fl c) - open ForeverLoot's settings window");
         print("  /fl options - open the Blizzard-side options panel (Escape menu)");

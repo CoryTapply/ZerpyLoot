@@ -39,9 +39,19 @@ local function addLines(tooltip, itemLink)
     tooltip:AddLine(" ");
     tooltip:AddLine("|cFFEFB8CDReserved by|r");
 
+    -- r.name is display-cased by SoftRes.lua's own capitalize() - which only
+    -- uppercases the string's first letter, so a two-part name comes out
+    -- like "Zerpy ai" - and its class is whatever was picked on softres.it,
+    -- which may not be the reserver's actual class (see fixPlayerNames in
+    -- SoftRes.lua). Prefer the roster's own name/class for anyone currently
+    -- in the group; Util.findMember matches case-insensitively, so the bad
+    -- capitalization above doesn't prevent the match.
+    local members = Util.groupMembers();
     for _, r in ipairs(reservations) do
-        local classToken = Util.classNameToToken(SoftRes.GetPlayerClass(r.name));
-        local text = Util.classColoredName(r.name, classToken);
+        local matchedName, matchedClass = Util.findMember(members, r.name);
+        local displayName = matchedName or r.name;
+        local classToken = matchedClass or Util.classNameToToken(SoftRes.GetPlayerClass(r.name));
+        local text = Util.classColoredName(displayName, classToken);
         if (r.count > 1) then
             text = ("%s (%dx)"):format(text, r.count);
         end

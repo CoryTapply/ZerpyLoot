@@ -1,6 +1,12 @@
 local FL = ForeverLoot;
 local Util = FL.Util;
 
+-- Every module's chat output goes through this instead of a bare print(), so
+-- the "|cff8865ffForeverLoot|r " prefix only lives in one place.
+function Util.Print(msg)
+    print("|cff8865ffForeverLoot|r " .. msg);
+end
+
 -- Turn a Blizzard global format string (e.g. RANDOM_ROLL_RESULT, containing
 -- %s/%d or positional %1$s/%2$d tokens) into a Lua match pattern with capture
 -- groups, in the same left-to-right order the tokens appear in the string.
@@ -37,6 +43,12 @@ function Util.stripRealm(name)
     if (not name) then return name; end
     local base = string.match(name, "^([^%-]+)");
     return base or name;
+end
+
+-- Trims leading/trailing whitespace. Used by RespondWindow's note popover
+-- (CloseNote) - no existing trim helper anywhere in the addon before this.
+function Util.Trim(s)
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""));
 end
 
 function Util.iEquals(a, b)
@@ -294,6 +306,11 @@ function Util.GetItemIcon(itemID)
 end
 
 function Util.GetItemQualityColor(quality)
+    -- quality is nil while the item link's info hasn't been cached by the
+    -- client yet (GetItemQuality falls through to nil); C_Item.GetItemQualityColor
+    -- throws a hard Lua error on a nil/invalid quality instead of returning nil,
+    -- so callers need this to be able to safely fall back to a default border color.
+    if (type(quality) ~= "number") then return nil; end
     return C_Item.GetItemQualityColor(quality);
 end
 
@@ -323,7 +340,7 @@ function Util.IsMouseOverVisible(region, scrollFrame)
 end
 
 -- Shared shift/ctrl-click behavior for every item-icon button in the addon
--- (RollWindow, TradeQueueWindow, SoftResImport): shift-click inserts the
+-- (RollWindow, TradeQueueWindow, SoftResImportWindow): shift-click inserts the
 -- item's chat link into the open chat edit box, ctrl-click opens the
 -- Dressing Room preview. Returns true if the click was one of those two, so
 -- a caller with its own plain-click behavior (e.g. TradeQueueWindow's
@@ -356,6 +373,65 @@ function Util.GroupChatChannel(raidChannel)
 
     return nil;
 end
+
+local chatQueue = {};
+
+local function resolveAndSend(entry)
+    local msg, chatType, languageID, target = entry.msgOrFn, entry.chatType, entry.languageID, entry.target;
+    if (type(entry.msgOrFn) == "function") then
+        msg, chatType, languageID, target = entry.msgOrFn();
+    end
+    if (msg) then
+        local ok = pcall(SendChatMessage, msg, chatType, languageID, target);
+        if (not ok and entry.onFail) then entry.onFail(); end
+    end
+end
+
+-- SendChatMessage only becomes a protected function - and therefore throws
+-- ADDON_ACTION_BLOCKED no matter how it's pcall'd - during an active boss
+-- encounter, or anywhere inside a Mythic Keystone dungeon run, while in
+-- combat. Ordinary open-world/trash combat is unaffected.
+function Util.IsChatMessageRestricted()
+    if (not InCombatLockdown()) then return false; end
+    return IsEncounterInProgress() or (C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive());
+end
+
+-- Sends a chat message now, or - if SendChatMessage is currently restricted
+-- (see Util.IsChatMessageRestricted) - queues it to send once it isn't.
+-- `msgOrFn` can be a plain string, or a function() return msg, chatType,
+-- languageID, target end resolved at actual send time (immediately, or at
+-- flush time), so time-sensitive text can reflect current state and return
+-- nil to skip sending if it's no longer relevant. `onFail` (optional) is
+-- called if the underlying SendChatMessage pcall fails for an unrelated
+-- reason (e.g. no raid warning permission) - only fires on an immediate
+-- send, since a queued failure has no one left listening.
+function Util.SendChatMessageSafe(msgOrFn, chatType, languageID, target, onFail)
+    local entry = { msgOrFn = msgOrFn, chatType = chatType, languageID = languageID, target = target, onFail = onFail };
+    if (Util.IsChatMessageRestricted()) then
+        table.insert(chatQueue, entry);
+    else
+        resolveAndSend(entry);
+    end
+end
+
+function Util.FlushChatMessageQueue()
+    if (#chatQueue == 0 or Util.IsChatMessageRestricted()) then return; end
+    local queued = chatQueue;
+    chatQueue = {};
+    for _, entry in ipairs(queued) do
+        resolveAndSend(entry);
+    end
+end
+
+-- PLAYER_REGEN_ENABLED covers leaving combat entirely (including the end of
+-- a Mythic+ trash pull); ENCOUNTER_END covers a boss dying/wiping while
+-- still in combat with adds, where IsEncounterInProgress() alone would clear
+-- but InCombatLockdown() wouldn't yet. Either way, FlushChatMessageQueue
+-- re-checks the restriction itself and no-ops if it's still active.
+local chatQueueFrame = CreateFrame("Frame");
+chatQueueFrame:RegisterEvent("PLAYER_REGEN_ENABLED");
+chatQueueFrame:RegisterEvent("ENCOUNTER_END");
+chatQueueFrame:SetScript("OnEvent", Util.FlushChatMessageQueue);
 
 -- Resolve a logical channel ("GROUP" or an explicit distribution) into a
 -- concrete AceComm distribution + recipient. Shared by every comm layer in

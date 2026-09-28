@@ -77,14 +77,28 @@ FL.UI.Colors = {
     scrollThumbHover = { 0.420, 0.376, 0.310 }, -- #6b604f
 
     ----------------------------------------------------------------------
-    -- UI/StartSessionWindow.lua - the 3 colors below aren't already covered
+    -- UI/StartSessionWindow.lua - the 4 colors below aren't already covered
     -- by an entry above; everything else that window uses (gold, muted,
-    -- windowBg, border, divider, titlePurple, optionsStripBg, checkboxBorder,
-    -- memberBg, memberBorder, skinCloseBorder, controlHover) is reused as-is.
+    -- windowBg, border, divider, titlePurple, checkboxBorder, description,
+    -- controlHover, primaryBg, memberBg, memberBorder, skinCloseBorder) is
+    -- reused as-is - including for the item-list DropZone overlay (idle
+    -- border/text = checkboxBorder/description/controlHover, active/hot
+    -- border+text = gold, hot fill = primaryBg).
     ----------------------------------------------------------------------
     sessionListBg          = { 0.059, 0.051, 0.047 }, -- #0f0d0c - item list box fill
     sessionDeleteHoverBg   = { 0.165, 0.071, 0.071 }, -- #2a1212 - row trash button hover fill
     sessionDeleteHoverIcon = { 1.000, 0.420, 0.369 }, -- #ff6b5e - row trash button hover icon
+    sessionDropActiveBg    = { 0.169, 0.141, 0.059, 0.96 }, -- #2b240f @96% - DropZone active-state fill
+
+    ----------------------------------------------------------------------
+    -- UI/TradeQueueWindow.lua - the color below isn't already covered by an
+    -- entry above; everything else it uses (gold, description, controlHover,
+    -- sessionDeleteHoverIcon, respondSentLabel, windowBg, border, divider,
+    -- sessionListBg, memberBorder, memberBg, awardWarningBorder,
+    -- primaryBorder, muted, titlePurple, sessionDeleteHoverBg,
+    -- skinCloseBorder, transparent) is reused as-is.
+    ----------------------------------------------------------------------
+    tradeQueueRowHoverBg = { 0.122, 0.106, 0.082 }, -- #1f1b15 - row hover fill
 
     ----------------------------------------------------------------------
     -- UI/RespondWindow.lua - the colors below aren't already covered by an
@@ -101,12 +115,101 @@ FL.UI.Colors = {
     respondToggleBarBg      = { 0.082, 0.075, 0.067, 0.90 }, -- #151311 @90%
     respondTimerTrackBorder = { 0, 0, 0, 0.6 },
     respondTimerPausedFill  = { 0.290, 0.239, 0.078 }, -- #4a3d14
+
+    ----------------------------------------------------------------------
+    -- UI/RespondWindow.lua - icon-button colors added for the button-row
+    -- redesign (Note button + icon-only Transmog/Pass). Everything else the
+    -- redesign uses (gold, muted, text, textBright, windowBg, selectedFill,
+    -- selectedBorder, defaultBg, checkboxBorder, controlFocus,
+    -- respondNotePlaceholder, respondButtonBorder, responses.MOG.color) is
+    -- reused as-is.
+    ----------------------------------------------------------------------
+    respondMogSelectedBg  = { 0.690, 0.310, 0.851, 0.28 }, -- #b04fd9 @28% - Transmog selected bg (translucent, not the shared opaque responses.MOG.color)
+    respondPassHover      = { 0.541, 0.506, 0.463 }, -- #8a8176 - Pass hover/selected border (own constant - numerically == controlHover but never aliased to it, and never reuses the shared responses.PASS)
+    respondPassSelectedBg = { 0.227, 0.208, 0.188 }, -- #3a3530 - Pass selected bg (solid, unlike Transmog's translucent one)
+
+    ----------------------------------------------------------------------
+    -- UI/AwardWindow.lua - the colors below aren't already covered by an
+    -- entry above; everything else it uses (gold, windowBg, sidebarBg,
+    -- border, divider, muted, description, text, controlBg, defaultBg,
+    -- checkboxBorder, disabledBorder, councilFill, councilBorder, hoverBg,
+    -- sessionListBg, memberBorder, controlFocus/primaryBorder, disabledText)
+    -- is reused as-is.
+    ----------------------------------------------------------------------
+    awardVoteCheckDark = { 0.102, 0.067, 0.000 }, -- #1a1100 - Check.tga tint on the gold-filled voted button
+    awardWarningBg      = { 0.165, 0.086, 0.071 }, -- #2a1612 - reassign warning box fill
+    awardWarningBorder  = { 0.541, 0.227, 0.165 }, -- #8a3a2a - reassign warning box border
+    awardWarningIcon    = { 1.000, 0.541, 0.439 }, -- #ff8a70 - warning icon tint / "left raid" text
+    awardWarningText    = { 0.941, 0.839, 0.812 }, -- #f0d6cf - reassign warning body text
+    awardOverlay        = { 0, 0, 0, 0.6 }, -- popup scrim AND drop-shadow tint (shared)
+
+    ----------------------------------------------------------------------
+    -- UI/RollWindow.lua - the colors below aren't already covered by an
+    -- entry above; everything else it uses (windowBg, border, divider, gold,
+    -- controlBg, controlFocus, checkboxBorder, muted, text, textBright,
+    -- description, defaultBg, transparent, scrollTrack, scrollThumb,
+    -- scrollThumbHover, respondTimerTrackBorder, sessionListBg, memberBorder,
+    -- memberBg, tradeQueueRowHoverBg, councilFill, councilBorder,
+    -- sessionDeleteHoverIcon, respondSentLabel, awardWarningBg,
+    -- awardWarningBorder, awardOverlay, skinCloseBg/Hover, primaryBg/Border)
+    -- is reused as-is.
+    ----------------------------------------------------------------------
+    rollSRBlue          = { 0.290, 0.639, 1.000 }, -- #4aa3ff - "N soft reserves" in the item header (rollTags.SR below is the same color for the SR pill itself)
+    rollHoverFillStart  = { 0.541, 0.122, 0.122 }, -- #8a1f1f - timer bar hover gradient (stop-rolling affordance)
+    rollHoverFillEnd    = { 0.851, 0.212, 0.212 }, -- #d93636 - same value as responses.MAJOR.color, kept separate/traceable per this file's convention
+
+    -- MS/OS/SR tag pill border+text colors (UI/RollWindow.lua roll list rows
+    -- and the award confirmation popup). Pill fill is always defaultBg for
+    -- all three - only these two per-tag colors vary. MS's vivid orange is
+    -- also reused by UI/SettingsWindow/Pages/LootCouncil.lua's "Un-synced
+    -- changes" footer warning - saturated enough to read as distinct from
+    -- the yellow-gold text next to it.
+    rollTags = {
+        MS = { border = { 1.000, 0.541, 0.239 }, text = { 1.000, 0.541, 0.239 } }, -- #ff8a3d
+        OS = { border = { 0.725, 0.549, 1.000 }, text = { 0.725, 0.549, 1.000 } }, -- #b98cff
+        SR = { border = { 0.290, 0.639, 1.000 }, text = { 0.290, 0.639, 1.000 } }, -- #4aa3ff, == rollSRBlue
+    },
+
+    ----------------------------------------------------------------------
+    -- UI/SoftResImportWindow.lua - the color below isn't already covered by
+    -- an entry above; everything else it uses (windowBg, border, divider,
+    -- gold, muted, controlBg, controlBorder, controlFocus, description,
+    -- disabledText, sessionListBg, memberBorder, memberBg, respondSentLabel,
+    -- sessionDeleteHoverIcon, text, awardWarningBg, awardWarningBorder,
+    -- controlHover) is reused as-is.
+    ----------------------------------------------------------------------
+    softresMissingLabel = { 1.000, 0.702, 0.278 }, -- #ffb347 - "in raid without a reserve" header label
+
+    ----------------------------------------------------------------------
+    -- UI/SettingsWindow/Pages/LootRolls.lua - "Loot Chat" section's item
+    -- list. Everything else it uses (muted, controlFocus, sessionListBg,
+    -- memberBorder, memberBg, hoverBg, selectedBorder, disabledText,
+    -- skinCloseBorder, sessionDeleteHoverIcon, respondSentLabel, description)
+    -- is reused as-is.
+    ----------------------------------------------------------------------
+    lootChatQuestTag = { 0.851, 0.710, 0.290 }, -- #d9b54a - "QUEST" tag border+text
+
+    ----------------------------------------------------------------------
+    -- UI/GroupLootFrame.lua - the colors below aren't already covered by an
+    -- entry above; everything else it uses (windowBg/border/divider @ .95
+    -- via groupLootPanelBg below being the only variant needed, disabledText,
+    -- muted, titlePurple, controlHover, disabledBorder, awardWarningBorder,
+    -- awardWarningIcon, arrowBoxBorder, description, defaultBg,
+    -- checkboxBorder, respondSentLabel, gold, sessionDeleteHoverIcon,
+    -- rollTags.OS, controlBg, rollHoverFillEnd) is reused as-is.
+    ----------------------------------------------------------------------
+    groupLootPanelBg          = { 0.082, 0.075, 0.067, 0.95 }, -- #151311 @95% - header/idle/row panel fill
+    groupLootMoreBarBg        = { 0.082, 0.075, 0.067, 0.85 }, -- #151311 @85%
+    groupLootShadow           = { 0, 0, 0, 0.45 }, -- SoftGlow drop-shadow tint
+    groupLootButtonHoverBg    = { 0.165, 0.149, 0.133 }, -- #2a2622
+    groupLootTrackBorder      = { 0, 0, 0, 1 }, -- timer track border
+    groupLootTimerDangerStart = { 0.427, 0.106, 0.106 }, -- #6d1b1b - last-10s gradient start
 };
 
--- Per-response-option colors (UI/RespondWindow.lua), keyed by the same `id`
--- strings as Constants.LOOT_COUNCIL_RESPONSES - deliberately independent from
--- that table's own muted `color` field (which LootCouncilReviewWindow.lua
--- still depends on unchanged). `default` is the fallback for an id this table
+-- Per-response-option colors (UI/RespondWindow.lua, UI/AwardWindow.lua),
+-- keyed by the same `id` strings as Constants.LOOT_COUNCIL_RESPONSES -
+-- deliberately independent from that table's own muted `color` field.
+-- `default` is the fallback for an id this table
 -- doesn't know about, so a future user-configurable response list degrades
 -- gracefully instead of erroring.
 -- Selected-button label is always plain white regardless of the option's
@@ -119,5 +222,42 @@ FL.UI.Colors.responses = {
     OFFSPEC = { color = { 0.184, 0.498, 0.851 } }, -- #2f7fd9
     MOG     = { color = { 0.690, 0.310, 0.851 } }, -- #b04fd9
     PASS    = { color = { 0.247, 0.702, 0.310 } }, -- #3fb34f
+    -- Grey placeholder pill for Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID
+    -- (a candidate row shown before that player has actually responded).
+    AWAITING = { color = FL.UI.Colors.muted },
     default = { color = FL.UI.Colors.controlHover },
 };
+
+-- Default chat system-message yellow (matches ChatTypeInfo["SYSTEM"]) - used
+-- by AutoRoll.lua's per-roll "Needing on [item]" print.
+FL.UI.Colors.systemMessage = { 1.000, 1.000, 0.000 }; -- #ffff00
+
+-- Automatic Rolls (AutoRoll.lua's dropdown-adjacent uses, UI/SettingsWindow/
+-- Pages/LootRolls.lua's "Always roll on these items" list). Keyed like
+-- Constants.AUTO_ROLL_RULE_ORDER's entries ("need"/"greed"/"pass"/"manual").
+FL.UI.Colors.autoRollRule = {
+    need   = FL.UI.Colors.gold,        -- #ffd100
+    greed  = { 0.290, 0.639, 1.000 },  -- #4aa3ff - new token (same hex as
+                                       -- rollTags.SR, kept separate: that one
+                                       -- is scoped to RollWindow's own SR tag).
+    pass   = FL.UI.Colors.description, -- #cfc6b8
+    manual = FL.UI.Colors.muted,       -- #a39a8e
+};
+
+-- The raid-entry popup's own 2x2 choice-button accent colors
+-- (UI/AutoRollPopup.lua) - DELIBERATELY a separate table from autoRollRule
+-- above: Pass and Manual use different hex here than the rule-list/chat-
+-- print colors do.
+FL.UI.Colors.autoRollPopupAccent = {
+    need   = FL.UI.Colors.gold,               -- #ffd100
+    greed  = FL.UI.Colors.autoRollRule.greed, -- #4aa3ff
+    pass   = { 0.541, 0.506, 0.463 },         -- #8a8176 - new token
+    manual = FL.UI.Colors.description,        -- #cfc6b8
+};
+
+-- Automatic Rolls section's own colors not already covered above.
+FL.UI.Colors.autoRollMutedNote = { 0.541, 0.506, 0.463 }; -- #8a8176 - bottom-of-
+    -- section muted note. Numerically == autoRollPopupAccent.pass, kept as
+    -- its own token since the two are semantically unrelated.
+FL.UI.Colors.autoRollPopupButtonBorder = { 0.290, 0.263, 0.231 }; -- #4a433b -
+    -- 2x2 grid button's unselected border.

@@ -1,6 +1,6 @@
 --[[
 Leader's in-progress, unbroadcast session item list - what UI/StartSessionWindow
-builds and, later, what UI/LootCouncilReviewWindow's own edit path will also
+builds and, later, what UI/AwardWindow's own edit path will also
 draw on. No UI here, no comm code either - LootCouncil.lua owns the actual
 broadcast (SendToRaid/lcSend/nextSessionId); SessionItems.Send() only decides
 whether a send is allowed to happen and hands off to it.

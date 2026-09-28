@@ -49,7 +49,7 @@ Constants.LOOT_COUNCIL_RESPONSES = {
     { id = "MAJOR",   label = "Major",   color = { 0.80, 0.20, 0.20 } }, -- red
     { id = "MINOR",   label = "Minor",   color = { 0.85, 0.55, 0.15 } }, -- orange
     { id = "OFFSPEC", label = "Offspec", color = { 0.20, 0.45, 0.80 } }, -- blue
-    { id = "MOG",     label = "Mog",     color = { 0.65, 0.30, 0.80 } }, -- purple
+    { id = "MOG",     label = "Transmog", color = { 0.65, 0.30, 0.80 } }, -- purple
     { id = "PASS",    label = "Pass",    color = { 0.25, 0.70, 0.30 } }, -- green
 };
 
@@ -59,7 +59,28 @@ for _, entry in ipairs(Constants.LOOT_COUNCIL_RESPONSES) do
     Constants.LOOT_COUNCIL_RESPONSE_LABELS[entry.id] = entry.label;
 end
 
+-- Synthetic response id for the Award window's placeholder row shown for a
+-- party/raid member who hasn't answered this item's prompt yet. Deliberately
+-- NOT one of the entries above - it's never sent over comm and must never
+-- factor into the real response button order those drive (see
+-- Awards.ResponseOrder, which sorts an id absent from that table last, after
+-- every real response, for free).
+-- "Awaiting" (not the longer "Awaiting Response") so the label still fits
+-- the Response column's fixed pill width (UI/Sizes.lua colResponse), sized
+-- for the real response labels above (all <= 7 characters).
+Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID = "AWAITING";
+Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID] = "Awaiting";
+
 -- Shared "unselected" tint for a response button once its item has moved
 -- into the "Responded" section - every button except the one actually
 -- chosen switches to this grey, so the selection reads clearly at a glance.
 Constants.LOOT_COUNCIL_RESPONSE_UNSELECTED_COLOR = { 0.35, 0.35, 0.35 };
+
+-- Automatic Rolls (AutoRoll.lua, UI/AutoRollPopup.lua, the "Always roll on
+-- these items" list). Order here is also the header-count order ("2 need ·
+-- 1 greed · 2 pass") and the rule dropdown's row order.
+Constants.AUTO_ROLL_RULE_ORDER = { "need", "greed", "pass", "manual" };
+Constants.AUTO_ROLL_RULE_TITLE = { need = "Need", greed = "Greed", pass = "Pass", manual = "Manual" };
+-- Present-participle form for AutoRoll.lua's per-roll chat print ("Needing on
+-- [item]", "Manually rolling on [item]").
+Constants.AUTO_ROLL_RULE_VERB = { need = "Needing", greed = "Greeding", pass = "Passing", manual = "Manually rolling" };

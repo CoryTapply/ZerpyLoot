@@ -60,7 +60,16 @@ end
 
 -- Shared queue of items that couldn't be auto-traded (out of range, trade
 -- window didn't open, or we simply didn't have the item at award time).
--- {itemLink, itemIcon, itemID, winner, rollOffId, rollAmount, classification, winnerClass}
+-- {id, itemLink, itemIcon, itemID, winner, rollOffId, rollSessionId, rollAmount, classification, winnerClass}
+--
+-- `id` is assigned by QueueAdd if the entry doesn't already have one - a
+-- stable per-entry identity, needed once a single rollOffId can have more
+-- than one queue entry (multi-copy roll awards - see RollTracker.lua). Not
+-- persisted deliberately: it's regenerated fresh each session, which is fine
+-- since queue entries are already short-lived by nature.
+-- `rollSessionId` is only ever set by roll-off awards (an alias of
+-- rollOffId, added so RollTracker's lookups read clearly); LootCouncil.lua's
+-- entries simply don't have it, same as they don't have rollAmount.
 --
 -- Backed directly by FL.DB.tradeQueue (see Trade.Init) - every entry here is
 -- plain serializable data (strings/numbers, no frames or closures), so
@@ -70,7 +79,14 @@ end
 -- set until ADDON_LOADED, well before Trade.Init reassigns it.
 Trade.Queue = {};
 
+local nextEntryId = 0;
+
 function Trade.QueueAdd(entry)
+    if (not entry.id) then
+        nextEntryId = nextEntryId + 1;
+        entry.id = nextEntryId;
+    end
+
     table.insert(Trade.Queue, entry);
 
     -- Keep an already-open trade queue window in sync immediately - without
@@ -110,6 +126,80 @@ function Trade.QueueRemoveByRollOff(rollOffId)
             table.remove(Trade.Queue, i);
         end
     end
+end
+
+-- Same idea as QueueRemoveByRollOff, but scoped to one winner within that
+-- roll-off - used by a roll-off Reassign (RollTracker.ReassignItem), which
+-- must drop only the specific winner(s) being replaced and leave any other
+-- still-pending copies of the same roll-off untouched. Returns whether an
+-- entry was actually found/removed, so the caller can tell "already traded
+-- (auto-removed on completion)" and "manually removed from the Trade Queue
+-- window" apart from "still here" - RollTracker distinguishes the first two
+-- via its own tradedWinnerNames record (see OnQueueEntryTraded below).
+function Trade.QueueRemoveByRollOffAndWinner(rollOffId, winnerName)
+    for i = #Trade.Queue, 1, -1 do
+        local entry = Trade.Queue[i];
+        if (entry.rollOffId == rollOffId and Util.namesMatch(entry.winner, winnerName)) then
+            table.remove(Trade.Queue, i);
+            if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Refresh) then
+                FL.UI.TradeQueueWindow.Refresh();
+            end
+            return true;
+        end
+    end
+
+    return false;
+end
+
+-- Per-entry UI state (queued/busy/failed) for the trade queue window's row
+-- display. Keyed by object identity on a WEAK table, deliberately not a field
+-- on the entry itself - entries here are the literal FL.DB.tradeQueue rows
+-- (see Trade.Queue above), so a plain field would get written into the saved
+-- variables at next logout. This is purely transient UI state: it resets to
+-- "queued" (the default GetEntryState returns for anything unset) on reload,
+-- which is fine since nothing durable depends on it.
+local entryState = setmetatable({}, { __mode = "k" });
+
+function Trade.GetEntryState(entry)
+    return entryState[entry] or "queued";
+end
+
+function Trade.SetEntryState(entry, state)
+    entryState[entry] = state;
+end
+
+-- How many tradeable copies of an item this player is currently holding.
+-- Reuses SessionItems' own bag scan (bound items with a tradeable-timer
+-- remaining) rather than a plain bag count, since an already-BoP'd item past
+-- its trade window couldn't be handed off anyway.
+function Trade.CountTradeableInBags(itemID)
+    if (not itemID or not FL.SessionItems or not FL.SessionItems.ScanBagsForTradeable) then
+        return 0;
+    end
+
+    local count = 0;
+    for _, link in ipairs(FL.SessionItems.ScanBagsForTradeable()) do
+        if (Util.itemIDFromLink(link) == itemID) then
+            count = count + 1;
+        end
+    end
+
+    return count;
+end
+
+-- How many queue entries currently claim a copy of this item (traded or not
+-- yet attempted - entries are only ever removed once actually traded or
+-- manually deleted). Compared against Trade.CountTradeableInBags by the
+-- award-another-copy popup to warn when there isn't a free copy left.
+function Trade.CountQueuedForItem(itemID)
+    local count = 0;
+    for _, entry in ipairs(Trade.Queue) do
+        if (entry.itemID == itemID) then
+            count = count + 1;
+        end
+    end
+
+    return count;
 end
 
 --- Attempt to trade `itemLink` to `playerName`. Always calls onResult(success,
@@ -215,11 +305,54 @@ function Trade.AttemptTrade(playerName, itemLink, onResult)
     end
 end
 
+--- Same as Trade.AttemptTrade, but for a queued entry specifically: tracks its
+--- busy/failed UI state (see entryState above) and notifies the trade queue
+--- window at each step, on top of the identical underlying AttemptTrade call.
+--- Used by both the window's own retry-click and the automatic attempt made
+--- right after an award (RollTracker.lua/LootCouncil.lua), so both paths show
+--- the same "Trading..." row state and status message.
+---@param entry table one of Trade.Queue's own entries
+---@param onResult fun(success: boolean, reason: string|nil)
+function Trade.AttemptTradeForQueueEntry(entry, onResult)
+    onResult = onResult or function() end;
+
+    Trade.SetEntryState(entry, "busy");
+    if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.NotifyAttemptStarted) then
+        FL.UI.TradeQueueWindow.NotifyAttemptStarted(entry);
+    end
+
+    Trade.AttemptTrade(entry.winner, entry.itemLink, function(success, reason)
+        if (not success) then
+            Trade.SetEntryState(entry, "failed");
+        end
+        -- On success the item is only placed, not yet actually traded - stays
+        -- "busy" until onItemActuallyTraded (below) confirms completion and
+        -- removes the entry outright.
+
+        if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.NotifyAttemptResult) then
+            FL.UI.TradeQueueWindow.NotifyAttemptResult(entry, success, reason);
+        end
+
+        onResult(success, reason);
+    end);
+end
+
 -- Fires whenever a queued item is confirmed actually traded away (not just
 -- placed). Used to notify the player and refresh the trade queue window.
 local function onItemActuallyTraded(entry)
     print(("|cff8865ffForeverLoot|r Confirmed: %s traded to %s."):format(entry.itemLink or "?", entry.winner or "?"));
 
+    -- Roll-off awards want to know an entry was genuinely traded (as opposed
+    -- to manually removed from the Trade Queue window), so a later Reassign
+    -- can tell the two apart - see RollTracker.OnQueueEntryTraded. Only
+    -- entries created by a roll-off award carry rollSessionId.
+    if (entry.rollSessionId and FL.RollTracker and FL.RollTracker.OnQueueEntryTraded) then
+        pcall(FL.RollTracker.OnQueueEntryTraded, entry);
+    end
+
+    if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.NotifySuccess) then
+        FL.UI.TradeQueueWindow.NotifySuccess(entry);
+    end
     if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Refresh) then
         FL.UI.TradeQueueWindow.Refresh();
     end
@@ -229,6 +362,12 @@ end
 -- allowed to remove an item from Trade.Queue, and only once ERR_TRADE_COMPLETE
 -- actually fires for it. Kept separate from Trade.AttemptTrade's own per-call
 -- watch frame, which only cares about opening the window and placing an item.
+--
+-- Removes at most ONE matching entry per completion event - a single trade
+-- only ever completes once, but with multi-copy roll awards two queue
+-- entries can now share the same winner+itemLink (e.g. the same player
+-- awarded two copies), and removing every match here would wrongly drop both
+-- on one real trade.
 local function onTradeComplete()
     for i = #Trade.Queue, 1, -1 do
         local entry = Trade.Queue[i];
@@ -237,6 +376,7 @@ local function onTradeComplete()
             and activeSession.placedItemLinks[entry.itemLink]) then
             table.remove(Trade.Queue, i);
             onItemActuallyTraded(entry);
+            return;
         end
     end
 end

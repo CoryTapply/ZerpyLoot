@@ -59,7 +59,7 @@ local function refreshSessionItemData(itemID)
         end
     end
 
-    if (changed and FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+    if (changed and FL.UI.RespondWindow and FL.UI.RespondWindow.IsShown and FL.UI.RespondWindow.IsShown()) then
         FL.UI.RespondWindow.Refresh();
     end
 end
@@ -68,7 +68,18 @@ local function ensureItemInfoFrame()
     local itemInfoFrame = CreateFrame("Frame");
     itemInfoFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED");
     itemInfoFrame:SetScript("OnEvent", function(_, _, itemID, success)
-        if (success) then refreshSessionItemData(itemID); end
+        if (not success) then return; end
+        refreshSessionItemData(itemID);
+
+        -- Candidate equipped-gear icons (link comes from candidate.equipped,
+        -- not a Session.items entry) and the assign/reassign popup's "still in
+        -- the raid" repaint both read arbitrary item links refreshSessionItemData
+        -- never matches by itemID, so AwardWindow needs its own unconditional
+        -- (but throttled, see AwardWindow.Refresh) repaint on every arrival
+        -- while it's open, not just ones tied to a session item.
+        if (FL.UI.AwardWindow and FL.UI.AwardWindow.IsShown and FL.UI.AwardWindow.IsShown()) then
+            FL.UI.AwardWindow.Refresh();
+        end
     end);
 end
 
@@ -168,14 +179,16 @@ end
 
 --- Pure roster check. Two separate, wider checks build on top of this -
 --- CanAccessReviewWindow (window visibility) and CanVote (voting
---- eligibility) - both also let the session initiator in. This function
---- itself must stay the narrow roster-only check other code relies on.
+--- eligibility) - both also let the session initiator in (whoever actually
+--- started the session - not necessarily the group's current leader; see
+--- those functions below). This function itself must stay the narrow
+--- roster-only check other code relies on.
 ---@param name string
 function LootCouncil.IsCouncilMember(name)
     return LootCouncil.Roster[Util.stripRealm(name)] == true;
 end
 
---- Whether the local player may open UI/LootCouncilReviewWindow.lua. Wider
+--- Whether the local player may open UI/AwardWindow.lua. Wider
 --- than IsCouncilMember: also lets the current session's initiator in, so a
 --- leader who forgot to add themselves to the roster (Phase 7 concern) can
 --- still review the session they started - the Award button stays disabled
@@ -205,8 +218,26 @@ end
 -- Roster management (stopgap ahead of Phase 7's dedicated UI)
 --------------------------------------------------------------------------
 
+-- Fired (no arguments) whenever the council roster changes for any reason -
+-- a local edit (RosterAdd/RosterRemove/RosterClear) or an incoming sync
+-- (councilSettingsSync/session-start snapshot, both of which go through
+-- applyRosterNames below). Lets UI outside the settings page (e.g.
+-- StartSessionWindow's council-count button) react immediately instead of
+-- polling.
+local rosterChangedCallbacks = {};
+
+function LootCouncil.RegisterRosterChangedCallback(fn)
+    table.insert(rosterChangedCallbacks, fn);
+end
+
+local function fireRosterChanged()
+    for _, fn in ipairs(rosterChangedCallbacks) do
+        pcall(fn);
+    end
+end
+
 --- Alphabetical array of every current council member's name, for display
---- and for broadcasting (see broadcastRosterSync/sessionStart below).
+--- and for broadcasting (see SyncCouncilSettings/sessionStart below).
 function LootCouncil.RosterNames()
     local names = {};
     for name in pairs(LootCouncil.Roster) do
@@ -219,8 +250,13 @@ end
 --- Replaces the local roster wholesale with `names` (full-replace snapshot,
 --- not a merge) - self-healing the same way response/vote state already is,
 --- matching this module's idempotent-absolute-state convention throughout.
---- Shared by the live councilRoster push (applyCouncilRoster) and
---- sessionStart's own roster snapshot (applySessionStart).
+--- Shared by the explicit councilSettingsSync push (applyCouncilSettingsSync)
+--- and sessionStart's own roster snapshot (applySessionStart) - the only two
+--- ways a roster reaches the wire; local edits (RosterAdd/RosterRemove/
+--- RosterClear) deliberately do NOT auto-broadcast, so the raid leader
+--- decides when to actually push a roster in progress (see
+--- LootCouncil.pendingRosterSync below and UI/SettingsWindow/Pages/
+--- LootCouncil.lua's "Sync to Raid" button).
 ---@param names string[]
 local function applyRosterNames(names)
     wipe(LootCouncil.Roster);
@@ -229,56 +265,80 @@ local function applyRosterNames(names)
             LootCouncil.Roster[Util.stripRealm(name)] = true;
         end
     end
+    fireRosterChanged();
 end
 
---- Broadcasts the current roster to the raid so every client's local roster
---- converges immediately, without waiting for the next session to start
---- (which also carries a roster snapshot - see applySessionStart). No
---- permission gating on receipt - mirrors sessionStart's own trust model
---- (any client can technically call RosterAdd/RosterRemove or SendToRaid;
---- the wire layer's anti-spoof check only guarantees identity, not intent).
-local function broadcastRosterSync()
-    pcall(lcSend, "councilRoster", { names = LootCouncil.RosterNames() }, "GROUP");
-end
+-- Set by every LOCAL roster edit (RosterAdd/RosterRemove/RosterClear) and
+-- cleared by SyncCouncilSettings - tracks whether the roster has changed
+-- since the last explicit "Sync to Raid" push, so the settings page can
+-- highlight that button gold again as a reminder those changes still need
+-- to go out (see UI/SettingsWindow/Pages/LootCouncil.lua's updateFooterCount).
+-- Deliberately NOT set by applyRosterNames: that path only ever runs for
+-- roster state arriving FROM the network (a councilSettingsSync push or a
+-- session-start snapshot), which is already synced by definition.
+LootCouncil.pendingRosterSync = false;
 
 --- Adds `name` to the council roster. Returns false if already present.
+--- Does NOT broadcast - local edits only take effect on the wire once the
+--- raid leader explicitly hits "Sync to Raid" (SyncCouncilSettings) or
+--- starts a session (SendToRaid), both of which send the full roster.
 ---@param name string
 function LootCouncil.RosterAdd(name)
     name = Util.stripRealm(name or "");
     if (name == "") then return false; end
     if (LootCouncil.Roster[name]) then return false; end
     LootCouncil.Roster[name] = true;
-    broadcastRosterSync();
+    LootCouncil.pendingRosterSync = true;
+    fireRosterChanged();
     return true;
 end
 
 --- Removes `name` from the council roster. Returns false if not present.
+--- Does NOT broadcast - see RosterAdd's comment above.
 ---@param name string
 function LootCouncil.RosterRemove(name)
     name = Util.stripRealm(name or "");
     if (not LootCouncil.Roster[name]) then return false; end
     LootCouncil.Roster[name] = nil;
-    broadcastRosterSync();
+    LootCouncil.pendingRosterSync = true;
+    fireRosterChanged();
     return true;
 end
 
 --- Removes every current council roster member. Returns the number removed.
+--- Does NOT broadcast - see RosterAdd's comment above.
 function LootCouncil.RosterClear()
     local n = Util.tcount(LootCouncil.Roster);
     if (n == 0) then return 0; end
     wipe(LootCouncil.Roster);
-    broadcastRosterSync();
+    LootCouncil.pendingRosterSync = true;
+    fireRosterChanged();
     return n;
 end
 
---- Applied by every client when a councilRoster sync arrives (the live push
---- from RosterAdd/RosterRemove above). If this local player was just added
---- mid-session, automatically pop the Review & Vote window open for them -
---- matches the existing "broadcast pops the window" convention MaybeAutoShow
---- already uses for a brand-new session (see applySessionStart) - without
---- this, a newly-added council member would have no way to know they need
---- to open /flc themselves.
-local function applyCouncilRoster(Message)
+--- Pushes the full council roster to the raid - distinct from SendToRaid
+--- below, which starts a new voting SESSION on the leader's draft item list.
+--- Only meaningful to call as the raid leader/assistant (see
+--- UI/SettingsWindow/Pages/LootCouncil.lua, which disables its "Sync to
+--- Raid" button otherwise) - not gated here, matching this module's existing
+--- trust model (any client can technically call RosterAdd/RosterRemove or
+--- SendToRaid; the wire layer's anti-spoof check only guarantees identity,
+--- not intent).
+function LootCouncil.SyncCouncilSettings()
+    lcSend("councilSettingsSync", {
+        names = LootCouncil.RosterNames(),
+    }, "GROUP");
+    LootCouncil.pendingRosterSync = false;
+end
+
+--- Applied by every client (including the sender, via the self-looped
+--- broadcast) when a councilSettingsSync arrives. If this local player was
+--- just added while a session is already active, automatically pop the
+--- Review and Award window open for them - matches the existing "broadcast
+--- pops the window" convention MaybeAutoShow already uses for a brand-new
+--- session (see applySessionStart) - without this, a newly-added council
+--- member would have no way to know they need to open /flc themselves.
+local function applyCouncilSettingsSync(Message)
     local content = Message.content;
     if (type(content) ~= "table" or type(content.names) ~= "table") then return; end
 
@@ -287,40 +347,18 @@ local function applyCouncilRoster(Message)
 
     applyRosterNames(content.names);
 
-    lcDebugPrint(("Council roster synced from %s (%d members)"):format(Message.senderFqn or "?", #content.names));
+    print(("|cff8865ffForeverLoot|r Council settings synced from %s (%d members)."):format(
+        Message.senderFqn or "?", #content.names));
 
     local becameMember = (not wasMember) and LootCouncil.IsCouncilMember(myName);
     local Session = LootCouncil.CurrentSession;
     if (becameMember and Session and Session.status == "active") then
-        if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Show) then
-            FL.UI.LootCouncilReviewWindow.Show(); -- Show() itself calls Refresh()
+        if (FL.UI.AwardWindow and FL.UI.AwardWindow.Show) then
+            FL.UI.AwardWindow.Show(); -- Show() itself calls Refresh()
         end
-    elseif (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    elseif (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
-end
-LootCouncil.CommActions.councilRoster = applyCouncilRoster;
-
---- Pushes the full council roster to the raid - distinct from SendToRaid
---- below, which starts a new voting SESSION on the leader's draft item list.
---- Only meaningful to call as the raid leader/assistant (see
---- UI/SettingsWindow/Pages/LootCouncil.lua, which disables its "Sync to
---- Raid" button otherwise) - not gated here, matching this module's existing
---- trust model (see broadcastRosterSync's comment above).
-function LootCouncil.SyncCouncilSettings()
-    lcSend("councilSettingsSync", {
-        names = LootCouncil.RosterNames(),
-    }, "GROUP");
-end
-
-local function applyCouncilSettingsSync(Message)
-    local content = Message.content;
-    if (type(content) ~= "table" or type(content.names) ~= "table") then return; end
-
-    applyRosterNames(content.names);
-
-    print(("|cff8865ffForeverLoot|r Council settings synced from %s (%d members)."):format(
-        Message.senderFqn or "?", #content.names));
 end
 LootCouncil.CommActions.councilSettingsSync = applyCouncilSettingsSync;
 
@@ -340,10 +378,9 @@ local function applySessionStart(Message)
         return;
     end
 
-    -- Roster snapshot carried alongside the session, so anyone who missed
-    -- (or never received) a live councilRoster push still converges the
-    -- moment a session starts - the live push above already covers the
-    -- "mid-session" case, this covers "never got the memo" as a backstop.
+    -- Roster snapshot carried alongside the session, so everyone converges
+    -- on the leader's current roster the moment a session starts, even if
+    -- they missed (or the leader never sent) an explicit "Sync to Raid".
     if (type(content.names) == "table") then
         applyRosterNames(content.names);
     end
@@ -392,8 +429,8 @@ local function applySessionStart(Message)
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
         FL.UI.RespondWindow.MaybeAutoShow();
     end
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.MaybeAutoShow) then
-        FL.UI.LootCouncilReviewWindow.MaybeAutoShow();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.MaybeAutoShow) then
+        FL.UI.AwardWindow.MaybeAutoShow();
     end
 end
 LootCouncil.CommActions.sessionStart = applySessionStart;
@@ -421,8 +458,76 @@ function LootCouncil.SendToRaid()
 end
 
 --------------------------------------------------------------------------
+-- Equipped-item snapshot, sent alongside a response so the council can see
+-- what the raider already has in the item's own slot family. Only ever reads
+-- the local player's own equipped gear (GetInventoryItemLink("player", ...))
+-- - never another unit's ("inspect").
+--------------------------------------------------------------------------
+
+-- equipLoc string -> the slot id(s) to snapshot. Rings/trinkets always
+-- return both of their slots, and every weapon-ish equipLoc always returns
+-- BOTH hand slots regardless of 1H/2H, so the council can compare against
+-- whichever hand is actually relevant. Every other equippable slot only
+-- ever has one physical slot, so it just maps to its own INVSLOT_* id.
+local EQUIPPED_SLOT_FAMILIES = {
+    INVTYPE_HEAD           = { INVSLOT_HEAD },
+    INVTYPE_NECK           = { INVSLOT_NECK },
+    INVTYPE_SHOULDER       = { INVSLOT_SHOULDER },
+    INVTYPE_BODY           = { INVSLOT_BODY }, -- shirt
+    INVTYPE_CHEST          = { INVSLOT_CHEST },
+    INVTYPE_ROBE           = { INVSLOT_CHEST }, -- caster robes share the chest slot
+    INVTYPE_WAIST          = { INVSLOT_WAIST },
+    INVTYPE_LEGS           = { INVSLOT_LEGS },
+    INVTYPE_FEET           = { INVSLOT_FEET },
+    INVTYPE_WRIST          = { INVSLOT_WRIST },
+    INVTYPE_HAND           = { INVSLOT_HAND },
+    INVTYPE_FINGER         = { INVSLOT_FINGER1, INVSLOT_FINGER2 },
+    INVTYPE_TRINKET        = { INVSLOT_TRINKET1, INVSLOT_TRINKET2 },
+    INVTYPE_CLOAK          = { INVSLOT_BACK },
+    INVTYPE_WEAPON         = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    INVTYPE_2HWEAPON       = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    INVTYPE_WEAPONMAINHAND = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    INVTYPE_WEAPONOFFHAND  = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    INVTYPE_SHIELD         = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    INVTYPE_HOLDABLE       = { INVSLOT_MAINHAND, INVSLOT_OFFHAND },
+    -- Bows/guns/wands/thrown/relics equip into the dedicated ranged slot,
+    -- not either hand.
+    INVTYPE_RANGED         = { INVSLOT_RANGED },
+    INVTYPE_RANGEDRIGHT    = { INVSLOT_RANGED },
+    INVTYPE_THROWN         = { INVSLOT_RANGED },
+    INVTYPE_RELIC          = { INVSLOT_RANGED },
+    INVTYPE_AMMO           = { INVSLOT_AMMO },
+    INVTYPE_TABARD         = { INVSLOT_TABARD },
+};
+
+--- Snapshot of the local player's own currently-equipped item link(s) in
+--- whichever slot family `itemLink` belongs to. Anything outside those
+--- families (armor, consumables, etc.) yields an empty table. Empty slots
+--- are simply omitted from the result, keeping the payload tiny.
+---@param itemLink string
+---@return table<number, string> slot id -> item link
+local function getEquippedSlotsForItem(itemLink)
+    local equipped = {};
+    local _, _, _, _, _, _, _, _, equipLoc = Util.GetItemInfo(itemLink);
+    local family = equipLoc and EQUIPPED_SLOT_FAMILIES[equipLoc];
+    if (not family) then return equipped; end
+
+    for _, slot in ipairs(family) do
+        local link = GetInventoryItemLink("player", slot);
+        if (link) then equipped[slot] = link; end
+    end
+    return equipped;
+end
+
+--------------------------------------------------------------------------
 -- Responses (Phase 3)
 --------------------------------------------------------------------------
+
+-- Monotonic per-session counter for candidate.arrivalIndex - local-only tie
+-- breaking for AwardWindow's response-order sort (Lua's table.sort isn't
+-- stable), never sent over comm since it only needs to be consistent within
+-- this client's own view.
+local nextArrivalIndex = 0;
 
 --- Sends this client's response for one item in the current session.
 --- Applies the response to CurrentSession locally FIRST (optimistic update -
@@ -451,12 +556,24 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
     local _, classFile = UnitClass("player");
 
     local previous = item.candidates[myName];
+    -- Equipped gear can change between an initial response and a later note
+    -- edit, so this is recomputed fresh every submit (unlike
+    -- respondedAt/approvals/arrivalIndex, which are deliberately preserved).
+    local equipped = getEquippedSlotsForItem(item.itemLink);
+    local arrivalIndex = previous and previous.arrivalIndex;
+    if (not arrivalIndex) then
+        nextArrivalIndex = nextArrivalIndex + 1;
+        arrivalIndex = nextArrivalIndex;
+    end
     item.candidates[myName] = {
         class = classFile,
         response = responseId,
         note = note or "",
+        equipped = equipped,
         respondedAt = (previous and previous.respondedAt) or GetServerTime(),
+        arrivalIndex = arrivalIndex,
         approvals = (previous and previous.approvals) or {},
+        voteOrder = (previous and previous.voteOrder) or {},
     };
     item.sendFailed = false;
 
@@ -466,6 +583,7 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
         response = responseId,
         note = note or "",
         class = classFile,
+        equipped = equipped,
     }, "GROUP");
 
     if (not ok) then
@@ -476,8 +594,8 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
     end
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
 end
 
@@ -501,12 +619,20 @@ local function applyResponse(Message)
     if (not item) then return; end
 
     local existing = item.candidates[Message.senderName];
+    local arrivalIndex = existing and existing.arrivalIndex;
+    if (not arrivalIndex) then
+        nextArrivalIndex = nextArrivalIndex + 1;
+        arrivalIndex = nextArrivalIndex;
+    end
     item.candidates[Message.senderName] = {
         class = content.class,
         response = content.response,
         note = content.note or "",
+        equipped = (type(content.equipped) == "table") and content.equipped or {},
         respondedAt = (existing and existing.respondedAt) or GetServerTime(),
+        arrivalIndex = arrivalIndex,
         approvals = (existing and existing.approvals) or {},
+        voteOrder = (existing and existing.voteOrder) or {},
     };
 
     -- Authoritative confirmation that SubmitResponse's optimistic send above
@@ -521,8 +647,8 @@ local function applyResponse(Message)
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
     end
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
 end
 LootCouncil.CommActions.response = applyResponse;
@@ -530,6 +656,26 @@ LootCouncil.CommActions.response = applyResponse;
 --------------------------------------------------------------------------
 -- Voting (Phase 5)
 --------------------------------------------------------------------------
+
+--- Idempotent voteOrder mutation shared by ToggleVote's optimistic update
+--- and applyVote's echo/remote update: only inserts/removes `name` when
+--- `approved` is an actual transition from its current membership, so
+--- ToggleVote's own self-looped broadcast (which re-applies the exact same
+--- state through applyVote) can never double-insert the same name.
+---@param candidate table
+---@param name string
+---@param approved boolean
+local function updateVoteOrder(candidate, name, approved)
+    local wasApproved = candidate.approvals[name] == true;
+    candidate.voteOrder = candidate.voteOrder or {};
+    if (approved and not wasApproved) then
+        table.insert(candidate.voteOrder, name);
+    elseif (not approved and wasApproved) then
+        for i, existingName in ipairs(candidate.voteOrder) do
+            if (existingName == name) then table.remove(candidate.voteOrder, i); break; end
+        end
+    end
+end
 
 --- Toggles the local council member's approval of `targetPlayer` for one
 --- item. Sends the resulting ABSOLUTE approval state, never a delta - see
@@ -561,6 +707,9 @@ function LootCouncil.ToggleVote(itemSession, targetPlayer)
     -- Optimistic local mutation first (matches SubmitResponse). Set
     -- membership only - never store `false` (approvals is a set of names
     -- who approve, not a name->bool map, per docs/LOOT_COUNCIL_PLAN.md §1).
+    -- voteOrder is updated BEFORE approvals so updateVoteOrder still sees the
+    -- pre-toggle membership state.
+    updateVoteOrder(candidate, myName, approved);
     candidate.approvals[myName] = approved or nil;
 
     local ok = pcall(lcSend, "vote", {
@@ -571,11 +720,12 @@ function LootCouncil.ToggleVote(itemSession, targetPlayer)
     }, "GROUP");
 
     if (not ok) then
-        candidate.approvals[myName] = wasApproved or nil; -- roll back
+        updateVoteOrder(candidate, myName, wasApproved); -- roll back
+        candidate.approvals[myName] = wasApproved or nil;
     end
 
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
 end
 
@@ -607,14 +757,18 @@ local function applyVote(Message)
     local candidate = item.candidates[content.targetPlayer];
     if (not candidate) then return; end -- can't vote for someone with no response
 
+    -- voteOrder before approvals, same ordering as ToggleVote - on the
+    -- voter's own self-echo this is a no-op transition (ToggleVote already
+    -- applied it optimistically), so the name is never inserted twice.
+    updateVoteOrder(candidate, Message.senderName, content.approved);
     -- Set membership only - never store `false` (see ToggleVote above).
     candidate.approvals[Message.senderName] = content.approved or nil;
 
     lcDebugPrint(("%s %s %s for item %d"):format(Message.senderName,
         content.approved and "approved" or "unapproved", content.targetPlayer, content.itemSession));
 
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
 end
 LootCouncil.CommActions.vote = applyVote;
@@ -672,6 +826,16 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     });
 end
 
+--- Whether the local player may award items in the current session: gated
+--- purely on having been the client that broadcast sessionStart
+--- (Session.initiatorIsMe), NOT a live UnitIsGroupLeader check - see
+--- AwardItem below. Shared by AwardItem's own guard and every UI-side
+--- award/reassign gate, so the exact wording only lives in one place.
+function LootCouncil.CanAwardItems()
+    local Session = LootCouncil.CurrentSession;
+    return Session ~= nil and Session.initiatorIsMe == true;
+end
+
 --- Awards `itemSession` to `playerName`: leader-only. Can be called again on
 --- an already-awarded item to re-award it to someone else - there is no
 --- "already awarded" guard, only the per-item awardCount below, which exists
@@ -690,7 +854,7 @@ end
 ---@param playerName string
 function LootCouncil.AwardItem(itemSession, playerName)
     local Session = LootCouncil.CurrentSession;
-    if (not Session or not Session.initiatorIsMe) then
+    if (not LootCouncil.CanAwardItems()) then
         print("|cff8865ffForeverLoot|r Only the loot council session leader can award this item.");
         return;
     end
@@ -707,14 +871,15 @@ function LootCouncil.AwardItem(itemSession, playerName)
     local councilAwardId = Session.id * 10000 + itemSession; -- reuses Trade's existing
                                                                -- rollOffId-scoped dedupe unmodified
     FL.Trade.QueueRemoveByRollOff(councilAwardId);
-    FL.Trade.QueueAdd({
+    local queueEntry = {
         itemLink = item.itemLink, itemIcon = item.itemIcon, itemID = item.itemID,
         winner = playerName, rollOffId = councilAwardId, rollAmount = nil,
         classification = candidate and FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[candidate.response],
         winnerClass = candidate and candidate.class,
-    });
+    };
+    FL.Trade.QueueAdd(queueEntry);
 
-    FL.Trade.AttemptTrade(playerName, item.itemLink, function(success, reason)
+    FL.Trade.AttemptTradeForQueueEntry(queueEntry, function(success, reason)
         if (success) then
             print(("|cff8865ffForeverLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(item.itemLink, playerName));
             return;
@@ -730,7 +895,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
 
     local awardChannel = Util.GroupChatChannel();
     if (awardChannel) then
-        pcall(SendChatMessage, ("%s was awarded to %s!"):format(item.itemLink, playerName), awardChannel);
+        Util.SendChatMessageSafe(("%s was awarded to %s!"):format(item.itemLink, playerName), awardChannel);
     end
 
     LootCouncil.RecordHistory(Session, itemSession, playerName, Util.stripRealm(Util.UnitName("player")), awardSeq);
@@ -744,8 +909,8 @@ function LootCouncil.AwardItem(itemSession, playerName)
         print("|cff8865ffForeverLoot|r Couldn't broadcast this award - other clients may not see it in their history until they relog or a resync happens.");
     end
 
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
@@ -787,8 +952,8 @@ local function applyAward(Message)
 
     lcDebugPrint(("%s awarded item %d to %s"):format(Message.senderName, content.itemSession, content.winner));
 
-    if (FL.UI.LootCouncilReviewWindow and FL.UI.LootCouncilReviewWindow.Refresh) then
-        FL.UI.LootCouncilReviewWindow.Refresh();
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
     end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();

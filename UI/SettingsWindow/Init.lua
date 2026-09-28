@@ -85,7 +85,10 @@ local function createTitleBar()
     local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
     Skin.CloseButton(closeButton);
-    closeButton:SetScript("OnClick", function() frame:Hide(); end);
+    closeButton:SetScript("OnClick", function()
+        FL.NotifyWindowClosed("Settings");
+        frame:Hide();
+    end);
 
     return titleBar;
 end
@@ -202,6 +205,57 @@ function SettingsWindow.RefreshScrollBar()
     if (bar and bar.zlUpdateVisibility) then bar.zlUpdateVisibility(); end
 end
 
+--- A page's full-width, hand-built section (one page:Section's own
+--- bookkeeping never sees, e.g. LootRolls.lua's "Automatic Rolls") registers
+--- its outer frame here under a page-chosen id, so code elsewhere (a raid
+--- popup's "View Overrides" button) can scroll to and flash it without
+--- LootRolls.lua exposing any of its own locals.
+SettingsWindow.sectionAnchors = SettingsWindow.sectionAnchors or {};
+
+--- Scrolls the content area so `id`'s registered section frame sits at the
+--- top of the viewport, then flashes a gold outline around it. Deferred one
+--- frame: called right after SelectPage, whose page may only just now be
+--- getting its real height (a fresh page is built lazily on first show), so
+--- GetTop()/the scroll range can still be stale on the same frame.
+function SettingsWindow.ScrollToSection(id)
+    local sectionFrame = SettingsWindow.sectionAnchors[id];
+    if (not sectionFrame or not scrollFrame) then return; end
+
+    C_Timer.After(0, function()
+        local sectionTop, viewTop = sectionFrame:GetTop(), scrollFrame:GetTop();
+        if (not sectionTop or not viewTop) then return; end
+
+        local current = scrollFrame:GetVerticalScroll();
+        local target = Clamp(current + (viewTop - sectionTop), 0, scrollFrame:GetVerticalScrollRange() or 0);
+        scrollFrame:SetVerticalScroll(target);
+        SettingsWindow.FlashSection(sectionFrame);
+    end);
+end
+
+--- Flashes a 1px gold outline around `frame`, fading out over
+--- Sizes.autoRoll.overrideFlashDuration seconds - same one-shot border-flash
+--- idiom as UI/RespondWindow.lua's own per-card flash, generalized here as
+--- the settings window's first reusable version of it.
+function SettingsWindow.FlashSection(frame)
+    if (not frame.zlFlashAnim) then
+        local overlay = CreateFrame("Frame", nil, frame, "BackdropTemplate");
+        overlay:SetAllPoints(frame);
+        Theme.Helpers.SetFlatBackdrop(overlay, nil, Colors.gold, 1);
+        overlay:SetAlpha(0);
+
+        local anim = overlay:CreateAnimationGroup();
+        local fade = anim:CreateAnimation("Alpha");
+        fade:SetFromAlpha(1);
+        fade:SetToAlpha(0);
+        fade:SetDuration(Sizes.autoRoll.overrideFlashDuration);
+
+        frame.zlFlashAnim = anim;
+    end
+
+    frame.zlFlashAnim:Stop();
+    frame.zlFlashAnim:Play();
+end
+
 --- Called by Registry.lua on every page switch. When `shown` is true, the
 --- scroll frame's bottom edge sits FOOTER_SCROLL_GAP above the footer's
 --- divider so the scrollable region (and its scrollbar) never runs under
@@ -237,8 +291,6 @@ local function ensureFrame()
     createTitleBar();
     local sidebar, searchBox = createSidebar();
     local scroll, scrollChild, footerRow = createContentArea(sidebar);
-
-    tinsert(UISpecialFrames, "ForeverLootSettingsWindow");
 
     FL.UI.SettingsRegistry.Build(sidebar, scrollChild, searchBox, footerRow);
 

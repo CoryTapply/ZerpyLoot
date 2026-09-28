@@ -12,24 +12,29 @@ FL.Constants = FL.Constants or {};
 FL.Util = FL.Util or {};
 FL.Comm = FL.Comm or {};
 FL.RollTracker = FL.RollTracker or {};
+FL.RollSession = FL.RollSession or {};
 FL.GroupLootRoll = FL.GroupLootRoll or {};
+FL.AutoRoll = FL.AutoRoll or {};
+FL.LootChat = FL.LootChat or {};
 FL.SoftRes = FL.SoftRes or {};
 FL.Tooltip = FL.Tooltip or {};
 FL.Trade = FL.Trade or {};
 FL.LootCouncil = FL.LootCouncil or {};
 FL.LootCouncilRoster = FL.LootCouncilRoster or {};
 FL.SessionItems = FL.SessionItems or {};
+FL.Awards = FL.Awards or {};
 FL.Pixel = FL.Pixel or {};
 FL.Theme = FL.Theme or {};
 FL.Settings = FL.Settings or {};
 FL.UI = FL.UI or {};
 FL.UI.RollWindow = FL.UI.RollWindow or {};
-FL.UI.GroupLootRollBars = FL.UI.GroupLootRollBars or {};
-FL.UI.SoftResImport = FL.UI.SoftResImport or {};
+FL.UI.GroupLootFrame = FL.UI.GroupLootFrame or {};
+FL.UI.AutoRollPopup = FL.UI.AutoRollPopup or {};
+FL.UI.SoftResImportWindow = FL.UI.SoftResImportWindow or {};
 FL.UI.TradeQueueWindow = FL.UI.TradeQueueWindow or {};
 FL.UI.StartSessionWindow = FL.UI.StartSessionWindow or {};
 FL.UI.RespondWindow = FL.UI.RespondWindow or {};
-FL.UI.LootCouncilReviewWindow = FL.UI.LootCouncilReviewWindow or {};
+FL.UI.AwardWindow = FL.UI.AwardWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
 FL.Vendor = FL.Vendor or {};
@@ -57,6 +62,8 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "Trade", FL.Trade },
             { "LootCouncil", FL.LootCouncil },
             { "SessionItems", FL.SessionItems },
+            { "LootChat", FL.LootChat },
+            { "AutoRoll", FL.AutoRoll },
         };
 
         for _, module in ipairs(modules) do

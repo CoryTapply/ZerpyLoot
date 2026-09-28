@@ -108,4 +108,11 @@ FL.UI.SettingsWindow.RegisterPage("appearance", "Appearance", function(page)
         width = COLUMN_WIDTH,
         x = 0,
     };
+
+    section:Checkbox{
+        key = "appearance.enableRespondAnimation",
+        label = "Enable Loot Council Response animation",
+        desc = "Fades out and slides the Respond window's item list when you answer a pending item. Disable for an instant snap instead.",
+        default = true,
+    };
 end, 20);

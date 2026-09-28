@@ -22,11 +22,9 @@ local StartSessionWindow = FL.UI.StartSessionWindow;
 
 local WINDOW_WIDTH = Sizes.window.width;
 local WINDOW_HEIGHT = Sizes.window.height;
-local MAX_ROWS = 30;
 local FALLBACK_ICON = FL.LootCouncil.FALLBACK_ICON;
 local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
-
-local DROP_STRIP_DEFAULT_TEXT = "+  Drop an item here, or Shift-click it in your bags";
+local PLUS_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Plus.tga";
 
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition). OLD_POSITION_KEY is the
@@ -35,8 +33,25 @@ local DROP_STRIP_DEFAULT_TEXT = "+  Drop an item here, or Shift-click it in your
 local POSITION_KEY = "startSessionWindow";
 local OLD_POSITION_KEY = "lootCouncilAddItemsWindow";
 
-local frame, dropStrip, dropStripText, listBox, listScroll, listScrollChild, listEmptyText, countText, clearButton, startButton;
+local frame, listBox, listScroll, listScrollChild, countText, clearButton, startButton;
+local councilButton, councilIcon, councilCountText;
+
+-- Fallback matches the pattern used elsewhere in the addon (e.g.
+-- UI/RollWindow.lua's right-click hint icon) for an atlas that may not exist
+-- on every client.
+local COUNCIL_ICON_ATLAS = "socialqueuing-icon-group";
+local COUNCIL_ICON_FALLBACK = "Interface\\FriendsFrame\\UI-Toast-FriendOnlineIcon";
+local dropZone, dropZoneBg, dropZoneIcon, dropZoneMainText, dropZoneSubText, cursorWatcher, permissionWatcher;
+local createDropZone, UpdateDropZone;
 local rows = {};
+
+-- DropZone visual-state inputs: cursorHasItem/cursorItemName come from the
+-- CURSOR_CHANGED watcher (see createCursorWatcher below) and handleCursorDrop
+-- (which sets them synchronously on drop, see below); isOverDropZone comes
+-- from the DropZone's own OnEnter/OnLeave.
+local cursorHasItem = false;
+local cursorItemName = nil;
+local isOverDropZone = false;
 
 --------------------------------------------------------------------------
 -- Row content (name/type-slot text, quality-colored icon border) - split out
@@ -72,10 +87,9 @@ local function paintRowText(row, entry)
 end
 
 --------------------------------------------------------------------------
--- Shared drop/drag/click-to-drop handler - wired onto the drop strip, the
--- item-list box, its scroll frame, and every row (see Step 4 of the design:
--- OnReceiveDrag covers drag-and-release, OnMouseUp covers click-to-pickup
--- then click-to-place).
+-- Drop/drag/click-to-drop handler - wired onto the DropZone only (see
+-- createDropZone below): OnReceiveDrag covers drag-and-release, OnMouseUp
+-- covers click-to-pickup then click-to-place.
 --------------------------------------------------------------------------
 
 local function handleCursorDrop()
@@ -85,8 +99,107 @@ local function handleCursorDrop()
     SessionItems.AddFromCursor(itemLink);
     ClearCursor(); -- item snaps back into the bag either way - nothing is moved/destroyed
 
+    -- Set these explicitly rather than waiting on CURSOR_CHANGED - that event
+    -- isn't guaranteed to be processed before Refresh() below, which would
+    -- otherwise leave the DropZone showing "Release to add" for one frame
+    -- after a successful/rejected drop.
+    cursorHasItem = false;
+    cursorItemName = nil;
+
     StartSessionWindow.Refresh();
 end
+
+--------------------------------------------------------------------------
+-- Council button data - same council list/name matching as the Loot Council
+-- settings page (UI/SettingsWindow/Pages/LootCouncil.lua): a raider counts
+-- as "in raid" via LootCouncilRoster.BuildGroups(), and as council via
+-- LootCouncil.IsCouncilMember(name), matched on the stripped "First Last"
+-- name both sides already use.
+--------------------------------------------------------------------------
+
+-- Returns two alphabetical arrays: council members currently in the raid/
+-- party ({ name, classFile, isLeader }), and the names of council members
+-- who aren't.
+local function computeCouncilRaidInfo()
+    local groupsResult = FL.LootCouncilRoster.BuildGroups();
+    local inRaid = {};
+    local inRaidNames = {};
+
+    if (not groupsResult.inRaid and not groupsResult.inParty) then
+        -- Solo/ungrouped: BuildGroups() returns no members at all, but the
+        -- viewer is about to start the session, so they're on the council.
+        local name = Util.stripRealm(Util.UnitName("player"));
+        inRaidNames[name] = true;
+        table.insert(inRaid, {
+            name = name,
+            classFile = select(2, UnitClass("player")),
+            isLeader = UnitIsGroupLeader("player"),
+        });
+    else
+        for _, group in pairs(groupsResult.groups) do
+            for _, member in ipairs(group.members) do
+                local isMe = UnitIsUnit(member.unit, "player");
+                -- The person looking at this window is about to start the
+                -- session, so they always count toward the council
+                -- regardless of roster membership.
+                if (isMe or FL.LootCouncil.IsCouncilMember(member.name)) then
+                    local name = Util.stripRealm(member.name);
+                    inRaidNames[name] = true;
+                    table.insert(inRaid, {
+                        name = name,
+                        classFile = member.classFile,
+                        isLeader = UnitIsGroupLeader(member.unit),
+                    });
+                end
+            end
+        end
+    end
+
+    table.sort(inRaid, function(a, b) return a.name < b.name; end);
+
+    local notInRaid = {};
+    for _, name in ipairs(FL.LootCouncil.RosterNames()) do -- already alphabetical
+        if (not inRaidNames[name]) then table.insert(notInRaid, name); end
+    end
+
+    return inRaid, notInRaid;
+end
+
+-- Recomputes the button's count/color/width. Safe to call before the button
+-- exists (e.g. from the roster-changed callback registered below, which
+-- fires as soon as LootCouncil.lua loads - well before this window's frame
+-- is ever built).
+local function updateCouncilButton()
+    if (not councilButton) then return; end
+
+    local inRaid = computeCouncilRaidInfo();
+    local n = #inRaid;
+
+    councilCountText:SetText(tostring(n));
+    councilCountText:SetTextColor(unpack(n == 0 and Colors.sessionDeleteHoverIcon or Colors.text));
+    councilButton:SetWidth(Sizes.councilButtonPadX * 2 + Sizes.councilButtonIconSize
+        + Sizes.councilButtonIconTextGap + councilCountText:GetStringWidth());
+end
+
+-- Debounced GROUP_ROSTER_UPDATE handler (mirrors the Loot Council settings
+-- page's own 0.5s debounce for the same event - a raid join/leave can fire
+-- it many times in a burst).
+local councilUpdatePending = false;
+local function scheduleCouncilButtonUpdate()
+    if (councilUpdatePending) then return; end
+    councilUpdatePending = true;
+    C_Timer.After(0.5, function()
+        councilUpdatePending = false;
+        if (frame and frame:IsVisible()) then updateCouncilButton(); end
+    end);
+end
+
+-- Registered once at load time - fires on every local edit or incoming sync
+-- to the council roster (see LootCouncil.lua), regardless of whether this
+-- window has ever been opened yet.
+FL.LootCouncil.RegisterRosterChangedCallback(function()
+    if (frame and frame:IsVisible()) then updateCouncilButton(); end
+end);
 
 --------------------------------------------------------------------------
 -- Frame construction
@@ -121,7 +234,10 @@ local function createTitleBar()
     local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
     Skin.CloseButton(closeButton);
-    closeButton:SetScript("OnClick", function() frame:Hide(); end);
+    closeButton:SetScript("OnClick", function()
+        FL.NotifyWindowClosed("StartSession");
+        frame:Hide();
+    end);
 
     return titleBar;
 end
@@ -169,64 +285,78 @@ local function createHeader()
         StartSessionWindow.Refresh();
     end);
 
-    return header;
-end
+    -- Council button: icon + in-raid council count, left of Add All. Width
+    -- is set dynamically (see updateCouncilButton) once the count text
+    -- exists, so it starts at 0 here and is corrected before ever being
+    -- shown (the window's OnShow hook calls updateCouncilButton()).
+    councilButton = CreateFrame("Button", nil, header, "BackdropTemplate");
+    Skin.Button(councilButton, "default");
+    councilButton:SetHeight(Sizes.councilButtonHeight);
+    councilButton:SetPoint("RIGHT", addAllButton, "LEFT", -Sizes.councilButtonGap, 0);
 
--- Drop-strip visual state: idle, "item on cursor", and "item on cursor AND
--- hovering the strip/list" (a bit brighter). cursorHasItem/cursorItemName
--- come from the CURSOR_CHANGED watcher below; isOverDropZone comes from
--- OnEnter/OnLeave on the strip and the item list.
-local cursorHasItem = false;
-local cursorItemName = nil;
-local isOverDropZone = false;
-
-local function updateDropStripVisual()
-    if (not cursorHasItem) then
-        dropStrip:SetBackdropColor(unpack(Colors.optionsStripBg));
-        dropStrip:SetDashColor(unpack(Colors.checkboxBorder));
-        dropStripText:SetTextColor(unpack(Colors.muted));
-        dropStripText:SetText(DROP_STRIP_DEFAULT_TEXT);
-        return;
+    councilIcon = councilButton:CreateTexture(nil, "ARTWORK");
+    councilIcon:SetSize(Sizes.councilButtonIconSize, Sizes.councilButtonIconSize);
+    councilIcon:SetPoint("LEFT", councilButton, "LEFT", Sizes.councilButtonPadX, 0);
+    if (C_Texture.GetAtlasInfo(COUNCIL_ICON_ATLAS)) then
+        councilIcon:SetAtlas(COUNCIL_ICON_ATLAS);
+    else
+        councilIcon:SetTexture(COUNCIL_ICON_FALLBACK);
     end
+    councilIcon:SetVertexColor(unpack(Colors.description));
 
-    dropStrip:SetBackdropColor(unpack(isOverDropZone and Colors.primaryBg or Colors.councilFill));
-    dropStrip:SetDashColor(unpack(Colors.gold));
-    dropStripText:SetTextColor(unpack(Colors.gold));
-    dropStripText:SetText(("Release to add %s"):format(cursorItemName or "item"));
-end
+    councilCountText = councilButton:CreateFontString(nil, "OVERLAY");
+    SetFont(councilCountText, "body");
+    councilCountText:SetPoint("LEFT", councilIcon, "RIGHT", Sizes.councilButtonIconTextGap, 0);
+    councilCountText:SetText("0");
 
-local function onDropZoneEnter()
-    isOverDropZone = true;
-    updateDropStripVisual();
-end
+    councilButton:HookScript("OnEnter", function()
+        councilIcon:SetVertexColor(unpack(Colors.gold));
+    end);
+    councilButton:HookScript("OnLeave", function()
+        councilIcon:SetVertexColor(unpack(Colors.description));
+    end);
 
-local function onDropZoneLeave()
-    isOverDropZone = false;
-    updateDropStripVisual();
-end
+    councilButton:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT");
 
-local function createDropStrip(header)
-    local strip = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-    strip:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -Sizes.dropStripGap);
-    strip:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -Sizes.dropStripGap);
-    strip:SetHeight(Sizes.dropStripHeight);
-    Theme.Helpers.SetFlatBackdrop(strip, Colors.optionsStripBg, Colors.transparent, 0);
-    Skin.DashedBorder(strip, Colors.checkboxBorder[1], Colors.checkboxBorder[2], Colors.checkboxBorder[3], 1, Sizes.dropStripDash, 1);
+        local inRaid, notInRaid = computeCouncilRaidInfo();
+        GameTooltip:AddDoubleLine("Loot Council", ("%d in raid"):format(#inRaid),
+            Colors.gold[1], Colors.gold[2], Colors.gold[3],
+            Colors.muted[1], Colors.muted[2], Colors.muted[3]);
 
-    local text = strip:CreateFontString(nil, "OVERLAY");
-    SetFont(text, "small");
-    text:SetTextColor(unpack(Colors.muted));
-    text:SetPoint("CENTER", strip, "CENTER", 0, 0);
-    text:SetText(DROP_STRIP_DEFAULT_TEXT);
-    dropStripText = text;
+        if (#inRaid > 0) then
+            for _, member in ipairs(inRaid) do
+                local classColor = member.classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.classFile];
+                local r, g, b = Colors.text[1], Colors.text[2], Colors.text[3];
+                if (classColor) then r, g, b = classColor.r, classColor.g, classColor.b; end
+                local suffix = member.isLeader and " |TInterface\\GroupFrame\\UI-Group-LeaderIcon:12|t" or "";
+                GameTooltip:AddLine(member.name .. suffix, r, g, b);
+            end
+        else
+            GameTooltip:AddLine("No council members in your raid \226\128\148 nobody can vote.",
+                unpack(Colors.sessionDeleteHoverIcon));
+        end
 
-    strip:EnableMouse(true);
-    strip:SetScript("OnReceiveDrag", handleCursorDrop);
-    strip:SetScript("OnMouseUp", handleCursorDrop);
-    strip:HookScript("OnEnter", onDropZoneEnter);
-    strip:HookScript("OnLeave", onDropZoneLeave);
+        if (#notInRaid > 0) then
+            GameTooltip:AddLine(" ");
+            GameTooltip:AddLine("Not in raid", unpack(Colors.controlHover));
+            for _, name in ipairs(notInRaid) do
+                GameTooltip:AddLine(name, unpack(Colors.disabledText));
+            end
+        end
 
-    return strip;
+        GameTooltip:AddLine(" ");
+        GameTooltip:AddLine("Click to add or remove council members", unpack(Colors.muted));
+        GameTooltip:Show();
+    end);
+    councilButton:HookScript("OnLeave", function() GameTooltip:Hide(); end);
+
+    councilButton:SetScript("OnClick", function()
+        FL.UI.SettingsWindow.Show();
+        FL.UI.SettingsRegistry.SelectPage("lootcouncil");
+    end);
+
+    return header;
 end
 
 local function createFooter()
@@ -292,8 +422,6 @@ local function createRow(parent, index)
     Theme.Helpers.SetFlatBackdrop(row, Colors.memberBg, Colors.memberBorder, 1);
 
     row:EnableMouse(true);
-    row:SetScript("OnReceiveDrag", handleCursorDrop);
-    row:SetScript("OnMouseUp", handleCursorDrop);
     row:HookScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(Colors.checkboxBorder)); end);
     row:HookScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(Colors.memberBorder)); end);
 
@@ -327,16 +455,8 @@ local function createRow(parent, index)
         row.removeButton.icon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
     end
     paintRemoveDefault();
-    row.removeButton:HookScript("OnEnter", function(self)
-        paintRemoveHover();
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT");
-        GameTooltip:AddLine("Remove", 1, 1, 1);
-        GameTooltip:Show();
-    end);
-    row.removeButton:HookScript("OnLeave", function()
-        paintRemoveDefault();
-        GameTooltip:Hide();
-    end);
+    row.removeButton:HookScript("OnEnter", paintRemoveHover);
+    row.removeButton:HookScript("OnLeave", paintRemoveDefault);
     row.removeButton:SetScript("OnClick", function()
         if (not row.itemIndex) then return; end
         SessionItems.RemoveItem(row.itemIndex);
@@ -377,14 +497,17 @@ local function createRow(parent, index)
     return row;
 end
 
+-- Grows the row pool up to n frames, reusing whatever already exists. Never
+-- shrinks - rows beyond the current item count are just hidden in Refresh.
+local function ensureRowCount(n)
+    for i = #rows + 1, n do
+        rows[i] = createRow(listScrollChild, i);
+    end
+end
+
 local function createList()
     listBox = CreateFrame("Frame", nil, frame, "BackdropTemplate");
     Theme.Helpers.SetFlatBackdrop(listBox, Colors.sessionListBg, Colors.memberBorder, 1);
-    listBox:EnableMouse(true);
-    listBox:SetScript("OnReceiveDrag", handleCursorDrop);
-    listBox:SetScript("OnMouseUp", handleCursorDrop);
-    listBox:HookScript("OnEnter", onDropZoneEnter);
-    listBox:HookScript("OnLeave", onDropZoneLeave);
 
     local listLabel = listBox:CreateFontString(nil, "OVERLAY");
     SetFont(listLabel, "small");
@@ -400,9 +523,6 @@ local function createList()
     listScroll = CreateFrame("ScrollFrame", "ForeverLootStartSessionWindowScroll", listBox, "UIPanelScrollFrameTemplate");
     listScroll:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -Sizes.listLabelGap);
     listScroll:SetPoint("BOTTOMRIGHT", listBox, "BOTTOMRIGHT", -scrollbarSpace, Sizes.listPadding);
-    listScroll:EnableMouse(true);
-    listScroll:SetScript("OnReceiveDrag", handleCursorDrop);
-    listScroll:SetScript("OnMouseUp", handleCursorDrop);
 
     listScrollChild = CreateFrame("Frame", nil, listScroll);
     listScrollChild:SetPoint("TOPLEFT", listScroll, "TOPLEFT", 0, 0);
@@ -419,34 +539,119 @@ local function createList()
 
     Theme.Helpers.EnableSmoothScroll(listScroll, { step = Sizes.rowHeight + Sizes.rowSpacing });
 
-    listEmptyText = listBox:CreateFontString(nil, "OVERLAY");
-    SetFont(listEmptyText, "small");
-    listEmptyText:SetTextColor(unpack(Colors.controlHover));
-    listEmptyText:SetPoint("CENTER", listScroll, "CENTER", 0, 0);
-    listEmptyText:SetText("No items yet. Use Add All, or drop items above.");
-    listEmptyText:Hide();
-
-    for i = 1, MAX_ROWS do
-        rows[i] = createRow(listScrollChild, i);
-    end
+    ensureRowCount(1);
+    createDropZone(listBox, listScroll);
 
     return listBox;
+end
+
+--------------------------------------------------------------------------
+-- DropZone - the sole drop target for the item list. A single overlay frame,
+-- inset inside listScroll's own rect (i.e. the same area the rows occupy),
+-- sitting above listScroll in frame level so it covers the rows without
+-- moving/scrolling them. UpdateDropZone() drives its 4 states: hidden (list
+-- has items, nothing on cursor), idle (list empty, nothing on cursor),
+-- active (item on cursor), hot (active + hovered). See handleCursorDrop and
+-- createCursorWatcher below for what feeds cursorHasItem/isOverDropZone.
+--------------------------------------------------------------------------
+
+createDropZone = function(box, scroll)
+    local zone = CreateFrame("Frame", nil, box);
+    zone:SetPoint("TOPLEFT", scroll, "TOPLEFT", Sizes.dropZoneInset, -Sizes.dropZoneInset);
+    zone:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", -Sizes.dropZoneInset, Sizes.dropZoneInset);
+    zone:SetFrameLevel(scroll:GetFrameLevel() + 10); -- above listScroll and every row/button inside it
+
+    local bg = zone:CreateTexture(nil, "BACKGROUND");
+    bg:SetAllPoints(zone);
+    bg:SetColorTexture(0, 0, 0, 0); -- idle: no fill, listBox's own background shows through
+
+    Skin.DashedBorder(zone, Colors.checkboxBorder[1], Colors.checkboxBorder[2], Colors.checkboxBorder[3], 1, Sizes.dropZoneDash, 1);
+
+    local icon = zone:CreateTexture(nil, "ARTWORK");
+    icon:SetSize(Sizes.dropZoneIconSize, Sizes.dropZoneIconSize);
+    icon:SetTexture(PLUS_ICON_TEXTURE);
+
+    local mainText = zone:CreateFontString(nil, "ARTWORK");
+    SetFont(mainText, "body");
+    mainText:SetPoint("CENTER", zone, "CENTER", 0, 0);
+
+    icon:SetPoint("BOTTOM", mainText, "TOP", 0, Sizes.dropZoneIconGap);
+
+    local subText = zone:CreateFontString(nil, "ARTWORK");
+    SetFont(subText, "small");
+    subText:SetPoint("TOP", mainText, "BOTTOM", 0, -Sizes.dropZoneLineGap);
+
+    zone:SetScript("OnReceiveDrag", handleCursorDrop);
+    zone:SetScript("OnMouseUp", handleCursorDrop);
+    zone:SetScript("OnEnter", function() isOverDropZone = true; UpdateDropZone(); end);
+    zone:SetScript("OnLeave", function() isOverDropZone = false; UpdateDropZone(); end);
+
+    zone:Hide();
+    zone:EnableMouse(false);
+
+    dropZone, dropZoneBg, dropZoneIcon, dropZoneMainText, dropZoneSubText = zone, bg, icon, mainText, subText;
+    return zone;
+end
+
+UpdateDropZone = function()
+    local hasItems = #SessionItems.GetItems() > 0;
+
+    if (hasItems and not cursorHasItem) then
+        dropZone:Hide();
+        dropZone:EnableMouse(false);
+        return;
+    end
+
+    dropZone:Show();
+    dropZone:EnableMouse(true);
+
+    if (cursorHasItem) then
+        local fill = isOverDropZone and Colors.primaryBg or Colors.sessionDropActiveBg;
+        dropZoneBg:SetColorTexture(fill[1], fill[2], fill[3], fill[4] or 1);
+        dropZone:SetDashColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 1);
+        dropZoneIcon:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3]);
+        dropZoneMainText:SetTextColor(Colors.gold[1], Colors.gold[2], Colors.gold[3]);
+        dropZoneMainText:SetText(("Release to add %s"):format(cursorItemName or "item"));
+        dropZoneSubText:SetShown(false);
+    else
+        dropZoneBg:SetColorTexture(0, 0, 0, 0);
+        dropZone:SetDashColor(Colors.checkboxBorder[1], Colors.checkboxBorder[2], Colors.checkboxBorder[3], 1);
+        dropZoneIcon:SetVertexColor(Colors.description[1], Colors.description[2], Colors.description[3]);
+        dropZoneMainText:SetTextColor(Colors.description[1], Colors.description[2], Colors.description[3]);
+        dropZoneMainText:SetText("Drag items here");
+        dropZoneSubText:SetText("Shift-click an item, or use Add All.");
+        dropZoneSubText:SetTextColor(Colors.controlHover[1], Colors.controlHover[2], Colors.controlHover[3]);
+        dropZoneSubText:SetShown(true);
+    end
 end
 
 --------------------------------------------------------------------------
 -- Cursor-drag highlight + shift-click add
 --------------------------------------------------------------------------
 
+-- CURSOR_CHANGED is only registered while the window is shown (see the
+-- OnShow/OnHide hooks in ensureFrame below) - no need to gate inside the
+-- handler, since it can't fire while unregistered.
 local function createCursorWatcher()
-    local watcher = CreateFrame("Frame");
-    watcher:RegisterEvent("CURSOR_CHANGED");
-    watcher:SetScript("OnEvent", function()
-        if (not frame:IsShown()) then return; end
-
+    cursorWatcher = CreateFrame("Frame");
+    cursorWatcher:SetScript("OnEvent", function()
         local cursorType, _, itemLink = GetCursorInfo();
         cursorHasItem = (cursorType == "item");
         cursorItemName = (cursorHasItem and itemLink) and Util.GetItemInfo(itemLink) or nil;
-        updateDropStripVisual();
+        UpdateDropZone();
+    end);
+end
+
+-- Refreshes startButton's enabled state the moment the player is handed (or
+-- loses) leader/assist - GROUP_ROSTER_UPDATE covers promotions/demotions,
+-- PARTY_LEADER_CHANGED covers a straight leader handoff in a party (which
+-- doesn't always also fire a roster update). Matches the event pair
+-- Blizzard_RaidFrame registers for the same leader/assist-gated buttons.
+local function createPermissionWatcher()
+    permissionWatcher = CreateFrame("Frame");
+    permissionWatcher:SetScript("OnEvent", function(_, event)
+        StartSessionWindow.Refresh();
+        if (event == "GROUP_ROSTER_UPDATE") then scheduleCouncilButtonUpdate(); end
     end);
 end
 
@@ -495,25 +700,33 @@ local function ensureFrame()
 
     createTitleBar();
     local header = createHeader();
-    dropStrip = createDropStrip(header);
     local footer = createFooter();
 
     createList();
-    listBox:SetPoint("TOPLEFT", dropStrip, "BOTTOMLEFT", 0, -Sizes.listGap);
-    listBox:SetPoint("TOPRIGHT", dropStrip, "BOTTOMRIGHT", 0, -Sizes.listGap);
+    listBox:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -Sizes.listGap);
+    listBox:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -Sizes.listGap);
     listBox:SetPoint("BOTTOMLEFT", footer, "TOPLEFT", 0, Sizes.footerScrollGap);
     listBox:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, Sizes.footerScrollGap);
 
     createCursorWatcher();
+    createPermissionWatcher();
 
+    frame:HookScript("OnShow", function()
+        cursorWatcher:RegisterEvent("CURSOR_CHANGED");
+        permissionWatcher:RegisterEvent("GROUP_ROSTER_UPDATE");
+        permissionWatcher:RegisterEvent("PARTY_LEADER_CHANGED");
+        UpdateDropZone();
+        updateCouncilButton();
+    end);
     frame:HookScript("OnHide", function()
+        cursorWatcher:UnregisterEvent("CURSOR_CHANGED");
+        permissionWatcher:UnregisterEvent("GROUP_ROSTER_UPDATE");
+        permissionWatcher:UnregisterEvent("PARTY_LEADER_CHANGED");
         cursorHasItem = false;
         cursorItemName = nil;
         isOverDropZone = false;
-        updateDropStripVisual();
+        UpdateDropZone();
     end);
-
-    tinsert(UISpecialFrames, "ForeverLootStartSessionWindow");
 end
 
 function StartSessionWindow.Refresh()
@@ -533,6 +746,7 @@ function StartSessionWindow.Refresh()
     local sessionItems = SessionItems.GetItems();
     local count = #sessionItems;
 
+    ensureRowCount(count);
     listScrollChild:SetHeight(math.max(count * (Sizes.rowHeight + Sizes.rowSpacing), 1));
 
     if (wasAtBottom) then
@@ -558,12 +772,12 @@ function StartSessionWindow.Refresh()
         end
     end
 
-    listEmptyText:SetShown(count == 0);
+    UpdateDropZone();
     countText:SetText(("%d item%s"):format(count, count == 1 and "" or "s"));
 
     local canSend = SessionItems.CanSend();
     clearButton:SetEnabled(count > 0);
-    startButton:SetEnabled(count > 0 and canSend);
+    startButton:SetEnabled(canSend);
 
     if (listScroll.ScrollBar and listScroll.ScrollBar.zlUpdateVisibility) then
         listScroll.ScrollBar.zlUpdateVisibility();
@@ -578,6 +792,10 @@ end
 
 function StartSessionWindow.Hide()
     if (frame) then frame:Hide(); end
+end
+
+function StartSessionWindow.IsShown()
+    return frame ~= nil and frame:IsShown();
 end
 
 function StartSessionWindow.Toggle()

@@ -29,6 +29,14 @@ SoftRes.DetailsByPlayerName = {};   -- lowercase name -> {class, note, plusOnes,
 SoftRes.PlayerNamesByItemID = {};    -- idString -> {name, name, ...} (display-cased, duplicated per multi-reserve)
 SoftRes.HardReserveDetailsByID = {}; -- idString -> {id, reservedFor, note}
 
+-- Corrected display name -> true, (re)built by fixPlayerNames() on every
+-- Import. Flags entries whose softres.it name didn't match anyone in the
+-- raid and got fuzzy-linked to the closest unreserved member instead - the
+-- import window uses this to warn when the linked character's actual class
+-- doesn't match the class picked on softres.it, since that combination means
+-- the fuzzy match may have paired the wrong two players.
+SoftRes.RenamedNames = {};
+
 local function debugPrint(msg)
     if (Comm.debugEnabled) then
         print("|cff8865ffForeverLoot|r " .. msg);
@@ -111,9 +119,15 @@ end
 -- raid/party by pairing them with the closest-named raid member who appears
 -- to have no reservation, if the edit distance is within threshold (looser
 -- when their class also matches - mirrors Gargul's SoftRes:fixPlayerNames).
--- Mutates SoftRes.MetaData.SoftReserves in place.
+-- Mutates result.SoftReserves in place - called from SoftRes.Parse itself
+-- (on the still-local, not-yet-returned result), so every parse - live
+-- preview, Import, or a reload's re-parse of the same saved string - is
+-- already name-corrected and produces the identical result for the same
+-- input, with no separate "fix it after the fact" step for callers to forget.
 ---@return table renamed {originalName -> correctedName} for anything rewired
-local function fixPlayerNames()
+local function fixPlayerNames(result)
+    SoftRes.RenamedNames = {}; -- reset every call - a prior parse's flags must not leak into this one
+
     local groupMembers = Util.groupMembers(); -- name -> classToken
     local classByLowerName = {};
     local reservedByLowerName = {};
@@ -124,7 +138,7 @@ local function fixPlayerNames()
     end
 
     local unmatchedEntries = {}; -- lowercase softres name -> lowercase class name
-    for _, entry in pairs(SoftRes.MetaData.SoftReserves or {}) do
+    for _, entry in pairs(result.SoftReserves or {}) do
         local lowerName = string.lower(entry.name or "");
         if (reservedByLowerName[lowerName] ~= nil) then
             reservedByLowerName[lowerName] = true;
@@ -160,10 +174,11 @@ local function fixPlayerNames()
     if (not next(nameDictionary)) then return {}; end
 
     local renamed = {};
-    for _, entry in pairs(SoftRes.MetaData.SoftReserves or {}) do
+    for _, entry in pairs(result.SoftReserves or {}) do
         local corrected = nameDictionary[string.lower(entry.name or "")];
         if (corrected) then
             renamed[entry.name] = corrected;
+            SoftRes.RenamedNames[corrected] = true;
             entry.name = corrected;
         end
     end
@@ -171,12 +186,16 @@ local function fixPlayerNames()
     return renamed;
 end
 
---- Parse a softres.it "Gargul Export" string without touching any global
---- state - used both by Import (below) and by the import window's live
---- preview, which must be able to show entries before the user commits.
+--- Parse a softres.it "Gargul Export" string - used both by Import (below)
+--- and by the import window's live preview, which must be able to show
+--- entries before the user commits. Auto-corrects any entry name that
+--- doesn't match a raid member (see fixPlayerNames) and refreshes
+--- SoftRes.RenamedNames accordingly, but never touches SoftRes.MetaData/
+--- ImportString themselves - only Import does that.
 ---@param pastedString string
 ---@return boolean success
 ---@return table|string result Parsed {id, createdAt, updatedAt, url, SoftReserves, HardReserves} on success, or an error message
+---@return table|nil renamed {originalName -> correctedName} for anything auto-linked - only present on success
 function SoftRes.Parse(pastedString)
     if (type(pastedString) ~= "string" or pastedString == "") then
         return false, "No data provided.";
@@ -224,7 +243,7 @@ function SoftRes.Parse(pastedString)
         end
     end
 
-    return true, {
+    local result = {
         id = tostring(data.metadata.id),
         createdAt = tonumber(data.metadata.createdAt) or 0,
         updatedAt = tonumber(data.metadata.updatedAt) or 0,
@@ -232,6 +251,10 @@ function SoftRes.Parse(pastedString)
         SoftReserves = softReserves,
         HardReserves = hardReserves,
     };
+
+    local renamed = fixPlayerNames(result);
+
+    return true, result, renamed;
 end
 
 --- Import a softres.it "Gargul Export" string (base64/zlib/JSON blob).
@@ -246,7 +269,7 @@ end
 ---@return boolean success
 ---@return string|nil errorMessage
 function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
-    local ok, result = SoftRes.Parse(pastedString);
+    local ok, result, renamed = SoftRes.Parse(pastedString);
     if (not ok) then
         return false, result;
     end
@@ -254,7 +277,7 @@ function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
     SoftRes.ImportString = pastedString;
     SoftRes.MetaData = result;
 
-    for original, corrected in pairs(fixPlayerNames()) do
+    for original, corrected in pairs(renamed) do
         print(("|cff8865ffForeverLoot|r Auto name fix: the SR of '%s' is now linked to '%s'"):format(original, corrected));
     end
 
@@ -274,7 +297,7 @@ function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
 
         local channel = Util.GroupChatChannel();
         if (channel) then
-            pcall(SendChatMessage, "Softres data was imported", channel);
+            Util.SendChatMessageSafe("Softres data was imported", channel);
         end
     end
 
@@ -332,8 +355,8 @@ Comm.Actions[Constants.Actions.broadcastSoftRes] = function(Message)
         -- Someone else's import just replaced our data (and DB.softRes.importString,
         -- via the persist above) - if the SoftRes window is open, its preview and
         -- paste box are now stale, so sync them to match.
-        if (FL.UI.SoftResImport and FL.UI.SoftResImport.SyncExternalImport) then
-            FL.UI.SoftResImport.SyncExternalImport();
+        if (FL.UI.SoftResImportWindow and FL.UI.SoftResImportWindow.SyncExternalImport) then
+            FL.UI.SoftResImportWindow.SyncExternalImport();
         end
     else
         debugPrint("Failed to import SoftRes broadcast from " .. tostring(Message.senderFqn) .. ": " .. tostring(err));
@@ -359,6 +382,24 @@ function SoftRes.PlayersWithoutSoftReserves()
     return missing;
 end
 
+--- Announces to the group (or prints locally when solo) that the given
+--- names are missing a soft-reserve. Shared by SoftRes.PostMissingSoftReserves
+--- (which sources its list from the last COMMITTED import) and the Import
+--- window's Report Missing button (which sources its list from whatever's
+--- currently parsed in the paste box, committed or not).
+function SoftRes.AnnounceMissingNames(missing)
+    local channel = Util.GroupChatChannel();
+    local text = (#missing == 0)
+        and "Everyone in the raid has a soft-reserve registered."
+        or ("Missing soft-reserves from: " .. table.concat(missing, ", "));
+
+    if (channel) then
+        Util.SendChatMessageSafe(text, channel);
+    else
+        print("|cff8865ffForeverLoot|r " .. text);
+    end
+end
+
 --- Announces to the group (or prints locally when solo) which group members
 --- haven't submitted a soft-reserve yet. Mirrors Gargul's
 --- SoftRes:postMissingSoftReserves.
@@ -371,17 +412,7 @@ function SoftRes.PostMissingSoftReserves()
     end
 
     local missing = SoftRes.PlayersWithoutSoftReserves();
-    local channel = Util.GroupChatChannel();
-    local text = (#missing == 0)
-        and "Everyone in the raid has a soft-reserve registered."
-        or ("Missing soft-reserves from: " .. table.concat(missing, ", "));
-
-    if (channel) then
-        pcall(SendChatMessage, text, channel);
-    else
-        print("|cff8865ffForeverLoot|r " .. text);
-    end
-
+    SoftRes.AnnounceMissingNames(missing);
     return true, missing;
 end
 
@@ -468,7 +499,7 @@ local function canAnswerWhisperCommand()
 end
 
 local function sendWhisperReply(sender, text)
-    pcall(SendChatMessage, text, "WHISPER", nil, sender);
+    Util.SendChatMessageSafe(text, "WHISPER", nil, sender);
 end
 
 -- Turns {[idString]=count} into a reply string once every item's link is

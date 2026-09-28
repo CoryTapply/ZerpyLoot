@@ -26,12 +26,15 @@ local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark";
 -- (GroupLootFrame1..4) is a file-local, so it can't be read from here.
 local NUM_DEFAULT_GROUP_LOOT_FRAMES = 4;
 
--- Keyed by rollID: { rollID, itemLink, itemIcon, itemName, quality, canNeed,
--- canGreed, canTransmog, duration, startedAt, lootHandle, dropKey, votes = {
--- [0]=passList, [1]=needList, [2]=greedList, [4]=transmogList } }, each vote
--- list an array of { name, classFile, roll?, offSpec? }.
--- Exposed (not local) so UI/GroupLootRollBars.lua can read it directly,
--- same convention RollTracker.CurrentRollOff uses for RollWindow.lua.
+-- Keyed by rollID: { rollID, itemLink, itemIcon, itemName, itemCount, quality,
+-- canNeed, canGreed, canTransmog, reasonNeed, reasonGreed, duration,
+-- startedAt, lootHandle, dropKey, votes = { [0]=passList, [1]=needList,
+-- [2]=greedList, [4]=transmogList } }, each vote list an array of
+-- { name, classFile, roll?, offSpec? }. reasonNeed/reasonGreed are the
+-- numeric LOOT_ROLL_INELIGIBLE_REASON<n> suffix for that option when its
+-- matching canNeed/canGreed is false (meaningless otherwise).
+-- Exposed (not local) so UI/GroupLootFrame.lua can read it directly, same
+-- convention RollTracker.CurrentRollOff uses for RollWindow.lua.
 GroupLootRoll.ActiveRolls = {};
 local ActiveRolls = GroupLootRoll.ActiveRolls;
 
@@ -116,6 +119,29 @@ function GroupLootRoll.RollOn(rollID, rollType)
     RollOnLoot(rollID, rollType);
 end
 
+-- rollIDs FL.AutoRoll auto-rolled on the player's behalf, awaiting a possible
+-- CONFIRM_LOOT_ROLL (e.g. Need on a Bind-on-Pickup item) that must bypass
+-- GroupLootFrame.ShowConfirm's popup entirely - see onConfirmLootRoll below.
+-- Owned entirely here; FL.AutoRoll never touches this set directly, only
+-- calls RollOnAuto.
+local pendingAuto = {};
+
+--- Same as GroupLootRoll.RollOn, but flags rollID as auto-rolled first so a
+--- CONFIRM_LOOT_ROLL for it skips the manual-click confirmation popup.
+function GroupLootRoll.RollOnAuto(rollID, rollType)
+    pendingAuto[rollID] = true;
+    RollOnLoot(rollID, rollType);
+end
+
+-- Finalizes a roll that CONFIRM_LOOT_ROLL flagged as needing confirmation
+-- (e.g. Need on a Bind-on-Pickup item) - ConfirmLootRoll is a separate global
+-- from RollOnLoot (confirmed against Blizzard's own
+-- StaticPopupDialogs["CONFIRM_LOOT_ROLL"].OnAccept), not a "confirmed"
+-- argument to RollOnLoot itself.
+function GroupLootRoll.ConfirmRoll(rollID, rollType)
+    ConfirmLootRoll(rollID, rollType);
+end
+
 local function onStartLootRoll(rollID, rollTime, lootHandle)
     -- Self-heals against the default frames described above
     -- suppressDefaultFrames - a fresh roll is exactly the moment one would
@@ -134,7 +160,7 @@ local function onStartLootRoll(rollID, rollTime, lootHandle)
         return;
     end
 
-    local texture, name, _, quality, _, canNeed, canGreed, _, _, _, _, _, canTransmog = GetLootRollItemInfo(rollID);
+    local texture, name, count, quality, _, canNeed, canGreed, _, reasonNeed, reasonGreed, _, _, canTransmog = GetLootRollItemInfo(rollID);
     local itemLink = GetLootRollItemLink(rollID);
 
     ActiveRolls[rollID] = {
@@ -142,17 +168,31 @@ local function onStartLootRoll(rollID, rollTime, lootHandle)
         itemLink = itemLink,
         itemIcon = texture or FALLBACK_ICON,
         itemName = name or itemLink or "",
+        itemCount = count,
         quality = quality,
         canNeed = canNeed,
         canGreed = canGreed,
         canTransmog = canTransmog,
+        reasonNeed = reasonNeed,
+        reasonGreed = reasonGreed,
         duration = rollTime,
         startedAt = GetTime(),
         lootHandle = lootHandle,
         votes = {},
     };
 
-    if (FL.UI.GroupLootRollBars.Acquire) then FL.UI.GroupLootRollBars.Acquire(rollID); end
+    -- FL.AutoRoll may decide to roll this on the player's behalf (an item
+    -- override, or the raid's own auto-roll mode) - when it does, this roll
+    -- never gets a UI row at all. Release is a safe no-op when no row exists
+    -- yet (see UI/GroupLootFrame.lua's closeRow: it's a no-op unless the
+    -- rollID is actually in `order`) - cheap insurance against a future
+    -- reordering of this function, not something reachable today since
+    -- Acquire hasn't run yet in this same call.
+    if (FL.AutoRoll and FL.AutoRoll.HandleStartLootRoll and FL.AutoRoll.HandleStartLootRoll(rollID)) then
+        if (FL.UI.GroupLootFrame.Release) then FL.UI.GroupLootFrame.Release(rollID); end
+    elseif (FL.UI.GroupLootFrame.Acquire) then
+        FL.UI.GroupLootFrame.Acquire(rollID);
+    end
 
     -- The history drop for this roll may already exist (its update event can
     -- fire before START_LOOT_ROLL) - pick up whatever it already shows.
@@ -160,7 +200,7 @@ local function onStartLootRoll(rollID, rollTime, lootHandle)
 end
 
 -- Single cleanup path for a roll that's no longer pending, whether it ended
--- normally (CANCEL_LOOT_ROLL) or GroupLootRollBars.lua's own OnUpdate safety
+-- normally (CANCEL_LOOT_ROLL) or UI/GroupLootFrame.lua's own OnUpdate safety
 -- net caught it expiring without one - both need the same things done (drop
 -- the live state, hide the bar), so neither has to duplicate the other's
 -- bookkeeping.
@@ -169,8 +209,9 @@ function GroupLootRoll.ClearActiveRoll(rollID)
     if (roll and roll.dropKey) then dropKeyToRollID[roll.dropKey] = nil; end
 
     ActiveRolls[rollID] = nil;
+    pendingAuto[rollID] = nil;
 
-    if (FL.UI.GroupLootRollBars.Release) then FL.UI.GroupLootRollBars.Release(rollID); end
+    if (FL.UI.GroupLootFrame.Release) then FL.UI.GroupLootFrame.Release(rollID); end
 end
 
 local function onCancelLootRoll(rollID)
@@ -275,7 +316,11 @@ local function applyDropInfo(encounterID, dropInfo)
         if (rollType) then
             votes[rollType] = votes[rollType] or {};
             table.insert(votes[rollType], {
-                name = Util.stripRealm(rollInfo.playerName),
+                -- Full name (character-realm when Blizzard includes one),
+                -- unlike the stripped name used elsewhere for matching -
+                -- this is display-only (UI/GroupLootFrame.lua's tooltip),
+                -- nothing here matches votes back to a player by name.
+                name = rollInfo.playerName,
                 classFile = rollInfo.playerClass,
                 roll = rollInfo.roll,
                 offSpec = (rollInfo.state == DROP_STATE_NEED_OFFSPEC) or nil,
@@ -284,7 +329,7 @@ local function applyDropInfo(encounterID, dropInfo)
     end
 
     ActiveRolls[rollID].votes = votes;
-    if (FL.UI.GroupLootRollBars.Refresh) then FL.UI.GroupLootRollBars.Refresh(rollID); end
+    if (FL.UI.GroupLootFrame.Refresh) then FL.UI.GroupLootFrame.Refresh(rollID); end
 end
 
 local function onLootHistoryUpdateDrop(encounterID, lootListKey)
@@ -312,6 +357,28 @@ local function onLootRollsComplete()
     wipe(earlyCancelledRolls);
 end
 
+-- Fired synchronously from inside RollOnLoot (per Blizzard's own API docs)
+-- when the roll just requested needs confirmation before it's actually sent
+-- - e.g. Need on a Bind-on-Pickup item. The roll itself is untouched (no
+-- CANCEL_LOOT_ROLL follows this), so the UI just needs to ask the player
+-- and, on accept, call GroupLootRoll.ConfirmRoll to finish what RollOnLoot
+-- started.
+local function onConfirmLootRoll(rollID, rollType, confirmReason)
+    -- An auto-rolled item's BoP confirm must never block on the player -
+    -- bypass GroupLootFrame.ShowConfirm's popup entirely and finish the roll
+    -- FL.AutoRoll already decided on. A roll the player clicked themselves is
+    -- never in this set, so its own confirm popup is untouched.
+    if (pendingAuto[rollID]) then
+        pendingAuto[rollID] = nil;
+        GroupLootRoll.ConfirmRoll(rollID, rollType);
+        return;
+    end
+
+    if (FL.UI.GroupLootFrame.ShowConfirm) then
+        FL.UI.GroupLootFrame.ShowConfirm(rollID, rollType, confirmReason);
+    end
+end
+
 local eventFrame = CreateFrame("Frame");
 eventFrame:SetScript("OnEvent", function(_, event, ...)
     if (event == "START_LOOT_ROLL") then
@@ -326,6 +393,8 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         restoreActiveRolls();
     elseif (event == "LOOT_ROLLS_COMPLETE") then
         onLootRollsComplete();
+    elseif (event == "CONFIRM_LOOT_ROLL") then
+        onConfirmLootRoll(...);
     end
 end);
 
@@ -336,6 +405,11 @@ function GroupLootRoll.Init()
     if (FL.DB) then FL.DB.activeLootRolls = nil; end
 
     if (not FL.Settings.GetGroupLootRollEnabled()) then return; end
+
+    -- Shows the unlocked header/idle box immediately at login rather than
+    -- only after the first roll of the session (GroupLootFrame otherwise
+    -- only builds itself lazily, on the first Acquire).
+    if (FL.UI.GroupLootFrame.Init) then FL.UI.GroupLootFrame.Init(); end
 
     suppressDefaultFrames();
 
@@ -364,6 +438,7 @@ function GroupLootRoll.Init()
     eventFrame:RegisterEvent("CANCEL_ALL_LOOT_ROLLS");
     eventFrame:RegisterEvent("LOOT_HISTORY_UPDATE_DROP");
     eventFrame:RegisterEvent("LOOT_ROLLS_COMPLETE");
+    eventFrame:RegisterEvent("CONFIRM_LOOT_ROLL");
     -- Restores any roll still pending from before a /reload - see
     -- restoreActiveRolls above.
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD");

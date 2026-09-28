@@ -15,8 +15,9 @@ local Util = FL.Util;
 local MAX_GROUPS = 8;
 
 --- Builds the raid-group grid data: which raiders currently sit in each of
---- the 8 raid subgroups, or - outside a raid - just group 1 for a party, or
---- nothing at all when solo/ungrouped.
+--- the 8 raid subgroups, or - outside a raid - just group 1 for a party.
+--- Solo/ungrouped still returns the player alone in group 1's first slot, so
+--- the settings-page grid always has something to show.
 ---@return table { inRaid: boolean, inParty: boolean, groups: table<integer, {members: table[]}> }
 function Roster.BuildGroups()
     local groups = {};
@@ -40,16 +41,18 @@ function Roster.BuildGroups()
                 end
             end
         end
-    elseif (IsInGroup()) then
-        inParty = true;
+    else
+        inParty = IsInGroup();
         table.insert(groups[1].members,
             { name = Util.UnitName("player"), classFile = select(2, UnitClass("player")), unit = "player" });
 
-        for i = 1, (GetNumGroupMembers() or 1) - 1 do
-            local unit = "party" .. i;
-            if (UnitExists(unit)) then
-                table.insert(groups[1].members,
-                    { name = Util.UnitName(unit), classFile = select(2, UnitClass(unit)), unit = unit });
+        if (inParty) then
+            for i = 1, (GetNumGroupMembers() or 1) - 1 do
+                local unit = "party" .. i;
+                if (UnitExists(unit)) then
+                    table.insert(groups[1].members,
+                        { name = Util.UnitName(unit), classFile = select(2, UnitClass(unit)), unit = unit });
+                end
             end
         end
     end

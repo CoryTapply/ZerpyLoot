@@ -17,9 +17,17 @@ FL.UI.SettingsWidgets = Widgets;
 
 local COLUMN_GAP = 30;
 local SECTION_GAP = Sizes.layout.sectionGap;
+-- Also the section heading rule -> first row gap (PageMethods:Section) -
+-- see Sizes.lua's own comment on rowGap.
 local ROW_SPACING = Sizes.layout.rowGap;
-local CHECKBOX_ROW_HEIGHT = Sizes.controls.checkboxRow;
-local CHECKBOX_DESC_HEIGHT = 14;
+local CHECKBOX_LABEL_GAP = Sizes.controls.checkboxLabelGap;
+-- Helper text sits 1px above where it'd flush-stack under the label
+-- (label's BOTTOMLEFT -> helper's TOPLEFT), but an item's own reserved
+-- height still counts a full 1px gap there - a deliberate hair of visual
+-- tightening that doesn't change how much space the item actually claims in
+-- the section.
+local CHECKBOX_HELPER_OFFSET_Y = -1;
+local CHECKBOX_HELPER_LINE_SPACING = 2;
 local CHILD_INDENT = 32;
 -- Section title (~sectionHeader height) + 6px gap + the dropdown's own
 -- closed-button height, plus breathing room.
@@ -33,8 +41,9 @@ local BUTTON_ROW_HEIGHT = Sizes.controls.button;
 --- Flat-backdrop push button. Every button in this window uses this rather
 --- than Theme.CreateButton/SkinButton - those follow the active skin, and
 --- this window deliberately ignores it (see Colors.lua). `variant` is
---- "default" (every settings button except Sync to Raid) or "primary" - see
---- Skin.Button.
+--- "default" or "primary" - see Skin.Button. "Sync to Raid" starts
+--- "default" and switches to "primary" at runtime via Skin.SetButtonVariant
+--- while a roster change is pending (see UI/SettingsWindow/Pages/LootCouncil.lua).
 ---@param parent Frame
 ---@param label string
 ---@param variant string|nil "default"|"primary"
@@ -45,42 +54,87 @@ function Widgets.CreateFlatButton(parent, label, variant)
     return button;
 end
 
---- Builds one checkbox row (UICheckButtonTemplate + label + optional desc
---- line), unanchored - the caller positions row.frame. Shared by
---- SectionMethods:Checkbox (vertical section stacking) and directly by the
---- Loot Council page's horizontal options strip, so both get identical
---- parent/child, tooltip and read/write behavior.
+--- Builds one checkbox row (UICheckButtonTemplate + label + optional helper
+--- text), unanchored - the caller positions row.frame. Shared by
+--- SectionMethods:Checkbox (vertical section stacking) and directly by
+--- UI/AwardWindow.lua's footer checkbox and the Loot Council page's
+--- horizontal options strip, so all three get identical parent/child,
+--- tooltip and read/write behavior.
+---
+--- Item anatomy (top to bottom): the box top-aligns with the label's first
+--- line (TOPLEFT-to-TOPRIGHT anchoring, not vertically centered on the box);
+--- the helper text (if any) sits directly under the label.
+---
+--- `rowWidth` (SectionMethods:Checkbox only - the two direct callers omit it
+--- and get natural, unwrapped sizing) is the row's total width as a plain
+--- Lua number, not a RIGHT anchor point. On this client, a FontString's wrap
+--- can lag a frame behind an anchor-derived width change, so wrapping is
+--- always driven off an explicit SetWidth instead. Order is load-bearing -
+--- SetFont (by the caller, via SetFont(label, "body") below) -> SetWidth ->
+--- SetText -> only then GetStringHeight() - never measure before both the
+--- width and the text are actually set, or the wrap reflects a stale state.
+--- rowObj.Remeasure(width) re-runs this exact sequence and returns the row's
+--- new height, so a caller can redo it once this client's fonts/geometry
+--- have actually settled (see SectionMethods:Checkbox/PageMethods:Layout).
 ---@param parent Frame
 ---@param opts table { key, label, tooltip, desc, onChange }
-function Widgets.BuildCheckboxRow(parent, opts)
+---@param rowWidth number|nil
+function Widgets.BuildCheckboxRow(parent, opts, rowWidth)
     local row = CreateFrame("Frame", nil, parent);
-    row:SetHeight(opts.desc and (CHECKBOX_ROW_HEIGHT + CHECKBOX_DESC_HEIGHT) or CHECKBOX_ROW_HEIGHT);
 
     local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate");
     checkbox:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0);
     Skin.Checkbox(checkbox);
+    local boxSize = Sizes.controls.checkbox;
 
     local label = row:CreateFontString(nil, "OVERLAY");
     SetFont(label, "body");
-    label:SetPoint("LEFT", checkbox, "RIGHT", 10, 0);
-    label:SetText(opts.label);
+    -- A FontString with an explicit width defaults to JustifyH("CENTER") -
+    -- both justify axes need to be set explicitly or a wrapped/width-bound
+    -- label reads centered instead of flush against the box.
+    label:SetJustifyH("LEFT");
+    label:SetJustifyV("TOP");
+    label:SetPoint("TOPLEFT", checkbox, "TOPRIGHT", CHECKBOX_LABEL_GAP, 0);
     label:SetTextColor(unpack(Colors.text));
 
     local descText;
     if (opts.desc) then
         descText = row:CreateFontString(nil, "OVERLAY");
-        SetFont(descText, "small");
-        descText:SetPoint("TOPLEFT", checkbox, "BOTTOMLEFT", 10, -2);
-        descText:SetText(opts.desc);
+        SetFont(descText, "helper");
+        descText:SetJustifyH("LEFT");
+        descText:SetJustifyV("TOP");
+        descText:SetSpacing(CHECKBOX_HELPER_LINE_SPACING);
+        descText:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, CHECKBOX_HELPER_OFFSET_Y);
         descText:SetTextColor(unpack(Colors.muted));
     end
 
-    -- Sized to its own content (checkbox + label) rather than stretched, so
-    -- the horizontal options strip can lay several of these side by side;
-    -- SectionMethods:Checkbox overrides this by also anchoring a RIGHT point
-    -- (see below), which takes priority over an explicit width in WoW's
-    -- anchor system.
-    row:SetWidth(Sizes.controls.checkbox + 10 + (label:GetStringWidth() or 100) + 8);
+    --- (Re-)applies this item's layout for a given total row width: width,
+    --- then text, then measure - see this function's own doc comment for why
+    --- that order matters. `width == nil` is the two direct callers' natural
+    --- (unwrapped) case - no SetWidth at all, sized to the label's own
+    --- content instead of a column width.
+    local function applyLayout(width)
+        local textWidth = width and (width - boxSize - CHECKBOX_LABEL_GAP) or nil;
+        if (textWidth) then label:SetWidth(textWidth); end
+        label:SetText(opts.label);
+        if (descText) then
+            if (textWidth) then descText:SetWidth(textWidth); end
+            descText:SetText(opts.desc);
+        end
+
+        if (width) then
+            row:SetWidth(width);
+        else
+            row:SetWidth(boxSize + CHECKBOX_LABEL_GAP + (label:GetStringWidth() or 100) + 8);
+        end
+
+        local height = label:GetStringHeight();
+        if (descText) then height = height + 1 + descText:GetStringHeight(); end
+        row:SetHeight(math.max(boxSize, height));
+        return row:GetHeight();
+    end
+
+    applyLayout(rowWidth);
 
     local rowObj = {
         key = opts.key,
@@ -90,6 +144,7 @@ function Widgets.BuildCheckboxRow(parent, opts)
         desc = descText,
         labelLower = string.lower(opts.label or ""),
         children = {},
+        Remeasure = applyLayout,
     };
 
     -- Skin.Checkbox already dims the box itself (alpha 0.35) on
@@ -151,13 +206,50 @@ local function registerResettable(section, key, default)
     end
 end
 
+--- Re-anchors and re-measures every row this section has built, in the
+--- order they were added, and resizes the section frame to fit - the
+--- generic engine behind PageMethods:Layout's re-layout pass. Each
+--- SectionMethods:* builder below records one entry per row/group into
+--- `self.items` (x offset, frame(s), and - only for a row whose height can
+--- actually change, i.e. Checkbox/RadioGroup - a `remeasure` closure); a
+--- fixed-height row (Dropdown/Button/Slider) has no `remeasure`, so its
+--- already-correct height is just read back and used to advance the
+--- running Y, without needing to touch its frame(s) at all.
+function SectionMethods:Reflow()
+    local y = self.startY;
+    for _, item in ipairs(self.items) do
+        if (item.group) then
+            for _, member in ipairs(item.group) do
+                member.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", member.x, y);
+            end
+        else
+            item.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", item.x, y);
+        end
+        local height = item.remeasure and item.remeasure() or item.height or item.frame:GetHeight();
+        y = y - height - ROW_SPACING;
+    end
+    -- Left at the same value advanceSection would have, so a caller that
+    -- keeps stacking more (unregistered) content off self.nextRowY after
+    -- this section's own items - LootRolls.lua's hand-built warning
+    -- box/note under its RadioGroup - sees the corrected position too.
+    self.nextRowY = y;
+    self.frame:SetHeight(math.max(1, -y));
+    return self.frame:GetHeight();
+end
+
 --- Adds a standard vertical checkbox row to this section.
 ---@param opts table { key, label, tooltip, desc, parent, onChange, default }
 function SectionMethods:Checkbox(opts)
     local indent = opts.parent and CHILD_INDENT or 0;
-    local row = Widgets.BuildCheckboxRow(self.frame, opts);
+    local rowWidth = self.width - indent;
+    local row = Widgets.BuildCheckboxRow(self.frame, opts, rowWidth);
     row.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", indent, self.nextRowY);
-    row.frame:SetPoint("RIGHT", self.frame, "RIGHT", 0, 0);
+
+    table.insert(self.items, {
+        frame = row.frame,
+        x = indent,
+        remeasure = function() return row.Remeasure(rowWidth); end,
+    });
 
     self.page.checkboxByKey[opts.key] = row;
     table.insert(self.rows, row);
@@ -177,6 +269,46 @@ function SectionMethods:Checkbox(opts)
 
     advanceSection(self, row.frame:GetHeight());
     return row;
+end
+
+--- Adds a single-select radio group (a stack of Skin.Radio rows) to this
+--- section - one stored string value (via key/GetPath+SetPath), not N
+--- independent booleans. Skin.RadioGroup owns the actual single-select
+--- bookkeeping (hiding every other row's dot, calling setValue) off the
+--- entries built here.
+---@param opts table { key, default, options = { { value, label, desc }, ... }, onChange }
+function SectionMethods:RadioGroup(opts)
+    local entries = {};
+
+    for _, opt in ipairs(opts.options) do
+        local radio = Skin.Radio(self.frame, opt, self.width);
+        radio.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 0, self.nextRowY);
+
+        table.insert(self.items, {
+            frame = radio.frame,
+            x = 0,
+            remeasure = function() return radio.Remeasure(self.width); end,
+        });
+
+        table.insert(entries, { value = opt.value, radio = radio });
+        advanceSection(self, radio.frame:GetHeight());
+    end
+
+    local group = Skin.RadioGroup(entries,
+        function()
+            local value = opts.key and FL.Settings.GetPath(opts.key);
+            if (value == nil) then value = opts.default; end
+            return value;
+        end,
+        function(value)
+            if (opts.key) then FL.Settings.SetPath(opts.key, value); end
+            if (opts.onChange) then opts.onChange(value); end
+        end);
+
+    registerResettable(self, opts.key, opts.default);
+    table.insert(self.page.refreshers, group.Refresh);
+
+    return { rows = entries, Refresh = group.Refresh };
 end
 
 --- Adds a labeled dropdown row to this section, built from Skin.Dropdown -
@@ -237,7 +369,14 @@ function SectionMethods:Dropdown(opts)
     table.insert(self.page.refreshers, dropdown.Refresh);
 
     if (opts.advance ~= false) then
+        table.insert(self.items, { frame = row, x = opts.x or 0, height = row:GetHeight() });
         advanceSection(self, row:GetHeight());
+    else
+        -- Grouped with whatever else shares this row (side-by-side
+        -- Dropdowns/Sliders) - held until SectionMethods:AdvanceRow folds
+        -- the whole group into one Reflow item (see there).
+        self.pendingGroup = self.pendingGroup or {};
+        table.insert(self.pendingGroup, { frame = row, x = opts.x or 0 });
     end
     return { frame = row, dropdown = dropdown.button };
 end
@@ -250,6 +389,7 @@ function SectionMethods:Button(opts)
     button:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 0, self.nextRowY);
     button:SetScript("OnClick", function() if (opts.onClick) then opts.onClick(); end end);
 
+    table.insert(self.items, { frame = button, x = 0, height = BUTTON_ROW_HEIGHT });
     advanceSection(self, BUTTON_ROW_HEIGHT);
     return button;
 end
@@ -312,7 +452,11 @@ function SectionMethods:Slider(opts)
     table.insert(self.page.refreshers, function() slider:SetValue(currentValue()); end);
 
     if (opts.advance ~= false) then
+        table.insert(self.items, { frame = row, x = opts.x or 0, height = row:GetHeight() });
         advanceSection(self, row:GetHeight());
+    else
+        self.pendingGroup = self.pendingGroup or {};
+        table.insert(self.pendingGroup, { frame = row, x = opts.x or 0 });
     end
     return { frame = row, slider = slider };
 end
@@ -321,8 +465,13 @@ end
 --- false` (several Dropdowns placed side by side via `x`, for instance) -
 --- call once after the last control on that row, with any one of their
 --- frame heights (they're all DROPDOWN_ROW_HEIGHT, so it doesn't matter
---- which).
+--- which). Folds every pending grouped control from that row into a single
+--- Reflow item so SectionMethods:Reflow repositions the whole row together.
 function SectionMethods:AdvanceRow(height)
+    if (self.pendingGroup) then
+        table.insert(self.items, { group = self.pendingGroup, height = height });
+        self.pendingGroup = nil;
+    end
     advanceSection(self, height);
 end
 
@@ -421,12 +570,17 @@ function PageMethods:Section(title, column)
     divider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0);
     divider:SetHeight(FL.Pixel.PixelSize(1));
 
+    local startY = -(titleText:GetStringHeight() + 6 + ROW_SPACING);
     local section = setmetatable({
         page = self,
         frame = frame,
         width = colWidth,
-        nextRowY = -(titleText:GetStringHeight() + 6 + 10),
+        column = column,
+        xOffset = xOffset,
+        startY = startY,
+        nextRowY = startY,
         rows = {},
+        items = {},
     }, SectionMethods);
     frame:SetHeight(-section.nextRowY);
 
@@ -434,6 +588,48 @@ function PageMethods:Section(title, column)
     table.insert(self.sections, section);
 
     return section;
+end
+
+--- Registers a function to run at the end of every PageMethods:Layout()
+--- pass, after the normal 2-column Section stacking below has been redone -
+--- for a page with content Section()'s own bookkeeping can't see (e.g.
+--- LootRolls.lua's hand-built full-width "Loot Chat"/"Automatic Rolls"
+--- sections), so that content gets a chance to re-run its own positioning
+--- off the now-current column bottoms.
+function PageMethods:AddLayoutHook(fn)
+    self.layoutHooks = self.layoutHooks or {};
+    table.insert(self.layoutHooks, fn);
+end
+
+--- Redoes this page's row/section positioning and sizing in place, without
+--- rebuilding anything - for re-running once this client's fonts/geometry
+--- have actually settled (a checkbox/radio item's helper text can measure
+--- one line short on the very first pass - see Registry.lua's
+--- Registry.LayoutCurrentPage). Re-walks the normal 2-column Section grid
+--- (same math PageMethods:Section used to build it) via each section's own
+--- Reflow(), then runs any page-specific layoutHooks (LootRolls.lua's
+--- hand-built full-width sections) so they can redo their own positioning
+--- off the now-current column bottoms.
+function PageMethods:Layout()
+    -- `cursor` is where the NEXT section in each column goes (mirrors
+    -- PageMethods:Section's own columnY bookkeeping while building); once
+    -- the loop is done, self.columnY needs to hold where the LAST section in
+    -- each column actually STARTS (its own top Y, not yet decremented for
+    -- its own height) - that's the invariant contentBottom() relies on
+    -- (`y - last.frame:GetHeight()`), so it's tracked separately in `top`
+    -- and only written to self.columnY after the loop.
+    local cursor = { [1] = self.contentTop or 0, [2] = self.contentTop or 0 };
+    local top = { [1] = self.contentTop or 0, [2] = self.contentTop or 0 };
+    for _, section in ipairs(self.sections or {}) do
+        local column = section.column;
+        top[column] = cursor[column];
+        section.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", section.xOffset, top[column]);
+        local height = section:Reflow();
+        cursor[column] = top[column] - height - SECTION_GAP;
+    end
+    self.columnY = top;
+
+    for _, fn in ipairs(self.layoutHooks or {}) do fn(self); end
 end
 
 --- The default footer content for any page that doesn't supply its own via

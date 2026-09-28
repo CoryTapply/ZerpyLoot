@@ -33,6 +33,17 @@ local SWEEP_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Sweep";
 local SOFTGLOW_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\SoftGlow";
 local SENT_CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready";
 local SORT_ARROW_TEXTURE = "Interface\\Buttons\\UI-SortArrow";
+local NOTE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteIcon";
+local NOTE_ICON_BADGE_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteIconBadge";
+local NOTE_BUBBLE_ARROW_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteBubbleArrow";
+
+-- Icon-only response buttons' atlases. "talents-button-reset" is confirmed
+-- to exist (Blizzard_SharedTalentUI); "Crosshair_Transmogrify_32" is not
+-- independently confirmed on this client - createIconResponseButton guards
+-- both with C_Texture.GetAtlasInfo before committing to SetAtlas, same
+-- pattern as UI/AwardWindow.lua's own atlas use.
+local MOG_ATLAS = "Crosshair_Transmogrify_32";
+local PASS_ATLAS = "talents-button-reset";
 
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition). Deliberately not migrated
@@ -42,24 +53,18 @@ local SORT_ARROW_TEXTURE = "Interface\\Buttons\\UI-SortArrow";
 local POSITION_KEY = "respondWindow";
 
 -- Every item card has the same fixed height, derived from the same Sizes
--- this file paints every card with (icon/name/type row, note box, response
--- button row - see paintCard). Computed once here rather than measured per
--- card each refresh.
-local CARD_HEIGHT = Sizes.cardPadding * 2 + Sizes.iconSize + Sizes.cardSectionGap * 2
-    + Sizes.noteHeight + Sizes.buttonHeight;
+-- this file paints every card with (icon/name/type row, response button row
+-- - see paintCard). Computed once here rather than measured per card each
+-- refresh. No note row anymore - the note field lives in a floating popover
+-- instead (see the popover module below), not an inline card row.
+local CARD_HEIGHT = Sizes.cardPadding * 2 + Sizes.iconSize + Sizes.cardSectionGap + Sizes.buttonHeight;
 
 local ALL_SENT_CARD_HEIGHT = Sizes.cardPadding * 2 + Sizes.allSentRowHeight
     + Sizes.timerBarGap + Sizes.timerTrackHeight;
 
-local frame, header, headerCountNumber, allSentCard, timerLabel, timerTrack, timerFill,
-    timerGlow, timerSheenClip, timerSheen, scrollFrame, scrollChild, toggleBar,
+local frame, header, headerCountNumber, allSentCard, timerLabel, timerBar,
+    scrollFrame, scrollChild, toggleBar,
     toggleSentText, toggleActionText, toggleArrow;
-
--- Forward-declared here (not down in the "Timer state machine" section below)
--- since createAllSentCard's fade-anim OnFinished closure, defined earlier in
--- this file, needs to close over the real local - not a global - when it
--- resets these on the window finishing its close-out fade.
-local timerStart, lastTimerLabelSeconds;
 
 -- cards[item.session] = card frame, built lazily and reused for the
 -- lifetime of the addon session - keyed by the item's stable session index
@@ -68,8 +73,69 @@ local timerStart, lastTimerLabelSeconds;
 -- sent groups. See ensureCard/paintCard below.
 local cards = {};
 
+-- Session -> the current locally-known note text for that item, independent
+-- of whether a response has been sent yet. This is the note popover's real
+-- source of truth (there's a single shared popover EditBox, not one per
+-- card, so a card's note text has to live somewhere even while its popover
+-- is closed). Initialized from candidates[myName].note the first time a
+-- session id is painted (see paintCard's paintedSessionId guard) and from
+-- then on only ever written by the popover itself (OnTextChanged / CloseNote)
+-- - see the popover module below.
+local noteDrafts = {};
+
+-- Forward declarations: createResponseButton (below) and the note/icon
+-- buttons all need to call into the shared note-popover module, which is
+-- defined later in this file (where the old inline note box used to live) -
+-- see the "Note popover" section.
+local notePopover, isNotePopoverOpen, dismissPopoverSilently, CloseNote, OpenNote, onResponseButtonClick, paintNoteButton;
+
 -- Reset to false every Show() (not persisted) - see RespondWindow.Show().
 local toggleExpanded = false;
+
+-- Session -> true for every item that was in `pending` as of the previous
+-- Refresh() call. Diffed against the current pending set each Refresh to
+-- detect a genuine pending -> sent transition (a raider's own click)
+-- without caring which caller triggered the Refresh - see the
+-- "justAnsweredSessions" block in Refresh().
+local prevPendingSessionSet = {};
+
+-- Session -> the `top` offset (the value placeNext() returned) each
+-- pending card was last anchored at. Lets a card that moves up on the
+-- next Refresh know its old Y for the slide, and lets a just-answered
+-- card know its old Y to fade out at. A missing entry means "never
+-- displayed as pending before" - such a card never fake-slides in.
+local lastPendingTop = {};
+
+-- Same idea as lastPendingTop, but for cards currently visible in the
+-- EXPANDED sent list (toggleExpanded == true) - lets those slide up too
+-- when a pending item above the toggle bar is answered. Cleared for a
+-- session whenever it's not currently a visible expanded-sent card (see
+-- the sent/toggle-bar block in Refresh()), so a stale value never gets
+-- reused as a bogus slide origin.
+local lastSentTop = {};
+
+-- Same idea again, but for the toggle bar itself (a single frame, so no
+-- per-session table needed). nil whenever the toggle bar is hidden.
+local lastToggleBarTop = nil;
+
+-- One-shot guard: set true by Show() immediately before it calls
+-- Refresh(), so the window's first paint after opening never animates.
+-- Consumed (reset to false) by the very next Refresh().
+local suppressReflowAnim = true;
+
+-- The `contentHeight` actually used (post-clamp) by the last Refresh() -
+-- see reflowAnimActiveUntil below.
+local lastContentHeight = 0;
+
+-- GetTime() the current fade/slide reflow is expected to finish by. While
+-- GetTime() is under this, Refresh() clamps the scrollFrame/window to the
+-- larger of the old and new content height instead of shrinking instantly -
+-- ScrollFrame hard-clips anything outside its rect, and a card animating
+-- from its old (pre-removal) position would otherwise be clipped invisible
+-- the instant the frame shrinks out from under it. Refresh() re-runs itself
+-- once the reflow's duration elapses (scheduled where this is set) so the
+-- shrink still lands once the animation is actually done.
+local reflowAnimActiveUntil = 0;
 
 --------------------------------------------------------------------------
 -- Shared card/shadow helper. No such helper exists elsewhere in the addon -
@@ -119,6 +185,36 @@ do
     probe:SetText("Sent");
     probe:Hide();
     SENT_INDICATOR_WIDTH = Sizes.sentIconSize + Sizes.sentIconGap + probe:GetStringWidth();
+end
+
+-- Measured once, off-screen: the note popover's "Done" button width, sized
+-- to its own label rather than a guessed literal - same pattern as
+-- SENT_INDICATOR_WIDTH above.
+local DONE_BUTTON_WIDTH;
+do
+    local probe = UIParent:CreateFontString(nil, "OVERLAY");
+    SetFont(probe, "body");
+    probe:SetText("Done");
+    probe:Hide();
+    DONE_BUTTON_WIDTH = probe:GetStringWidth() + Sizes.popoverDoneButtonPadX * 2;
+end
+
+-- Constants.LOOT_COUNCIL_RESPONSES, partitioned once: Transmog (MOG) and
+-- Pass become their own fixed-width icon-only buttons (see
+-- createIconResponseButton below); everything else (today: Major/Minor/
+-- Offspec) keeps the original dot+label treatment and shares the row's
+-- leftover width equally. Constants.LOOT_COUNCIL_RESPONSES itself is never
+-- modified - its "Transmog" label is still what UI/AwardWindow.lua's own council
+-- grid reads via Session/Awards.lua.
+local EQUAL_SHARE_RESPONSES, MOG_RESPONSE, PASS_RESPONSE = {}, nil, nil;
+for _, entry in ipairs(Constants.LOOT_COUNCIL_RESPONSES) do
+    if (entry.id == "MOG") then
+        MOG_RESPONSE = entry;
+    elseif (entry.id == "PASS") then
+        PASS_RESPONSE = entry;
+    else
+        table.insert(EQUAL_SHARE_RESPONSES, entry);
+    end
 end
 
 --------------------------------------------------------------------------
@@ -208,83 +304,386 @@ local function createResponseButton(card)
         end
     end);
 
-    btn:SetScript("OnClick", function(self)
-        local card = self:GetParent();
-        local entry = card.entry;
-        if (not entry or entry.awardedTo) then return; end
+    btn:SetScript("OnClick", function(self) onResponseButtonClick(self, self:GetParent()); end);
 
+    return btn;
+end
+
+--------------------------------------------------------------------------
+-- Note popover - one shared floating frame for the whole window (only one
+-- open at a time), parented to the window's root `frame` (not scrollChild,
+-- so it's never subject to scrollFrame's clip rect or a card's own
+-- SetClipsChildren(true)). Replaces the old always-visible inline note
+-- EditBox (createNoteBox, previously here) entirely - see the card-redesign
+-- plan this implements for why. Built lazily by ensurePopover(), called
+-- once from ensureFrame() below.
+--
+-- The note text itself lives in the module-level `noteDrafts` table (see
+-- its own declaration near `cards` above), not on the item/candidate
+-- directly - the popover is a single shared EditBox, not one per card, so a
+-- card's note text has to be readable/writable even while its own popover
+-- isn't the currently-open one.
+--------------------------------------------------------------------------
+
+notePopover = { card = nil, frame = nil, editBox = nil, hint = nil, doneButton = nil, arrow = nil, noteStart = nil };
+
+isNotePopoverOpen = function()
+    return notePopover.card ~= nil;
+end
+
+-- UI-only close: hides the popover and repaints the note button, but never
+-- sends anything - used when a response click on the same card already sent
+-- (or is about to send) the current text itself, so CloseNote's own
+-- resend-if-dirty logic would be redundant.
+dismissPopoverSilently = function()
+    local card = notePopover.card;
+    notePopover.frame:Hide();
+    notePopover.card = nil;
+    notePopover.editBox:ClearFocus();
+    if (card and card.noteButton) then paintNoteButton(card.noteButton, card); end
+    RespondWindow.RefreshTimerState();
+end
+
+-- Trims and stores the current text, hides the popover, and - only if the
+-- item was already sent and the trimmed text actually changed - resends the
+-- existing response with the new note (playing the same gold sweep a
+-- changed response already plays). Bound to Done/Enter/Escape/re-clicking
+-- the same card's Note button; never discards text (no cancel).
+CloseNote = function()
+    local card = notePopover.card;
+    if (not card) then return; end
+
+    local trimmed = Util.Trim(notePopover.editBox:GetText());
+    if (card.entry) then noteDrafts[card.entry.session] = trimmed; end
+
+    if (card.entry and not card.entry.awardedTo) then
         local myName = Util.stripRealm(Util.UnitName("player"));
-        local candidate = entry.candidates[myName];
-        if (candidate and candidate.response == self.responseId) then return; end -- already selected, no-op
-
-        local wasPending = candidate == nil;
-        LootCouncil.SubmitResponse(entry.session, self.responseId, card.noteBox:GetText());
-
-        if (wasPending) then
-            RespondWindow.PlayToggleBarPulse();
-        else
+        local candidate = card.entry.candidates[myName];
+        if (candidate and trimmed ~= notePopover.noteStart) then
+            LootCouncil.SubmitResponse(card.entry.session, candidate.response, trimmed);
             RespondWindow.PlaySendSweep(card);
         end
-        RespondWindow.RefreshTimerState();
+    end
+
+    dismissPopoverSilently();
+end
+
+OpenNote = function(card)
+    if (notePopover.card == card) then CloseNote(); return; end -- re-click same card's note button toggles closed
+    if (notePopover.card) then CloseNote(); end -- a DIFFERENT card's popover was open - close it first (commits/resends its own note if dirty)
+
+    notePopover.card = card;
+    local session = card.entry.session;
+    local text = noteDrafts[session] or "";
+    notePopover.editBox:SetText(text);
+    notePopover.editBox.placeholderText:SetShown(text == "");
+    notePopover.noteStart = text;
+
+    notePopover.frame:ClearAllPoints();
+    notePopover.frame:SetPoint("TOPLEFT", card, "BOTTOMLEFT", Sizes.popoverOffsetX, Sizes.popoverOffsetY);
+    notePopover.frame:SetPoint("TOPRIGHT", card, "BOTTOMRIGHT", -Sizes.popoverOffsetX, Sizes.popoverOffsetY);
+    notePopover.frame:Show();
+
+    -- Arrow x, recomputed every open since a different card (or the same
+    -- card after a scroll/reflow) means a different button position. Safe
+    -- to subtract these two frames' GetCenter()/GetLeft() directly without
+    -- scale correction: neither card.noteButton nor notePopover.frame ever
+    -- calls :SetScale() itself (only the shared root `frame` does, via
+    -- Pixel.RegisterWindow) - Core/PixelPerfect.lua's own "self-scaled
+    -- coordinate space" caveat only applies to a frame reading its own
+    -- GetLeft() after *it* was scaled, not to two unscaled descendants of a
+    -- scaled ancestor comparing coordinates with each other. Must run after
+    -- the SetPoint/Show above so notePopover.frame:GetLeft() is resolved.
+    local buttonCenterX = card.noteButton:GetCenter();
+    local popoverLeftX = notePopover.frame:GetLeft();
+    local arrowX = buttonCenterX - popoverLeftX - Sizes.popoverArrowWidth / 2;
+    notePopover.arrow:ClearAllPoints();
+    notePopover.arrow:SetPoint("BOTTOMLEFT", notePopover.frame, "TOPLEFT", arrowX, Sizes.popoverArrowOffsetY);
+
+    notePopover.editBox:SetFocus();
+    paintNoteButton(card.noteButton, card);
+    RespondWindow.RefreshTimerState();
+end
+
+local function ensurePopover()
+    if (notePopover.frame) then return; end
+
+    notePopover.frame = CreateCard(frame, Sizes.cardWidth - Sizes.popoverOffsetX * 2, Colors.windowBg, "Frame", Colors.controlFocus);
+    notePopover.frame:SetHeight(Sizes.popoverPadding * 2 + Sizes.noteHeight);
+    -- One strata above the window root's own DIALOG - same convention
+    -- Skin.Dropdown's own floating list uses to sit above a DIALOG-strata
+    -- window (UI/SettingsWindow/Skin.lua).
+    notePopover.frame:SetFrameStrata("FULLSCREEN_DIALOG");
+    notePopover.frame:SetFrameLevel(200);
+    notePopover.frame:Hide();
+    -- CreateCard() never clips children (only item cards' own createCard()
+    -- call does that) - so the arrow, which deliberately protrudes above
+    -- the frame's own rect, is never clipped.
+
+    notePopover.arrow = notePopover.frame:CreateTexture(nil, "OVERLAY");
+    notePopover.arrow:SetTexture(NOTE_BUBBLE_ARROW_TEXTURE);
+    notePopover.arrow:SetSize(Sizes.popoverArrowWidth, Sizes.popoverArrowHeight);
+
+    notePopover.doneButton = CreateFrame("Button", nil, notePopover.frame, "BackdropTemplate");
+    Skin.Button(notePopover.doneButton, "primary");
+    notePopover.doneButton.text:SetText("Done");
+    notePopover.doneButton:SetSize(DONE_BUTTON_WIDTH, Sizes.noteHeight);
+    notePopover.doneButton:SetPoint("TOPRIGHT", notePopover.frame, "TOPRIGHT", -Sizes.popoverPadding, -Sizes.popoverPadding);
+    notePopover.doneButton:SetScript("OnClick", function() CloseNote(); end);
+
+    notePopover.hint = notePopover.frame:CreateFontString(nil, "OVERLAY");
+    SetFont(notePopover.hint, "tiny");
+    notePopover.hint:SetTextColor(unpack(Colors.respondNotePlaceholder));
+    notePopover.hint:SetText("Enter to save");
+    notePopover.hint:SetPoint("RIGHT", notePopover.doneButton, "LEFT", -Sizes.popoverRowGap, 0);
+
+    notePopover.editBox = CreateFrame("EditBox", nil, notePopover.frame, "BackdropTemplate");
+    Theme.Helpers.SetFlatBackdrop(notePopover.editBox, Colors.controlBg, Colors.respondBorderMuted, 1);
+    SetFont(notePopover.editBox, "body");
+    notePopover.editBox:SetTextColor(unpack(Colors.textBright));
+    notePopover.editBox:SetTextInsets(Sizes.noteTextInset, Sizes.noteTextInset, 0, 0);
+    notePopover.editBox:SetAutoFocus(false);
+    notePopover.editBox:SetMaxLetters(120); -- changed from the old inline box's 80
+    notePopover.editBox:SetHeight(Sizes.noteHeight);
+    notePopover.editBox:SetPoint("TOPLEFT", notePopover.frame, "TOPLEFT", Sizes.popoverPadding, -Sizes.popoverPadding);
+    notePopover.editBox:SetPoint("RIGHT", notePopover.hint, "LEFT", -Sizes.popoverRowGap, 0);
+
+    notePopover.editBox.placeholderText = notePopover.editBox:CreateFontString(nil, "OVERLAY");
+    SetFont(notePopover.editBox.placeholderText, "body");
+    notePopover.editBox.placeholderText:SetTextColor(unpack(Colors.respondNotePlaceholder));
+    notePopover.editBox.placeholderText:SetPoint("LEFT", notePopover.editBox, "LEFT", Sizes.noteTextPlaceholderInset, 0);
+    notePopover.editBox.placeholderText:SetJustifyH("LEFT");
+    notePopover.editBox.placeholderText:SetText("Add a note for the council\226\128\166");
+
+    notePopover.editBox:SetScript("OnTextChanged", function(self)
+        self.placeholderText:SetShown(self:GetText() == "");
+        if (notePopover.card and notePopover.card.entry) then
+            noteDrafts[notePopover.card.entry.session] = self:GetText(); -- live, untrimmed - trimmed only at close
+            paintNoteButton(notePopover.card.noteButton, notePopover.card);
+        end
+    end);
+    -- Escape here only closes the popover, never the window (the window
+    -- isn't in UISpecialFrames - see ensureFrame's own comment below).
+    notePopover.editBox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); CloseNote(); end);
+    notePopover.editBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); CloseNote(); end);
+end
+
+--------------------------------------------------------------------------
+-- Note button - opens/closes the note popover for its card. Not built via
+-- Skin.Button: that helper's OnEnter/OnLeave hooks unconditionally reset
+-- border/bg colors on every native hover event (HookScript is additive, so
+-- those hooks can't be overridden), which would fight this button's 4-state
+-- paint logic below. Instead, same hand-rolled shape createResponseButton
+-- already uses: a one-shot flat backdrop plus an OnUpdate hover-poll
+-- (native OnEnter/OnLeave can go stale across a reflow - see
+-- createResponseButton's own comment on this).
+--------------------------------------------------------------------------
+
+paintNoteButton = function(btn, card)
+    local entry = card.entry;
+    if (not entry) then return; end
+
+    local isPopoverOpen = (notePopover.card == card);
+    local hasNote = (noteDrafts[entry.session] or "") ~= "";
+    local isHovered = btn.isHovered;
+
+    local iconColor, bg, border;
+    if (isPopoverOpen) then
+        iconColor, bg, border = Colors.gold, Colors.selectedFill, Colors.gold;
+    elseif (isHovered) then
+        iconColor, bg, border = Colors.text, Colors.defaultBg, Colors.gold;
+    elseif (hasNote) then
+        iconColor, bg, border = Colors.gold, Colors.defaultBg, Colors.selectedBorder;
+    else
+        iconColor, bg, border = Colors.muted, Colors.defaultBg, Colors.checkboxBorder;
+    end
+
+    btn.pageIcon:SetVertexColor(iconColor[1], iconColor[2], iconColor[3]);
+    Theme.Helpers.SetFlatBackdrop(btn, bg, border, 1);
+end
+
+local function createNoteButton(card)
+    local btn = CreateFrame("Button", nil, card, "BackdropTemplate");
+    btn:SetSize(Sizes.noteButtonWidth, Sizes.buttonHeight);
+    Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.checkboxBorder, 1);
+
+    btn.pageIcon = btn:CreateTexture(nil, "ARTWORK");
+    btn.pageIcon:SetSize(Sizes.noteIconSize, Sizes.noteIconSize);
+    btn.pageIcon:SetPoint("CENTER");
+    btn.pageIcon:SetTexture(NOTE_ICON_TEXTURE);
+
+    btn.badgeIcon = btn:CreateTexture(nil, "OVERLAY");
+    btn.badgeIcon:SetSize(Sizes.noteIconSize, Sizes.noteIconSize);
+    btn.badgeIcon:SetPoint("CENTER");
+    btn.badgeIcon:SetTexture(NOTE_ICON_BADGE_TEXTURE);
+    -- badgeIcon never gets SetVertexColor - keeps its own baked colors,
+    -- always shown alongside pageIcon (not an on/off toggle).
+
+    btn:SetScript("OnUpdate", function(self)
+        local card = self:GetParent();
+        local isHovered = Util.IsMouseOverVisible(self, scrollFrame);
+        if (isHovered ~= self.isHovered) then
+            self.isHovered = isHovered;
+            if (card.entry) then paintNoteButton(self, card); end
+        end
+        if (isHovered and card.entry) then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            local text = noteDrafts[card.entry.session] or "";
+            GameTooltip:AddLine(text == "" and "Add a note" or ("Note: " .. text), 1, 1, 1, true);
+            GameTooltip:Show();
+        elseif (GameTooltip:GetOwner() == self) then
+            GameTooltip:Hide();
+        end
+    end);
+
+    btn:SetScript("OnClick", function(self)
+        local card = self:GetParent();
+        if (not card.entry) then return; end
+        OpenNote(card);
     end);
 
     return btn;
 end
 
 --------------------------------------------------------------------------
--- Note box - built by hand rather than via Skin.EditBox, which bakes in the
--- "search" font role, a different inset/border color, and an OnEscapePressed
--- hook that wipes the text (this spec wants Escape to only clear focus).
+-- Transmog/Pass - icon-only response buttons. Built once per card (not
+-- pooled - there's always exactly one of each), reusing the same hover-poll
+-- + Theme.Helpers.SetFlatBackdrop pattern as createResponseButton.
 --------------------------------------------------------------------------
 
-local function updateNotePlaceholder(noteBox)
-    noteBox.placeholderText:SetShown(noteBox:GetText() == "" and not noteBox:HasFocus());
+local function createIconResponseButton(card, responseEntry, tooltipText, atlasName, hoverBorder, selectedBorder, selectedBg)
+    local btn = CreateFrame("Button", nil, card, "BackdropTemplate");
+    btn:SetSize(Sizes.iconButtonWidth, Sizes.buttonHeight);
+    btn.responseId = responseEntry.id;
+    btn.tooltipText = tooltipText;
+    btn.hoverBorder = hoverBorder;
+    btn.selectedBorder = selectedBorder;
+    btn.selectedBg = selectedBg;
+
+    btn.icon = btn:CreateTexture(nil, "ARTWORK");
+    btn.icon:SetSize(Sizes.responseIconSize, Sizes.responseIconSize);
+    btn.icon:SetPoint("CENTER");
+    if (C_Texture.GetAtlasInfo(atlasName)) then
+        btn.icon:SetAtlas(atlasName);
+    else
+        btn.icon:Hide();
+        Util.Print(("missing atlas '%s' for the %s button - icon will render blank."):format(atlasName, tooltipText));
+    end
+
+    Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.respondButtonBorder, 1);
+    btn.baseBorder = Colors.respondButtonBorder;
+
+    -- Same reflow-safe hover-poll pattern as createResponseButton.
+    btn:SetScript("OnUpdate", function(self)
+        local isHovered = Util.IsMouseOverVisible(self, scrollFrame);
+        if (isHovered ~= self.isHovered) then
+            self.isHovered = isHovered;
+            self:SetBackdropBorderColor(unpack(isHovered and self.hoverBorder or self.baseBorder));
+        end
+        if (isHovered) then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            GameTooltip:AddLine(self.tooltipText);
+            GameTooltip:Show();
+        elseif (GameTooltip:GetOwner() == self) then
+            GameTooltip:Hide();
+        end
+    end);
+
+    btn:SetScript("OnClick", function(self) onResponseButtonClick(self, self:GetParent()); end);
+
+    return btn;
 end
 
-local function createNoteBox(card)
-    local noteBox = CreateFrame("EditBox", nil, card, "BackdropTemplate");
-    Theme.Helpers.SetFlatBackdrop(noteBox, Colors.controlBg, Colors.respondBorderMuted, 1);
-    SetFont(noteBox, "body");
-    noteBox:SetTextColor(unpack(Colors.textBright));
-    noteBox:SetTextInsets(Sizes.noteTextInset, Sizes.noteTextInset, 0, 0);
-    noteBox:SetAutoFocus(false);
-    noteBox:SetMaxLetters(80);
-    noteBox:SetHeight(Sizes.noteHeight);
+local function paintIconResponseButton(btn, candidate, isPending)
+    local isSelected = candidate and candidate.response == btn.responseId;
+    btn.isHovered = nil; -- forces the OnUpdate poll to reconcile the border on the next tick
+    if (isSelected) then
+        Theme.Helpers.SetFlatBackdrop(btn, btn.selectedBg, btn.selectedBorder, 1);
+        btn.baseBorder = btn.selectedBorder;
+        btn.icon:SetAlpha(1);
+    else
+        Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.respondButtonBorder, 1);
+        btn.baseBorder = Colors.respondButtonBorder;
+        btn.icon:SetAlpha(isPending and 1 or 0.5);
+    end
+    btn:Show();
+end
 
-    noteBox.placeholderText = noteBox:CreateFontString(nil, "OVERLAY");
-    SetFont(noteBox.placeholderText, "body");
-    noteBox.placeholderText:SetTextColor(unpack(Colors.respondNotePlaceholder));
-    noteBox.placeholderText:SetPoint("LEFT", noteBox, "LEFT", Sizes.noteTextInset, 0);
-    noteBox.placeholderText:SetJustifyH("LEFT");
-    noteBox.placeholderText:SetText("Add a note (optional)");
+--------------------------------------------------------------------------
+-- Shared response-button click handler - used by both the pooled dot+label
+-- buttons (Major/Minor/Offspec) and the two icon-only buttons
+-- (Transmog/Pass). Popover-aware: closes a different card's open popover
+-- first, folds an already-open popover's current text into the submitted
+-- note, and lets CloseNote() alone handle the "clicked the already-selected
+-- response but the note text changed" resend case.
+--------------------------------------------------------------------------
 
-    noteBox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); end);
-    noteBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); end);
-    noteBox:SetScript("OnTextChanged", updateNotePlaceholder);
+onResponseButtonClick = function(self, card)
+    local entry = card.entry;
+    if (not entry or entry.awardedTo) then return; end
 
-    noteBox:SetScript("OnEditFocusGained", function(self)
-        self:SetBackdropBorderColor(unpack(Colors.controlFocus));
-        self.textAtFocus = self:GetText();
-        RespondWindow.RefreshTimerState();
-    end);
-    noteBox:SetScript("OnEditFocusLost", function(self)
-        self:SetBackdropBorderColor(unpack(Colors.respondBorderMuted));
-        updateNotePlaceholder(self);
+    -- A DIFFERENT card's popover is open - close it first (commits/resends
+    -- its own note if dirty; its text is never lost either way).
+    if (notePopover.card and notePopover.card ~= card) then CloseNote(); end
 
-        local card = self:GetParent();
-        local entry = card.entry;
-        if (entry and not card.isPending and self:GetText() ~= self.textAtFocus) then
-            local myName = Util.stripRealm(Util.UnitName("player"));
-            local candidate = entry.candidates[myName];
-            if (candidate) then
-                LootCouncil.SubmitResponse(entry.session, candidate.response, self:GetText());
-                RespondWindow.PlaySendSweep(card);
-            end
-        end
-        RespondWindow.RefreshTimerState();
-    end);
+    local myName = Util.stripRealm(Util.UnitName("player"));
+    local candidate = entry.candidates[myName];
+    local isAlreadySelected = candidate and candidate.response == self.responseId;
+    local popoverOpenHere = (notePopover.card == card); -- re-read AFTER the close-other-card step above
 
-    return noteBox;
+    if (isAlreadySelected and not popoverOpenHere) then return; end -- unchanged existing no-op shortcut
+
+    if (isAlreadySelected and popoverOpenHere) then
+        -- No new response to submit - only a possible note-only resend,
+        -- which CloseNote() itself detects via its own dirty check.
+        CloseNote();
+        return;
+    end
+
+    local noteText;
+    if (popoverOpenHere) then
+        noteText = Util.Trim(notePopover.editBox:GetText());
+        noteDrafts[entry.session] = noteText;
+    else
+        noteText = noteDrafts[entry.session] or "";
+    end
+
+    local wasPending = candidate == nil;
+    LootCouncil.SubmitResponse(entry.session, self.responseId, noteText);
+
+    if (popoverOpenHere) then dismissPopoverSilently(); end -- UI-only close, no duplicate SubmitResponse
+
+    if (wasPending) then
+        RespondWindow.PlayToggleBarPulse();
+    else
+        RespondWindow.PlaySendSweep(card);
+    end
+    RespondWindow.RefreshTimerState();
+end
+
+-- Shared per-frame reflow-slide tween, used by item cards (pending and,
+-- when the sent list is expanded, sent) and the toggle bar, so all of them
+-- can ease upward together when a pending item is answered and the space
+-- above them closes up. See RespondWindow.PlayReflowSlide, which arms a
+-- frame for this by setting reflowSlideFrom/To/Elapsed, and each frame's
+-- own OnUpdate script, which calls this every tick. A plain elapsed-time
+-- ease over the frame's real TOPLEFT anchor - not a native Translation
+-- AnimationGroup, whose offset-stacks-on-current-position semantics
+-- produced a glitchy, shrink-looking result instead of a clean slide here.
+local function applyReflowSlideTween(self, elapsed)
+    if (not self.reflowSlideTo) then return; end
+    self.reflowSlideElapsed = self.reflowSlideElapsed + elapsed;
+    local t = self.reflowSlideElapsed / Sizes.pendingSlideDuration;
+    local top;
+    if (t >= 1) then
+        top = self.reflowSlideTo;
+        self.reflowSlideTo = nil;
+    else
+        local eased = 1 - (1 - t) * (1 - t); -- ease-out
+        top = self.reflowSlideFrom + (self.reflowSlideTo - self.reflowSlideFrom) * eased;
+    end
+    self:ClearAllPoints();
+    self:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -top);
 end
 
 --------------------------------------------------------------------------
@@ -344,7 +743,9 @@ local function createCard(parent)
     -- scrolled out of view still occupies its rect for a bare IsMouseOver
     -- check, so this polls Util.IsMouseOverVisible the same way
     -- StartSessionWindow's rows do.
-    card:SetScript("OnUpdate", function(self)
+    card:SetScript("OnUpdate", function(self, elapsed)
+        applyReflowSlideTween(self, elapsed);
+
         if (self.entry and Util.IsMouseOverVisible(self.icon, scrollFrame)) then
             GameTooltip:SetOwner(self.icon, "ANCHOR_RIGHT");
             GameTooltip:SetHyperlink(self.entry.itemLink);
@@ -354,18 +755,21 @@ local function createCard(parent)
         end
     end);
 
-    -- Note box.
-    card.noteBox = createNoteBox(card);
-    card.noteBox:SetPoint("TOPLEFT", card, "TOPLEFT", Sizes.cardPadding, -(Sizes.cardPadding + Sizes.iconSize + Sizes.cardSectionGap));
-    card.noteBox:SetPoint("TOPRIGHT", card, "TOPRIGHT", -Sizes.cardPadding, -(Sizes.cardPadding + Sizes.iconSize + Sizes.cardSectionGap));
-
-    -- Response buttons, pooled to the largest option list this window
-    -- supports (Sizes.maxResponseButtons) - extras hidden when
-    -- Constants.LOOT_COUNCIL_RESPONSES has fewer entries.
+    -- Note button (opens/closes the shared popover) + response buttons.
+    -- Equal-share dot+label buttons (Major/Minor/Offspec today) are pooled
+    -- to the largest option list this window supports
+    -- (Sizes.maxResponseButtons) - extras hidden when
+    -- EQUAL_SHARE_RESPONSES has fewer entries. Transmog/Pass are always
+    -- exactly one each, not pooled.
+    card.noteButton = createNoteButton(card);
     card.buttons = {};
     for i = 1, Sizes.maxResponseButtons do
         card.buttons[i] = createResponseButton(card);
     end
+    card.mogButton = createIconResponseButton(card, MOG_RESPONSE, "Transmog", MOG_ATLAS,
+        Colors.responses.MOG.color, Colors.responses.MOG.color, Colors.respondMogSelectedBg);
+    card.passButton = createIconResponseButton(card, PASS_RESPONSE, "Pass", PASS_ATLAS,
+        Colors.respondPassHover, Colors.respondPassHover, Colors.respondPassSelectedBg);
 
     -- Send sweep (gold light sweeping across the card + a gold border flash)
     -- - played whenever a sent card's response or note changes.
@@ -399,6 +803,32 @@ local function createCard(parent)
     flashFade:SetToAlpha(0);
     flashFade:SetDuration(Sizes.borderFlashDuration);
 
+    -- Answer fade-out - plays instead of an instant Hide()/reposition when
+    -- Refresh() detects this exact card just moved from pending to sent
+    -- because of the raider's own click. See PlayAnsweredCardFade() and
+    -- the "justAnsweredSessions" pass in Refresh().
+    card.answerFadeAnim = card:CreateAnimationGroup();
+    local answerFade = card.answerFadeAnim:CreateAnimation("Alpha");
+    answerFade:SetFromAlpha(1);
+    answerFade:SetToAlpha(0);
+    answerFade:SetDuration(Sizes.answeredCardFadeDuration);
+    card.answerFadeAnim:SetScript("OnFinished", function()
+        card:SetAlpha(1);
+        if (card.pendingFinalShown) then
+            card:ClearAllPoints();
+            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, card.pendingFinalOffsetY);
+        else
+            card:Hide();
+        end
+    end);
+
+    -- Reflow slide-up state - see the OnUpdate script above and
+    -- PlayReflowSlide below. reflowSlideTo doubles as "is a slide
+    -- currently in flight" (nil = idle).
+    card.reflowSlideFrom = nil;
+    card.reflowSlideTo = nil;
+    card.reflowSlideElapsed = nil;
+
     return card;
 end
 
@@ -407,6 +837,25 @@ function RespondWindow.PlaySendSweep(card)
     card.sweepAnim:Play();
     card.flashAnim:Stop();
     card.flashAnim:Play();
+end
+
+-- Plays the quick fade-out for a card that was just answered from pending
+-- (see the "justAnsweredSessions" pass in Refresh()).
+function RespondWindow.PlayAnsweredCardFade(card)
+    card.answerFadeAnim:Stop();
+    card.answerFadeAnim:Play();
+end
+
+-- Plays the quick slide-up for a card/toggle-bar frame whose Y shifted
+-- because a pending item above it was just answered and is fading out.
+-- `fromTop`/`toTop` are `top` offsets (the value placeNext() returns, not
+-- raw SetPoint offsets) - the frame's own OnUpdate script (applyReflowSlideTween,
+-- wired up in createCard/createToggleBar) eases its real anchor from
+-- `fromTop` to `toTop` over Sizes.respond.pendingSlideDuration.
+function RespondWindow.PlayReflowSlide(frame, fromTop, toTop)
+    frame.reflowSlideFrom = fromTop;
+    frame.reflowSlideTo = toTop;
+    frame.reflowSlideElapsed = 0;
 end
 
 local function ensureCard(sessionIndex)
@@ -428,36 +877,41 @@ local function paintCard(card, entry, isPending, myName)
 
     local candidate = entry.candidates[myName];
 
-    -- Note text is only ever (re)set the first time THIS card renders data
+    -- Note draft is only ever (re)set the first time THIS card renders data
     -- for the current session - never on a later refresh, so an in-progress
-    -- unsent note is never clobbered by an unrelated event.
+    -- unsent note is never clobbered by an unrelated event. Direct
+    -- replacement for the old inline note box's identical guard.
     local Session = LootCouncil.CurrentSession;
     if (card.paintedSessionId ~= Session.id) then
-        card.noteBox:SetText(candidate and candidate.note or "");
-        card.noteBox.textAtFocus = card.noteBox:GetText();
-        updateNotePlaceholder(card.noteBox);
+        noteDrafts[entry.session] = candidate and candidate.note or "";
         card.paintedSessionId = Session.id;
     end
 
-    local responses = Constants.LOOT_COUNCIL_RESPONSES;
-    local n = math.max(#responses, 1);
-    local buttonWidth = (Sizes.cardWidth - Sizes.cardPadding * 2 - (n - 1) * Sizes.buttonGap) / n;
-    local buttonsTop = Sizes.cardPadding + Sizes.iconSize + Sizes.cardSectionGap + Sizes.noteHeight + Sizes.cardSectionGap;
+    -- Button row: Note button, then the equal-share dot+label responses
+    -- (Major/Minor/Offspec today), then the fixed-width Transmog/Pass icon
+    -- buttons - one row, Sizes.buttonGap between every element.
+    local n = math.max(#EQUAL_SHARE_RESPONSES, 1);
+    local totalElements = 1 + n + 2; -- note + equal-share + mog + pass
+    local gapCount = totalElements - 1;
+    local equalShareWidth = (Sizes.cardWidth - Sizes.cardPadding * 2
+        - Sizes.noteButtonWidth - Sizes.iconButtonWidth * 2 - Sizes.buttonGap * gapCount) / n;
+    local buttonsTop = Sizes.cardPadding + Sizes.iconSize + Sizes.cardSectionGap;
 
+    card.noteButton:ClearAllPoints();
+    card.noteButton:SetPoint("TOPLEFT", card, "TOPLEFT", Sizes.cardPadding, -buttonsTop);
+    paintNoteButton(card.noteButton, card);
+
+    local prev = card.noteButton;
     for i = 1, Sizes.maxResponseButtons do
         local btn = card.buttons[i];
-        local optionEntry = responses[i];
+        local optionEntry = EQUAL_SHARE_RESPONSES[i];
         if (optionEntry) then
             local colorEntry = Colors.responses[optionEntry.id] or Colors.responses.default;
             btn.responseId = optionEntry.id;
-            btn:SetWidth(buttonWidth);
+            btn:SetWidth(equalShareWidth);
             btn:ClearAllPoints();
-            if (i == 1) then
-                btn:SetPoint("TOPLEFT", card, "TOPLEFT", Sizes.cardPadding, -buttonsTop);
-            else
-                btn:SetPoint("LEFT", card.buttons[i - 1], "RIGHT", Sizes.buttonGap, 0);
-                btn:SetPoint("TOP", card.buttons[i - 1], "TOP", 0, 0);
-            end
+            btn:SetPoint("LEFT", prev, "RIGHT", Sizes.buttonGap, 0);
+            btn:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
             btn.label:SetText(optionEntry.label);
             btn.hoverColor = colorEntry.color;
 
@@ -476,10 +930,21 @@ local function paintCard(card, entry, isPending, myName)
             end
             btn.isHovered = nil;
             btn:Show();
+            prev = btn;
         else
             btn:Hide();
         end
     end
+
+    card.mogButton:ClearAllPoints();
+    card.mogButton:SetPoint("LEFT", prev, "RIGHT", Sizes.buttonGap, 0);
+    card.mogButton:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
+    paintIconResponseButton(card.mogButton, candidate, isPending);
+
+    card.passButton:ClearAllPoints();
+    card.passButton:SetPoint("LEFT", card.mogButton, "RIGHT", Sizes.buttonGap, 0);
+    card.passButton:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
+    paintIconResponseButton(card.passButton, candidate, isPending);
 end
 
 --------------------------------------------------------------------------
@@ -559,6 +1024,14 @@ local function createToggleBar(parent)
         RespondWindow.Refresh();
     end);
 
+    -- Reflow slide-up state/tween - see applyReflowSlideTween and
+    -- RespondWindow.PlayReflowSlide. Lets the toggle bar slide up along
+    -- with the pending cards above it when one of them is answered.
+    bar.reflowSlideFrom = nil;
+    bar.reflowSlideTo = nil;
+    bar.reflowSlideElapsed = nil;
+    bar:SetScript("OnUpdate", applyReflowSlideTween);
+
     return bar;
 end
 
@@ -623,35 +1096,13 @@ local function createAllSentCard(parent)
     timerLabel:SetJustifyH("RIGHT");
     timerLabel:SetPoint("RIGHT", row, "RIGHT", 0, 0);
 
-    timerTrack = CreateFrame("Frame", nil, card, "BackdropTemplate");
-    timerTrack:SetPoint("TOPLEFT", row, "BOTTOMLEFT", 0, -Sizes.timerBarGap);
-    timerTrack:SetPoint("TOPRIGHT", row, "BOTTOMRIGHT", 0, -Sizes.timerBarGap);
-    timerTrack:SetHeight(Sizes.timerTrackHeight);
-    Theme.Helpers.SetFlatBackdrop(timerTrack, Colors.controlBg, Colors.respondTimerTrackBorder, 1);
-
-    timerFill = timerTrack:CreateTexture(nil, "ARTWORK");
-    timerFill:SetTexture(Theme.Helpers.FLAT_TEXTURE);
-    timerFill:SetPoint("TOPLEFT", timerTrack, "TOPLEFT", 0, 0);
-    timerFill:SetPoint("BOTTOMLEFT", timerTrack, "BOTTOMLEFT", 0, 0);
-    timerFill:SetWidth(1);
-
-    timerGlow = timerTrack:CreateTexture(nil, "BACKGROUND", nil, -1);
-    timerGlow:SetTexture(SOFTGLOW_TEXTURE);
-    timerGlow:SetBlendMode("ADD");
-    timerGlow:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 0.55);
-    timerGlow:SetPoint("TOPLEFT", timerFill, "TOPLEFT", -Sizes.timerGlowInsetX, Sizes.timerGlowInsetY);
-    timerGlow:SetPoint("BOTTOMRIGHT", timerFill, "BOTTOMRIGHT", Sizes.timerGlowInsetX, -Sizes.timerGlowInsetY);
-
-    timerSheenClip = CreateFrame("Frame", nil, timerTrack);
-    timerSheenClip:SetClipsChildren(true);
-    timerSheenClip:SetAllPoints(timerFill);
-
-    timerSheen = timerSheenClip:CreateTexture(nil, "OVERLAY");
-    timerSheen:SetTexture(SWEEP_TEXTURE);
-    timerSheen:SetSize(Sizes.timerSheenWidth, Sizes.timerTrackHeight);
-    timerSheen:SetVertexColor(1, 1, 1, 0.6);
-    timerSheen:SetBlendMode("ADD");
-    timerSheen:SetPoint("LEFT", timerSheenClip, "LEFT", 0, 0);
+    timerBar = Skin.TimerBar(card, {
+        height = Sizes.timerTrackHeight,
+        sheenWidth = Sizes.timerSheenWidth,
+        sheenPeriod = Sizes.sheenPeriod,
+    });
+    timerBar.track:SetPoint("TOPLEFT", row, "BOTTOMLEFT", 0, -Sizes.timerBarGap);
+    timerBar.track:SetPoint("TOPRIGHT", row, "BOTTOMRIGHT", 0, -Sizes.timerBarGap);
 
     -- Fade-out (closing state) - plays on the whole window container, not
     -- just this card, since the entire stack disappears together.
@@ -661,10 +1112,10 @@ local function createAllSentCard(parent)
     fade:SetToAlpha(0);
     fade:SetDuration(Sizes.fadeOutDuration);
     frame.fadeAnim:SetScript("OnFinished", function()
+        FL.NotifyWindowClosed("Respond");
         frame:Hide();
         frame:SetAlpha(1);
         RespondWindow.timerState = "off";
-        timerStart = nil;
     end);
 
     return card;
@@ -676,51 +1127,13 @@ end
 
 RespondWindow.timerState = "off";
 
-local function onTimerUpdate()
-    local remaining = Sizes.autoCloseSeconds - (GetTime() - timerStart);
-    if (remaining <= 0) then
-        RespondWindow.EnterTimerClosing();
-        return;
-    end
-
-    local trackWidth = timerTrack:GetWidth();
-    local width = math.max(trackWidth * (remaining / Sizes.autoCloseSeconds), 0.01);
-    timerFill:SetWidth(width);
-    timerFill:SetShown(width >= 1);
-    timerGlow:SetShown(width >= 1);
-
-    local fillWidth = timerFill:GetWidth();
-    local sheenX = ((GetTime() * Sizes.timerSheenSpeedPxPerSec) % (fillWidth + Sizes.timerSheenWidth)) - Sizes.timerSheenWidth;
-    timerSheen:ClearAllPoints();
-    timerSheen:SetPoint("LEFT", timerSheenClip, "LEFT", sheenX, 0);
-
-    local seconds = math.max(math.ceil(remaining), 1);
-    if (seconds ~= lastTimerLabelSeconds) then
-        lastTimerLabelSeconds = seconds;
-        timerLabel:SetText(("Closing in %ds"):format(seconds));
-    end
-end
-
 local function stopTimerUpdate()
-    allSentCard:SetScript("OnUpdate", nil);
+    timerBar:Stop();
 end
 
 local function paintPausedTimer()
-    timerFill:Show();
-    timerFill:SetWidth(timerTrack:GetWidth());
-    timerFill:SetVertexColor(Colors.respondTimerPausedFill[1], Colors.respondTimerPausedFill[2], Colors.respondTimerPausedFill[3], 1);
-    timerGlow:Hide();
-    timerSheenClip:Hide();
+    timerBar:Freeze(Colors.respondTimerPausedFill);
     timerLabel:SetText("Timer paused while you make changes");
-end
-
-local function paintRunningTimer()
-    -- SetGradient fully overwrites per-vertex color regardless of any prior
-    -- SetVertexColor call (the paused look uses one), so no reset is needed
-    -- here first.
-    timerFill:SetGradient("HORIZONTAL", CreateColor(unpack(Colors.controlFocus)), CreateColor(unpack(Colors.gold)));
-    timerSheenClip:Show();
-    lastTimerLabelSeconds = nil;
 end
 
 local function enterOff()
@@ -729,22 +1142,21 @@ local function enterOff()
         frame:SetAlpha(1);
     end
     RespondWindow.timerState = "off";
-    timerStart = nil;
     stopTimerUpdate();
     allSentCard:Hide();
 end
 
 local function enterRunning()
     RespondWindow.timerState = "running";
-    timerStart = GetTime();
     allSentCard:Show();
-    paintRunningTimer();
-    allSentCard:SetScript("OnUpdate", onTimerUpdate);
+    timerBar:Start(Sizes.autoCloseSeconds, {
+        onTick = function(seconds) timerLabel:SetText(("Closing in %ds"):format(seconds)); end,
+        onExpire = function() RespondWindow.EnterTimerClosing(); end,
+    });
 end
 
 local function enterPaused()
     RespondWindow.timerState = "paused";
-    timerStart = nil;
     stopTimerUpdate();
     allSentCard:Show();
     paintPausedTimer();
@@ -764,19 +1176,14 @@ local function stopTimerHard()
     if (frame.fadeAnim) then frame.fadeAnim:Stop(); end
     frame:SetAlpha(1);
     RespondWindow.timerState = "off";
-    timerStart = nil;
-end
-
-local function anyNoteBoxFocused()
-    for _, card in pairs(cards) do
-        if (card.entry and card.noteBox:HasFocus()) then return true; end
-    end
-    return false;
 end
 
 --- Run after every change that could affect the timer (response click,
---- toggle open/close, note focus gained/lost, items added/removed, window
+--- toggle open/close, note popover open/close, items added/removed, window
 --- shown) - see the state table in the design spec this window implements.
+--- Gated on the popover being OPEN, not its EditBox being focused (the
+--- popover can be open with focus elsewhere, e.g. tabbed away, and must
+--- still pause) - see isNotePopoverOpen in the note-popover module above.
 function RespondWindow.RefreshTimerState()
     if (not frame or not frame:IsShown()) then return; end
 
@@ -796,11 +1203,11 @@ function RespondWindow.RefreshTimerState()
 
     local state = RespondWindow.timerState;
     if (state == "off") then
-        if (not toggleExpanded and not anyNoteBoxFocused()) then enterRunning(); else enterPaused(); end
+        if (not toggleExpanded and not isNotePopoverOpen()) then enterRunning(); else enterPaused(); end
     elseif (state == "running") then
-        if (toggleExpanded or anyNoteBoxFocused()) then enterPaused(); end
+        if (toggleExpanded or isNotePopoverOpen()) then enterPaused(); end
     elseif (state == "paused") then
-        if (not toggleExpanded and not anyNoteBoxFocused()) then enterRunning(); end
+        if (not toggleExpanded and not isNotePopoverOpen()) then enterRunning(); end
     end
     -- state == "closing": only exits via the fade AnimationGroup's
     -- OnFinished, or via the pendingCount>0 branch above.
@@ -840,6 +1247,7 @@ local function createHeader()
     Skin.CloseButton(closeButton);
     closeButton:SetSize(Sizes.headerCloseSize, Sizes.headerCloseSize); -- override Skin.CloseButton's shared 20px default
     closeButton:SetScript("OnClick", function()
+        FL.NotifyWindowClosed("Respond");
         stopTimerHard();
         frame:Hide();
     end);
@@ -906,6 +1314,8 @@ local function ensureFrame()
     toggleBar = createToggleBar(scrollChild);
     toggleBar:Hide();
 
+    ensurePopover();
+
     frame:SetScript("OnShow", RespondWindow.RefreshTimerState);
 end
 
@@ -936,6 +1346,39 @@ function RespondWindow.Refresh()
         return ca.respondedAt < cb.respondedAt;
     end);
 
+    -- Diff against last Refresh's pending set to find sessions that just
+    -- moved pending -> sent (a raider's own click), so only that
+    -- transition gets the fade/slide treatment below - not window-open,
+    -- toggle-bar expand/collapse, or the async confirmation Refresh that
+    -- follows a click's own optimistic one (see suppressReflowAnim and
+    -- prevPendingSessionSet declarations above). Left empty whenever the
+    -- "Enable Loot Council Response animation" setting is off, which
+    -- collapses every fade/slide branch below to its plain instant-snap
+    -- else-branch - the same behavior this window had before the
+    -- animation existed - without duplicating that snap logic anywhere.
+    local newPendingSet, newSentSet = {}, {};
+    for _, item in ipairs(pending) do newPendingSet[item.session] = true; end
+    for _, item in ipairs(sent) do newSentSet[item.session] = true; end
+
+    local justAnsweredSessions = {};
+    if (not suppressReflowAnim and FL.Settings.GetRespondAnimationEnabled()) then
+        for sessionIndex in pairs(prevPendingSessionSet) do
+            if (not newPendingSet[sessionIndex] and newSentSet[sessionIndex]) then
+                table.insert(justAnsweredSessions, sessionIndex);
+            end
+        end
+    end
+    suppressReflowAnim = false;
+    prevPendingSessionSet = newPendingSet;
+
+    if (#justAnsweredSessions > 0) then
+        local reflowDuration = math.max(Sizes.answeredCardFadeDuration, Sizes.pendingSlideDuration);
+        reflowAnimActiveUntil = GetTime() + reflowDuration;
+        C_Timer.After(reflowDuration + 0.02, function()
+            if (frame and frame:IsShown()) then RespondWindow.Refresh(); end
+        end);
+    end
+
     headerCountNumber:SetText(tostring(#pending));
 
     -- Paint every card's content up front (regardless of visibility), then
@@ -950,6 +1393,10 @@ function RespondWindow.Refresh()
         if (not usedSessions[sessionIndex]) then
             card.entry = nil;
             card:Hide();
+            lastPendingTop[sessionIndex] = nil;
+            lastSentTop[sessionIndex] = nil;
+            noteDrafts[sessionIndex] = nil;
+            if (notePopover.card == card) then dismissPopoverSilently(); end
         end
     end
 
@@ -970,32 +1417,111 @@ function RespondWindow.Refresh()
 
     for _, item in ipairs(pending) do
         local card = cards[item.session];
-        card:ClearAllPoints();
-        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -placeNext(CARD_HEIGHT));
-        card:Show();
+        local newTop = placeNext(CARD_HEIGHT);
+        local oldTop = lastPendingTop[item.session];
+
+        if (#justAnsweredSessions > 0 and oldTop and oldTop ~= newTop) then
+            -- Leave the real anchor at the OLD position - the card's
+            -- OnUpdate tween (see createCard/PlayReflowSlide) eases
+            -- it to newTop itself, driving SetPoint directly every tick.
+            card:ClearAllPoints();
+            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -oldTop);
+            card:Show();
+            RespondWindow.PlayReflowSlide(card, oldTop, newTop);
+        else
+            card:ClearAllPoints();
+            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -newTop);
+            card:Show();
+        end
+        lastPendingTop[item.session] = newTop;
     end
 
     if (#sent > 0) then
-        toggleBar:ClearAllPoints();
-        toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -placeNext(Sizes.toggleBarHeight));
-        toggleBar:Show();
+        -- The toggle bar (and, if expanded, every already-visible sent
+        -- card below it) sits right after the pending block, so it needs
+        -- the exact same slide-up treatment as the pending cards above
+        -- whenever answering an item shortens that block.
+        local toggleNewTop = placeNext(Sizes.toggleBarHeight);
+        local toggleOldTop = lastToggleBarTop;
+        if (#justAnsweredSessions > 0 and toggleOldTop and toggleOldTop ~= toggleNewTop) then
+            toggleBar:ClearAllPoints();
+            toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -toggleOldTop);
+            toggleBar:Show();
+            RespondWindow.PlayReflowSlide(toggleBar, toggleOldTop, toggleNewTop);
+        else
+            toggleBar:ClearAllPoints();
+            toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -toggleNewTop);
+            toggleBar:Show();
+        end
+        lastToggleBarTop = toggleNewTop;
         layoutToggleBar(#sent);
 
         if (toggleExpanded) then
             for _, item in ipairs(sent) do
                 local card = cards[item.session];
-                card:ClearAllPoints();
-                card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -placeNext(CARD_HEIGHT));
-                card:Show();
+                -- A card mid fade-out is left alone here - its own
+                -- OnFinished is the single source of truth for landing it,
+                -- so a Refresh landing mid-fade (e.g. the async comm-echo
+                -- confirmation right after SubmitResponse) can't chop the
+                -- animation off early.
+                if (not card.answerFadeAnim:IsPlaying()) then
+                    local sentNewTop = placeNext(CARD_HEIGHT);
+                    local sentOldTop = lastSentTop[item.session];
+                    if (#justAnsweredSessions > 0 and sentOldTop and sentOldTop ~= sentNewTop) then
+                        card:ClearAllPoints();
+                        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -sentOldTop);
+                        card:Show();
+                        RespondWindow.PlayReflowSlide(card, sentOldTop, sentNewTop);
+                    else
+                        card:ClearAllPoints();
+                        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -sentNewTop);
+                        card:Show();
+                    end
+                    lastSentTop[item.session] = sentNewTop;
+                end
             end
         else
-            for _, item in ipairs(sent) do cards[item.session]:Hide(); end
+            for _, item in ipairs(sent) do
+                local card = cards[item.session];
+                if (not card.answerFadeAnim:IsPlaying()) then card:Hide(); end
+                lastSentTop[item.session] = nil;
+            end
         end
     else
         toggleBar:Hide();
+        lastToggleBarTop = nil;
+    end
+
+    -- Start the fade for any card that just moved pending -> sent this
+    -- pass. Runs after the sent/toggle-bar block above so it can read back
+    -- that block's already-computed final state (Shown/Hidden, and its
+    -- final anchor if shown) rather than re-deriving it by hand.
+    for _, sessionIndex in ipairs(justAnsweredSessions) do
+        local card = cards[sessionIndex];
+        local oldTop = lastPendingTop[sessionIndex];
+        lastPendingTop[sessionIndex] = nil;
+
+        if (card and oldTop) then
+            card.pendingFinalShown = card:IsShown();
+            card.pendingFinalOffsetY = nil;
+            if (card.pendingFinalShown) then
+                local _, _, _, _, offsetY = card:GetPoint(1);
+                card.pendingFinalOffsetY = offsetY;
+            end
+
+            card:Show();
+            card:SetAlpha(1);
+            card:ClearAllPoints();
+            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -oldTop);
+            RespondWindow.PlayAnsweredCardFade(card);
+        end
     end
 
     local contentHeight = y;
+    if (GetTime() < reflowAnimActiveUntil) then
+        contentHeight = math.max(contentHeight, lastContentHeight);
+    end
+    lastContentHeight = contentHeight;
     scrollChild:SetHeight(math.max(contentHeight, 1));
 
     allSentCard:SetShown(#pending == 0);
@@ -1059,6 +1585,7 @@ end
 function RespondWindow.Show()
     ensureFrame();
     toggleExpanded = false;
+    suppressReflowAnim = true;
     frame:Show();
     RespondWindow.Refresh();
 end
@@ -1068,6 +1595,10 @@ function RespondWindow.Hide()
         stopTimerHard();
         frame:Hide();
     end
+end
+
+function RespondWindow.IsShown()
+    return frame ~= nil and frame:IsShown();
 end
 
 function RespondWindow.ResetPosition()

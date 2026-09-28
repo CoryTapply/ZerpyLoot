@@ -11,6 +11,7 @@ local Theme = FL.Theme;
 local Colors = FL.UI.Colors;
 local SetFont = FL.UI.SetFont;
 local Widgets = FL.UI.SettingsWidgets;
+local Skin = FL.UI.Skin;
 local Util = FL.Util;
 local LootCouncil = FL.LootCouncil;
 local LootCouncilRoster = FL.LootCouncilRoster;
@@ -71,7 +72,6 @@ local function buildOptionsStrip(page, anchorAboveTop)
 
     local specs = {
         { key = "lootCouncil.includeOfficers", label = "Always include guild officers" },
-        { key = "lootCouncil.includeRaidLeader", label = "Always include raid leader" },
     };
 
     local prevRow;
@@ -218,7 +218,18 @@ local function updateFooterCount(page)
     if (canSync) then page.syncButton:Enable(); else page.syncButton:Disable(); end
 
     local groupsResult = page.lootCouncilGroupsResult;
-    local canSelectOfficers = groupsResult and (groupsResult.inRaid or groupsResult.inParty);
+    local inGroup = groupsResult and (groupsResult.inRaid or groupsResult.inParty);
+
+    -- Stays plain until a local roster edit leaves it pending (see
+    -- LootCouncil.pendingRosterSync) - only then does it go gold, as a
+    -- reminder those changes still need pushing out to the raid. There's
+    -- nothing to sync to when solo, so the pending reminder stays hidden
+    -- even if a roster edit left pendingRosterSync set.
+    local pending = LootCouncil.pendingRosterSync and inGroup;
+    Skin.SetButtonVariant(page.syncButton, pending and "primary" or "default");
+    page.pendingText:SetShown(pending);
+
+    local canSelectOfficers = inGroup;
     if (canSelectOfficers) then page.selectOfficersButton:Enable(); else page.selectOfficersButton:Disable(); end
 end
 
@@ -226,47 +237,32 @@ local function refreshGrid(page)
     local groupsResult = LootCouncilRoster.BuildGroups();
     page.lootCouncilGroupsResult = groupsResult;
 
-    local showGrid = groupsResult.inRaid or groupsResult.inParty;
-    page.gridContainer:SetShown(showGrid);
-    page.soloText:SetShown(not showGrid);
-    page.soloList:SetShown(not showGrid);
-
-    if (not showGrid) then
-        local names = LootCouncil.RosterNames();
-        page.soloList:SetText(#names > 0 and table.concat(names, "\n") or "(none saved)");
-        updateFooterCount(page);
-        FL.UI.SettingsWindow.RefreshScrollBar();
-        return;
-    end
-
+    -- All 8 group boxes (and their 5 placeholder member slots) stay visible
+    -- at all times, even solo/ungrouped - BuildGroups() always seeds group 1
+    -- slot 1 with the player in that case, so there's always something real
+    -- to show rather than an empty-grid or "join a raid" fallback.
     for i, groupBox in ipairs(page.groupBoxes) do
-        -- A party only ever populates group 1 - every other box stays
-        -- entirely hidden rather than shown-empty.
-        local groupActive = groupsResult.inRaid or i == 1;
-        groupBox.box:SetShown(groupActive);
-        if (groupActive) then
-            local members = (groupsResult.groups[i] or {}).members or {};
-            for slot, button in ipairs(groupBox.members) do
-                local member = members[slot];
-                button:Show();
-                if (member) then
-                    button:EnableMouse(true);
-                    button:SetAlpha(1);
-                    button.memberName = member.name;
-                    button.memberUnit = member.unit;
-                    button.memberClass = member.classFile;
+        local members = (groupsResult.groups[i] or {}).members or {};
+        for slot, button in ipairs(groupBox.members) do
+            local member = members[slot];
+            button:Show();
+            if (member) then
+                button:EnableMouse(true);
+                button:SetAlpha(1);
+                button.memberName = member.name;
+                button.memberUnit = member.unit;
+                button.memberClass = member.classFile;
 
-                    applyClassColor(button.nameText, member.classFile);
-                    truncateToWidth(button.nameText, member.name, button:GetWidth() - STAR_RESERVE - 12);
-                    setMemberButtonState(button, LootCouncil.IsCouncilMember(member.name));
-                else
-                    button:EnableMouse(false);
-                    button:SetAlpha(0.4);
-                    button.memberName = nil;
-                    button.nameText:SetText("");
-                    button.star:Hide();
-                    Theme.Helpers.SetFlatBackdrop(button, Colors.memberBg, Colors.memberBorder, 1);
-                end
+                applyClassColor(button.nameText, member.classFile);
+                truncateToWidth(button.nameText, member.name, button:GetWidth() - STAR_RESERVE - 12);
+                setMemberButtonState(button, LootCouncil.IsCouncilMember(member.name));
+            else
+                button:EnableMouse(false);
+                button:SetAlpha(0.4);
+                button.memberName = nil;
+                button.nameText:SetText("");
+                button.star:Hide();
+                Theme.Helpers.SetFlatBackdrop(button, Colors.memberBg, Colors.memberBorder, 1);
             end
         end
     end
@@ -294,8 +290,9 @@ end);
 -- shared footer row (see Init.lua's createFooter/RegisterPage's opts.footer)
 -- rather than into the page's own scrolling frame, so it stays pinned to
 -- the bottom of the content area regardless of which tab or how much grid
--- content is showing. page.countText/syncButton/selectOfficersButton are
--- read back by updateFooterCount() above on every refresh.
+-- content is showing. page.countText/pendingText/syncButton/
+-- selectOfficersButton are read back by updateFooterCount() above on every
+-- refresh.
 --------------------------------------------------------------------------
 
 local FOOTER_BUTTON_GAP = 10;
@@ -307,12 +304,33 @@ local function buildFooter(footerFrame, page)
     countText:SetPoint("LEFT", footerFrame, "LEFT", 0, 0);
     page.countText = countText;
 
-    local syncButton = Widgets.CreateFlatButton(footerFrame, "Sync to Raid", "primary");
+    -- Shown only while LootCouncil.pendingRosterSync is true (see
+    -- updateFooterCount below) - reuses the MS tag's vivid orange (rather
+    -- than the paler softresMissingLabel) so it reads as distinct from the
+    -- yellow-gold council-count text right next to it.
+    local pendingText = footerFrame:CreateFontString(nil, "OVERLAY");
+    SetFont(pendingText, "small");
+    pendingText:SetTextColor(unpack(Colors.rollTags.MS.text));
+    pendingText:SetPoint("LEFT", countText, "RIGHT", 10, 0);
+    pendingText:SetText("Un-synced changes - click Sync to Raid");
+    pendingText:Hide();
+    page.pendingText = pendingText;
+
+    -- Starts "default" (not "primary"/gold) - it only goes gold once a local
+    -- roster edit leaves a sync pending, via updateFooterCount's
+    -- Skin.SetButtonVariant call below.
+    local syncButton = Widgets.CreateFlatButton(footerFrame, "Sync to Raid");
     syncButton:SetSize(120, FL.UI.Sizes.controls.button);
     syncButton:SetPoint("RIGHT", footerFrame, "RIGHT", 0, 0);
+    -- A disabled Button doesn't dispatch OnEnter/OnLeave at all by default
+    -- (Blizzard blocks mouse-motion scripts on disabled buttons unless this
+    -- is set) - without it, the "why is this disabled" tooltip below would
+    -- never actually show while the button is disabled.
+    syncButton:SetMotionScriptsWhileDisabled(true);
     syncButton:SetScript("OnClick", function()
         if (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) then
             LootCouncil.SyncCouncilSettings();
+            page.RefreshGrid();
         end
     end);
     syncButton:HookScript("OnEnter", function(self)
@@ -328,6 +346,7 @@ local function buildFooter(footerFrame, page)
     local selectOfficersButton = Widgets.CreateFlatButton(footerFrame, "Select Officers");
     selectOfficersButton:SetSize(130, FL.UI.Sizes.controls.button);
     selectOfficersButton:SetPoint("RIGHT", syncButton, "LEFT", -FOOTER_BUTTON_GAP, 0);
+    selectOfficersButton:SetMotionScriptsWhileDisabled(true); -- see syncButton's own comment above
     selectOfficersButton:SetScript("OnClick", function()
         local groupsResult = page.lootCouncilGroupsResult;
         if (not groupsResult or not (groupsResult.inRaid or groupsResult.inParty)) then return; end
@@ -377,27 +396,11 @@ FL.UI.SettingsWindow.RegisterPage("lootcouncil", "Loot Council", function(page)
     page.gridContainer = gridContainer;
     page.RefreshGrid = function() refreshGrid(page); end;
 
-    local soloText = page.frame:CreateFontString(nil, "OVERLAY");
-    SetFont(soloText, "body");
-    soloText:SetPoint("TOPLEFT", gridContainer, "TOPLEFT", 4, -6);
-    soloText:SetText("Join a raid to pick council members");
-    soloText:SetTextColor(unpack(Colors.muted));
-    soloText:Hide();
-
-    local soloList = page.frame:CreateFontString(nil, "OVERLAY");
-    SetFont(soloList, "small");
-    soloList:SetPoint("TOPLEFT", soloText, "BOTTOMLEFT", 0, -10);
-    soloList:SetJustifyH("LEFT");
-    soloList:SetTextColor(unpack(Colors.text));
-    soloList:Hide();
-    page.soloText = soloText;
-    page.soloList = soloList;
-
-    -- gridContainer/soloList are manually positioned (not built through
-    -- page:Section()), so contentBottom() can't see them - set explicitly
-    -- so Registry sizes the scrollable content to fit the grid. The
-    -- Clear/Select Officers/Sync to Raid footer itself lives outside this
-    -- scrollable content entirely now (see buildFooter above).
+    -- gridContainer is manually positioned (not built through page:Section()),
+    -- so contentBottom() can't see it - set explicitly so Registry sizes the
+    -- scrollable content to fit the grid. The Clear/Select Officers/Sync to
+    -- Raid footer itself lives outside this scrollable content entirely now
+    -- (see buildFooter above).
     page.contentBottomOverride = gridTop - gridHeight - 20;
 
     -- The event stays registered while this page is simply the current tab
