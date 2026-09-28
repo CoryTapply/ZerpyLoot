@@ -128,6 +128,7 @@ local function ensureFrame()
     frame:Hide();
     frame:SetMovable(true);
     frame:SetFrameStrata("DIALOG");
+    FL.Pixel.MakeToplevelWindow(frame);
     frame:SetWidth(Sizes.width);
     -- Centered in the upper third of the screen - re-centers on every Show()
     -- (see the "no position persistence" decision below), so this is always

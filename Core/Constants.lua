@@ -76,6 +76,12 @@ Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_AWAITING_RESPONSE_
 -- chosen switches to this grey, so the selection reads clearly at a glance.
 Constants.LOOT_COUNCIL_RESPONSE_UNSELECTED_COLOR = { 0.35, 0.35, 0.35 };
 
+-- Sentinel `item.awardedTo` value for the Award window's disenchant button
+-- (UI/AwardWindow.lua) - marks the item assigned via the exact same
+-- LootCouncil.AwardItem/applyAward path a real award uses (so every client
+-- converges the same way), without it ever matching a real candidate name.
+Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT = "Disenchant";
+
 -- Automatic Rolls (AutoRoll.lua, UI/AutoRollPopup.lua, the "Always roll on
 -- these items" list). Order here is also the header-count order ("2 need ·
 -- 1 greed · 2 pass") and the rule dropdown's row order.

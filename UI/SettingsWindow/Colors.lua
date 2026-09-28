@@ -143,6 +143,16 @@ FL.UI.Colors = {
     awardWarningText    = { 0.941, 0.839, 0.812 }, -- #f0d6cf - reassign warning body text
     awardOverlay        = { 0, 0, 0, 0.6 }, -- popup scrim AND drop-shadow tint (shared)
 
+    -- Disenchant header button (icon-only, next to the prev/next-unassigned
+    -- arrows) - swapped onto Skin.Button's shared "default" variant in place
+    -- of its own border/hoverBorder (UI/AwardWindow.lua's createHeaderRow),
+    -- everything else about that variant (fill, pressed, disabled) reused
+    -- as-is. Its own named tokens rather than aliasing checkboxBorder/
+    -- controlHover since this button's border color is semantically tied to
+    -- disenchanting, not the generic default-button hover look.
+    disenchantAccent = { 0.561, 0.420, 1.000 }, -- #8f6bff
+    disenchantBorder = { 0.290, 0.263, 0.231 }, -- #4a433b
+
     ----------------------------------------------------------------------
     -- UI/RollWindow.lua - the colors below aren't already covered by an
     -- entry above; everything else it uses (windowBg, border, divider, gold,

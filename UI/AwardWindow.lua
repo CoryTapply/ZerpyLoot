@@ -32,9 +32,12 @@ local CHECK_BADGE_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Check
 local PLUS_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Plus";
 local CHECK_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Check";
 local MOUSE_HINT_ATLAS = "plunderstorm-pickup-mouseclick-right";
+local DISENCHANT_ICON_ATLAS = "lootroll-toast-icon-disenchant-up";
+local DISENCHANT_TOOLTIP_TEXT = "Disenchant";
 local MOUSE_MIDDLE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\MouseMiddleClick";
 local CROWN_TEXTURE = "Interface\\GroupFrame\\UI-Group-LeaderIcon";
 local LEADER_ONLY_TEXT = "Only the loot council session leader can award this item.";
+local DISENCHANT_RECIPIENT = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
 
 local WINDOW_WIDTH = Sizes.window.width;
 local WINDOW_HEIGHT = Sizes.window.height;
@@ -50,7 +53,7 @@ local leftScroll, leftScrollChild;
 local gridIcons = {};
 
 local mainPanel, headerIcon, headerIconBorder, headerNameText, headerTypeText;
-local headerBadge, headerBadgeText, prevButton, nextButton;
+local headerBadge, headerBadgeText, disenchantButton, prevButton, nextButton;
 local tableHeaderRow;
 local rightScroll, rightScrollChild;
 local rowPool = {};
@@ -207,8 +210,13 @@ local function createGridIcon(parent)
         end
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
         GameTooltip:SetHyperlink(self.itemLink);
-        if (self.winnerName) then
-            GameTooltip:AddLine(("Awarded to %s"):format(Util.classColoredName(self.winnerName, self.winnerClass)), 1, 1, 1);
+        if (self.winnerName == DISENCHANT_RECIPIENT) then
+            GameTooltip:AddLine(" ");
+            GameTooltip:AddLine("|cff8865ffLoot Council|r");
+            GameTooltip:AddLine(("    " .. "To be |cff%sDisenchanted|r"):format(hex(Colors.disenchantAccent)), 1, 1, 1);
+        elseif (self.winnerName) then
+            GameTooltip:AddLine("|cff8865ffLoot Council|r");
+            GameTooltip:AddLine(("    " .. "Awarded to %s"):format(Util.classColoredName(self.winnerName, self.winnerClass)), 1, 1, 1);
         end
         GameTooltip:Show();
 
@@ -347,10 +355,53 @@ local function createHeaderRow()
         if (prevSession) then selectItem(prevSession); end
     end);
 
+    -- Icon-only. Built with the shared flat-button vocabulary (fill/pressed/
+    -- disabled behavior all come from Skin.Button's "default" variant) - only
+    -- its border color is swapped to the blue-violet disenchant accent below,
+    -- so it still reads as a distinct action next to the prev/next arrows.
+    disenchantButton = Widgets.CreateFlatButton(header, "", "default");
+    disenchantButton:SetSize(Sizes.mainPanel.navButtonSize, Sizes.mainPanel.navButtonHeight);
+    disenchantButton:SetPoint("RIGHT", prevButton, "LEFT", -Sizes.mainPanel.navButtonGap, 0);
+    disenchantButton.skinVariant.border = Colors.disenchantBorder;
+    disenchantButton.skinVariant.hoverBorder = Colors.disenchantAccent;
+    disenchantButton.applyEnabled();
+
+    -- No visible text (the icon carries the meaning), but the button still
+    -- carries the same "Disenchant" string as its GetText()/accessible name
+    -- as the tooltip below - the fontstring itself stays hidden so it can
+    -- never bleed out from behind the icon.
+    disenchantButton.text:SetText(DISENCHANT_TOOLTIP_TEXT);
+    disenchantButton.text:Hide();
+
+    local disenchantIconSize = math.floor(Sizes.mainPanel.navButtonHeight * 0.7 + 0.5);
+    disenchantButton.icon = disenchantButton:CreateTexture(nil, "ARTWORK");
+    disenchantButton.icon:SetSize(disenchantIconSize, disenchantIconSize);
+    disenchantButton.icon:SetPoint("CENTER", 0, 0);
+    disenchantButton.icon:SetAtlas(DISENCHANT_ICON_ATLAS, false);
+
+    disenchantButton:SetScript("OnClick", function()
+        local item = getSelectedItem();
+        if (not item or not Awards.CanAwardItems()) then return; end
+        Awards.DisenchantItem(item.session);
+
+        if (FL.Settings.GetJumpToNextUnassigned()) then
+            local Session = getSession();
+            local nextSession = Session and Awards.NextUnassignedItem(Session, item.session, 1);
+            if (nextSession) then selectedItemSession = nextSession; end
+        end
+        doRefresh();
+    end);
+    disenchantButton:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+        GameTooltip:SetText(DISENCHANT_TOOLTIP_TEXT);
+        GameTooltip:Show();
+    end);
+    disenchantButton:HookScript("OnLeave", function() GameTooltip:Hide(); end);
+
     headerNameText = header:CreateFontString(nil, "OVERLAY");
     SetFont(headerNameText, "pageTitle");
     headerNameText:SetPoint("TOPLEFT", headerIcon, "TOPRIGHT", Sizes.mainPanel.headerIconGap, 0);
-    headerNameText:SetPoint("RIGHT", prevButton, "LEFT", -8, 0);
+    headerNameText:SetPoint("RIGHT", disenchantButton, "LEFT", -8, 0);
     headerNameText:SetJustifyH("LEFT");
     headerNameText:SetWordWrap(false);
 
@@ -1183,6 +1234,7 @@ local function paintHeader(item, candidateCount, voteTotal)
         headerTypeText:SetText("");
         headerIcon:SetTexture(FALLBACK_ICON);
         headerBadge:Hide();
+        disenchantButton:SetEnabled(false);
         prevButton:SetEnabled(false);
         nextButton:SetEnabled(canEndSession);
         return;
@@ -1222,7 +1274,14 @@ local function paintHeader(item, candidateCount, voteTotal)
         end);
     end
 
-    if (item.awardedTo) then
+    if (item.awardedTo == DISENCHANT_RECIPIENT) then
+        headerBadgeText:SetText(("To be |cff%sDisenchanted|r"):format(hex(Colors.disenchantAccent)));
+        headerBadgeText:SetTextColor(unpack(Colors.gold));
+        headerBadge:SetWidth(headerBadgeText:GetStringWidth() + Sizes.mainPanel.badgePadX * 2);
+        headerBadge:ClearAllPoints();
+        headerBadge:SetPoint("LEFT", headerTypeText, "RIGHT", 8, 0);
+        headerBadge:Show();
+    elseif (item.awardedTo) then
         local members = Util.groupMembers();
         headerBadgeText:SetText("Assigned to " .. Util.classColoredName(item.awardedTo, members[item.awardedTo]));
         headerBadgeText:SetTextColor(unpack(Colors.gold));
@@ -1233,6 +1292,8 @@ local function paintHeader(item, candidateCount, voteTotal)
     else
         headerBadge:Hide();
     end
+
+    disenchantButton:SetEnabled(Awards.CanAwardItems());
 
     local prevSession = Awards.NextUnassignedItem(Session, item.session, -1);
     local nextSession = Awards.NextUnassignedItem(Session, item.session, 1);

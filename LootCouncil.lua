@@ -548,13 +548,18 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
     local Session = LootCouncil.CurrentSession;
     if (not Session or Session.status ~= "active") then return; end
     local item = Session.items[itemSession];
-    if (not item or item.awardedTo) then return; end
+    if (not item) then return; end
     if (not FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[responseId]) then return; end
 
     local myName = Util.stripRealm(Util.UnitName("player"));
     local _, classFile = UnitClass("player");
 
     local previous = item.candidates[myName];
+    -- A council vote cast for myName before this, my first response, lands
+    -- in item.preVotes (see getOrCreateCandidate below) instead of
+    -- item.candidates - fold it in here so it isn't lost the moment a real
+    -- candidate entry gets created.
+    local preVote = item.preVotes and item.preVotes[myName];
     -- Equipped gear can change between an initial response and a later note
     -- edit, so this is recomputed fresh every submit (unlike
     -- respondedAt/approvals/arrivalIndex, which are deliberately preserved).
@@ -571,9 +576,10 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
         equipped = equipped,
         respondedAt = (previous and previous.respondedAt) or GetServerTime(),
         arrivalIndex = arrivalIndex,
-        approvals = (previous and previous.approvals) or {},
-        voteOrder = (previous and previous.voteOrder) or {},
+        approvals = (previous and previous.approvals) or (preVote and preVote.approvals) or {},
+        voteOrder = (previous and previous.voteOrder) or (preVote and preVote.voteOrder) or {},
     };
+    if (item.preVotes) then item.preVotes[myName] = nil; end
     item.sendFailed = false;
 
     local ok = pcall(lcSend, "response", {
@@ -587,6 +593,7 @@ function LootCouncil.SubmitResponse(itemSession, responseId, note)
 
     if (not ok) then
         item.candidates[myName] = previous;
+        if (preVote) then item.preVotes[myName] = preVote; end -- restore, still pre-response
         item.sendFailed = true;
     end
 
@@ -618,6 +625,8 @@ local function applyResponse(Message)
     if (not item) then return; end
 
     local existing = item.candidates[Message.senderName];
+    -- Fold in any pre-response council vote, same as SubmitResponse above.
+    local preVote = item.preVotes and item.preVotes[Message.senderName];
     local arrivalIndex = existing and existing.arrivalIndex;
     if (not arrivalIndex) then
         nextArrivalIndex = nextArrivalIndex + 1;
@@ -630,9 +639,10 @@ local function applyResponse(Message)
         equipped = (type(content.equipped) == "table") and content.equipped or {},
         respondedAt = (existing and existing.respondedAt) or GetServerTime(),
         arrivalIndex = arrivalIndex,
-        approvals = (existing and existing.approvals) or {},
-        voteOrder = (existing and existing.voteOrder) or {},
+        approvals = (existing and existing.approvals) or (preVote and preVote.approvals) or {},
+        voteOrder = (existing and existing.voteOrder) or (preVote and preVote.voteOrder) or {},
     };
+    if (item.preVotes) then item.preVotes[Message.senderName] = nil; end
 
     -- Authoritative confirmation that SubmitResponse's optimistic send above
     -- actually made it out and back - clears any stale failure marker even
@@ -676,6 +686,33 @@ local function updateVoteOrder(candidate, name, approved)
     end
 end
 
+--- Returns something with .approvals/.voteOrder for `name` on `item` that
+--- ToggleVote/applyVote can mutate, even before `name` has responded.
+---
+--- Deliberately does NOT create an item.candidates[name] entry for a
+--- non-responder: item.candidates[name]'s mere existence means "has
+--- responded" everywhere else (RespondWindow.lua's pending/sent split and
+--- its sent-list sort by respondedAt, AwardWindow.lua's response counter,
+--- Awards.BuildCandidateList's seen-tracking) - planting a vote-only entry
+--- there previously made a non-responder look responded with a nil
+--- respondedAt, which crashed RespondWindow's sent-list sort. Votes cast
+--- before a response land in item.preVotes[name] instead - a side table
+--- Awards.BuildCandidateList's awaitingCandidate() reads to seed the
+--- "Awaiting Response" placeholder row's approvals/voteOrder - and get
+--- folded into the real candidate row (preserving them, same as an existing
+--- candidate's approvals/voteOrder) the moment SubmitResponse/applyResponse
+--- actually create one; see the preVotes merge there.
+---@param item table
+---@param name string
+local function getOrCreateCandidate(item, name)
+    local candidate = item.candidates[name];
+    if (candidate) then return candidate; end
+
+    item.preVotes = item.preVotes or {};
+    item.preVotes[name] = item.preVotes[name] or { approvals = {}, voteOrder = {} };
+    return item.preVotes[name];
+end
+
 --- Toggles the local council member's approval of `targetPlayer` for one
 --- item. Sends the resulting ABSOLUTE approval state, never a delta - see
 --- applyVote below and docs/LOOT_COUNCIL_PLAN.md §3: an idempotent "my
@@ -697,8 +734,7 @@ function LootCouncil.ToggleVote(itemSession, targetPlayer)
     local item = Session.items[itemSession];
     if (not item) then return; end
 
-    local candidate = item.candidates[targetPlayer];
-    if (not candidate) then return; end -- can't vote for someone with no response yet
+    local candidate = getOrCreateCandidate(item, targetPlayer);
 
     local wasApproved = candidate.approvals[myName] == true;
     local approved = not wasApproved;
@@ -753,8 +789,7 @@ local function applyVote(Message)
     local item = Session.items[content.itemSession];
     if (not item) then return; end
 
-    local candidate = item.candidates[content.targetPlayer];
-    if (not candidate) then return; end -- can't vote for someone with no response
+    local candidate = getOrCreateCandidate(item, content.targetPlayer);
 
     -- voteOrder before approvals, same ordering as ToggleVote - on the
     -- voter's own self-echo this is a no-op transition (ToggleVote already
@@ -901,6 +936,51 @@ function LootCouncil.AwardItem(itemSession, playerName)
         -- item is physically being handed over), so unlike
         -- SubmitResponse/ToggleVote there's nothing safe to roll back - just
         -- warn that other clients may not see this in their history yet.
+        print("|cff8865ffForeverLoot|r Couldn't broadcast this award - other clients may not see it in their history until they relog or a resync happens.");
+    end
+
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+end
+
+--- Marks `itemSession` assigned for disenchanting: leader-only, same guard as
+--- AwardItem. Deliberately reuses AwardItem's exact awardCount/awardedTo/
+--- RecordHistory/lcSend "award" shape with
+--- FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT standing in for a player
+--- name, so every other client converges via the existing applyAward below
+--- with no changes there - but skips FL.Trade entirely (there's no real
+--- recipient to hand the item to) and announces a disenchant line instead of
+--- an award line.
+---@param itemSession number
+function LootCouncil.DisenchantItem(itemSession)
+    local Session = LootCouncil.CurrentSession;
+    if (not LootCouncil.CanAwardItems()) then
+        print("|cff8865ffForeverLoot|r Only the loot council session leader can award this item.");
+        return;
+    end
+    if (Session.status ~= "active") then return; end
+    local item = Session.items[itemSession];
+    if (not item) then return; end
+
+    local recipient = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
+    local awardSeq = (item.awardCount or 0) + 1;
+    item.awardCount = awardSeq;
+    item.awardedTo = recipient;
+    item.awardedAt = GetServerTime();
+
+    local awardChannel = Util.GroupChatChannel();
+    if (awardChannel) then
+        Util.SendChatMessageSafe(("%s will be disenchanted!"):format(item.itemLink), awardChannel);
+    end
+
+    LootCouncil.RecordHistory(Session, itemSession, recipient, Util.stripRealm(Util.UnitName("player")), awardSeq);
+
+    local ok = pcall(lcSend, "award", { sessionId = Session.id, itemSession = itemSession, winner = recipient, awardSeq = awardSeq }, "GROUP");
+    if (not ok) then
         print("|cff8865ffForeverLoot|r Couldn't broadcast this award - other clients may not see it in their history until they relog or a resync happens.");
     end
 

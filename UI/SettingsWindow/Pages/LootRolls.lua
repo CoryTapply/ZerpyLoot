@@ -421,7 +421,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     local overrideEditor;
     overrideEditor = ItemListEditor.Create(arRightFrame, {
         width = colWidth,
-        headerLabel = "Override automatic roll on these items",
+        headerLabel = "Automatic Roll Overrides",
         emptyText = "No overrides. Every item follows the raid setting.",
         rowIconSize = AR.rowIconSize,
         extraSlotWidth = AR.dropdownWidth + AR.dropdownGap,

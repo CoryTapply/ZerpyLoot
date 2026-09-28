@@ -48,14 +48,18 @@ end
 -- responded to this item yet - shaped like a real candidate entry (every
 -- field paintRow/EquippedIcons/VoteOrder read) but with an empty/neutral
 -- value for each, so the row renders as an unanswered "Awaiting Response"
--- pill instead of nil-erroring.
-local function awaitingCandidate()
+-- pill instead of nil-erroring. approvals/voteOrder seed from
+-- item.preVotes[name] (LootCouncil.lua's getOrCreateCandidate) when the
+-- council has already voted for this person before they responded, so
+-- those votes show up on the placeholder row instead of looking lost.
+local function awaitingCandidate(item, name)
+    local preVote = item.preVotes and item.preVotes[name];
     return {
         response = Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID,
         note = "",
         equipped = {},
-        approvals = {},
-        voteOrder = {},
+        approvals = (preVote and preVote.approvals) or {},
+        voteOrder = (preVote and preVote.voteOrder) or {},
     };
 end
 
@@ -87,7 +91,7 @@ function Awards.BuildCandidateList(item)
     local seen = {};
 
     for name, classFile in pairs(members) do
-        local candidate = item.candidates[name] or awaitingCandidate();
+        local candidate = item.candidates[name] or awaitingCandidate(item, name);
         table.insert(out, { name = name, class = classFile or candidate.class, candidate = candidate });
         seen[name] = true;
     end
@@ -217,6 +221,11 @@ end
 
 function Awards.AwardItem(itemSession, playerName)
     LootCouncil.AwardItem(itemSession, playerName);
+end
+
+--- Marks `itemSession` assigned for disenchanting - see LootCouncil.DisenchantItem.
+function Awards.DisenchantItem(itemSession)
+    LootCouncil.DisenchantItem(itemSession);
 end
 
 --- Ends the current session (leader-only) - see LootCouncil.EndSession.

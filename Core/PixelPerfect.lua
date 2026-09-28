@@ -148,6 +148,21 @@ function Pixel.ApplyLayout(frame, layout)
     Pixel.CorrectDrift(frame);
 end
 
+-- Every ForeverLoot window is a direct UIParent child sharing the same
+-- SetFrameStrata, so without this, two overlapping windows tie for frame
+-- level and their children interleave/poke through each other. SetToplevel
+-- makes the engine auto-raise `frame` (cascading to descendants, so their
+-- own relative SetFrameLevel offsets stay intact) above its same-strata
+-- siblings whenever it or a mouse-enabled descendant is clicked/dragged.
+-- SetToplevel only reacts to mouse input, not a programmatic Show(), so the
+-- OnShow hook covers opening/reopening a window bringing it to front too -
+-- and guarantees any two open windows land on distinct levels the moment
+-- each was last shown, fixing the at-rest tie as well as the click case.
+function Pixel.MakeToplevelWindow(frame)
+    frame:SetToplevel(true);
+    frame:HookScript("OnShow", function() frame:Raise(); end);
+end
+
 -- Tracks a frame so its layout is re-snapped whenever the pixel grid changes
 -- (UIScale edited, or the game window moved to a different-resolution
 -- monitor). `onRescale` is an optional callback for anything else that
@@ -163,6 +178,7 @@ function Pixel.RegisterWindow(frame, layout, onRescale)
     frame:SetScale(currentScale);
     Pixel.ApplyLayout(frame, layout);
     if (onRescale) then onRescale(); end
+    Pixel.MakeToplevelWindow(frame);
 end
 
 -- Snaps a registered window to a new height in place, leaving its current

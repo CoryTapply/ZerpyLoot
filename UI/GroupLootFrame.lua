@@ -930,6 +930,7 @@ ensureFrame = function()
     frame = CreateFrame("Frame", "ForeverLootGroupLootFrame", UIParent);
     frame:Hide();
     frame:SetMovable(true);
+    frame:SetFrameStrata("DIALOG");
 
     -- Children must exist before Pixel.RegisterWindow below: it invokes
     -- onRescale (reapplyBorders) immediately, and that reads header/moreBar/

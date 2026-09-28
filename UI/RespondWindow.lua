@@ -175,16 +175,26 @@ local function setTextEllipsized(fontString, text, maxWidth)
 end
 
 -- Measured once, off-screen: how much width the top row's right-aligned
--- "Sent" indicator (icon + gap + text) actually needs, so a sent card's
--- item name can be truncated to leave room for it without guessing a pixel
--- value.
+-- "Sent" indicator text actually needs, so a sent card's item name can be
+-- truncated to leave room for it without guessing a pixel value.
 local SENT_INDICATOR_WIDTH;
 do
     local probe = UIParent:CreateFontString(nil, "OVERLAY");
     SetFont(probe, "small");
     probe:SetText("Sent");
     probe:Hide();
-    SENT_INDICATOR_WIDTH = Sizes.sentIconSize + Sizes.sentIconGap + probe:GetStringWidth();
+    SENT_INDICATOR_WIDTH = probe:GetStringWidth();
+end
+
+-- Same measurement, for the longer "Awarded" text that takes over the same
+-- indicator slot once an item has been awarded (see paintCard).
+local AWARDED_INDICATOR_WIDTH;
+do
+    local probe = UIParent:CreateFontString(nil, "OVERLAY");
+    SetFont(probe, "small");
+    probe:SetText("Awarded");
+    probe:Hide();
+    AWARDED_INDICATOR_WIDTH = probe:GetStringWidth();
 end
 
 -- Measured once, off-screen: the note popover's "Done" button width, sized
@@ -223,9 +233,11 @@ end
 -- ContinueOnItemLoad pattern StartSessionWindow.lua uses).
 --------------------------------------------------------------------------
 
-local function nameMaxWidth(isPending)
+local function nameMaxWidth(isPending, isAwarded)
     local width = Sizes.cardWidth - Sizes.cardPadding * 2 - Sizes.iconSize - Sizes.iconTextGap;
-    if (not isPending) then
+    if (isAwarded) then
+        width = width - AWARDED_INDICATOR_WIDTH - Sizes.iconTextGap;
+    elseif (not isPending) then
         width = width - SENT_INDICATOR_WIDTH - Sizes.iconTextGap;
     end
     return width;
@@ -236,7 +248,7 @@ local function paintCardItemInfo(card, entry)
 
     if (name) then
         local r, g, b = Util.GetItemQualityColor(quality);
-        setTextEllipsized(card.nameText, ("[%s]"):format(name), nameMaxWidth(card.isPending));
+        setTextEllipsized(card.nameText, ("[%s]"):format(name), nameMaxWidth(card.isPending, card.isAwarded));
         card.nameText:SetTextColor(r or 1, g or 1, b or 1);
         card.iconBorder:SetBackdropBorderColor(r or 0, g or 0, b or 0);
 
@@ -356,7 +368,7 @@ CloseNote = function()
     local trimmed = Util.Trim(notePopover.editBox:GetText());
     if (card.entry) then noteDrafts[card.entry.session] = trimmed; end
 
-    if (card.entry and not card.entry.awardedTo) then
+    if (card.entry) then
         local myName = Util.stripRealm(Util.UnitName("player"));
         local candidate = card.entry.candidates[myName];
         if (candidate and trimmed ~= notePopover.noteStart) then
@@ -620,7 +632,7 @@ end
 
 onResponseButtonClick = function(self, card)
     local entry = card.entry;
-    if (not entry or entry.awardedTo) then return; end
+    if (not entry) then return; end
 
     -- A DIFFERENT card's popover is open - close it first (commits/resends
     -- its own note if dirty; its text is never lost either way).
@@ -728,16 +740,11 @@ local function createCard(parent)
     card.typeText:SetJustifyH("LEFT");
     card.typeText:SetWordWrap(false);
 
-    card.sentIcon = card:CreateTexture(nil, "ARTWORK");
-    card.sentIcon:SetSize(Sizes.sentIconSize, Sizes.sentIconSize);
-    card.sentIcon:SetTexture(SENT_CHECK_TEXTURE);
-    card.sentIcon:SetPoint("TOPRIGHT", card, "TOPRIGHT", -Sizes.cardPadding, -Sizes.cardPadding);
-
     card.sentLabel = card:CreateFontString(nil, "OVERLAY");
     SetFont(card.sentLabel, "small");
     card.sentLabel:SetTextColor(unpack(Colors.respondSentLabel));
     card.sentLabel:SetText("Sent");
-    card.sentLabel:SetPoint("RIGHT", card.sentIcon, "LEFT", -Sizes.sentIconGap, 0);
+    card.sentLabel:SetPoint("TOPRIGHT", card, "TOPRIGHT", -Sizes.cardPadding, -Sizes.cardPadding);
 
     -- Tooltip - only over the icon itself, not the whole card. A card
     -- scrolled out of view still occupies its rect for a bare IsMouseOver
@@ -868,12 +875,22 @@ end
 local function paintCard(card, entry, isPending, myName)
     card.entry = entry;
     card.isPending = isPending;
+    card.isAwarded = entry.awardedTo ~= nil;
 
     card.icon:SetTexture(entry.itemIcon or FALLBACK_ICON);
     paintCardItemInfo(card, entry);
 
-    card.sentIcon:SetShown(not isPending);
-    card.sentLabel:SetShown(not isPending);
+    local showIndicator = card.isAwarded or not isPending;
+    card.sentLabel:SetShown(showIndicator);
+    if (showIndicator) then
+        if (card.isAwarded) then
+            card.sentLabel:SetText("Awarded");
+            card.sentLabel:SetTextColor(unpack(Colors.gold));
+        else
+            card.sentLabel:SetText("Sent");
+            card.sentLabel:SetTextColor(unpack(Colors.respondSentLabel));
+        end
+    end
 
     local candidate = entry.candidates[myName];
 

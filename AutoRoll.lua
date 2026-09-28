@@ -21,7 +21,6 @@ the actual roll-submission plumbing (RollOnAuto/pendingAuto) this calls into.
 local FL = ForeverLoot;
 local AutoRoll = FL.AutoRoll;
 local Util = FL.Util;
-local Colors = FL.UI.Colors;
 local RULE_TITLE = FL.Constants.AUTO_ROLL_RULE_TITLE;
 local RULE_VERB = FL.Constants.AUTO_ROLL_RULE_VERB;
 
@@ -122,7 +121,10 @@ local function colorHex(rgb)
 end
 
 function AutoRoll.PrintRollMessage(itemLink, rule)
-    local hex = colorHex(Colors.systemMessage);
+    -- FL.UI.Colors isn't set until UI/SettingsWindow/Colors.lua loads, which
+    -- is after this file in the .toc - read it live rather than capturing a
+    -- module-level local that would freeze on the nil it has at load time.
+    local hex = colorHex(FL.UI.Colors.systemMessage);
     Util.Print(("|cff%s%s on %s|r"):format(hex, RULE_VERB[rule] or rule, itemLink));
 end
 
