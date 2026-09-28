@@ -703,10 +703,18 @@ createHeader = function()
         frame:StopMovingOrSizing();
         Pixel.SnapPosition(frame, function(x, y) FL.Settings.SetWindowPosition(POSITION_KEY, x, y); end);
     end);
+    -- Right click: jump straight to the "lock this bar" checkbox the tooltip
+    -- below already points at, instead of making players hunt for it.
+    h:SetScript("OnMouseUp", function(self, button)
+        if (button ~= "RightButton") then return; end
+        FL.UI.SettingsWindow.Show();
+        FL.UI.SettingsRegistry.SelectPage("lootrolls");
+        FL.UI.SettingsWindow.ScrollToSection("lockRolls");
+    end);
     h:SetScript("OnEnter", function()
         h.grip:SetVertexColor(unpack(Colors.muted));
         GameTooltip:SetOwner(h, "ANCHOR_RIGHT");
-        GameTooltip:AddLine("Drag to move \194\183 lock it in Settings to hide this bar", 1, 1, 1, true);
+        GameTooltip:AddLine("Drag to move \194\183 right-click to lock this bar in Settings", 1, 1, 1, true);
         GameTooltip:Show();
     end);
     h:SetScript("OnLeave", function()

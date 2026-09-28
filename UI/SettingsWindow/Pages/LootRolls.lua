@@ -40,7 +40,7 @@ end
 FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     page:Header("Loot Rolls");
 
-    local section = page:Section("Roll Popup", 1);
+    local section = page:Section("Group Loot Roll Popup", 1);
 
     section:Checkbox{
         key = "loot.replacePopup",
@@ -49,7 +49,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
         default = true,
     };
 
-    section:Checkbox{
+    local lockRow = section:Checkbox{
         key = "loot.lockRolls",
         label = "Lock Group Loot rolls (hide header)",
         desc = "Hides the drag header so rolls can't be moved.",
@@ -59,6 +59,22 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
                 FL.UI.GroupLootFrame.RefreshLock();
             end
         end,
+    };
+
+    -- Lets GroupLootFrame.lua's own header right-click ("open Settings to
+    -- this setting") scroll to and flash this row - same anchor idiom as
+    -- the "autoRoll" section below, just registered on a single checkbox
+    -- row's frame instead of a whole hand-built section.
+    FL.UI.SettingsWindow.sectionAnchors = FL.UI.SettingsWindow.sectionAnchors or {};
+    FL.UI.SettingsWindow.sectionAnchors["lockRolls"] = lockRow.frame;
+
+    local rollOffSection = page:Section("Roll Off", 2);
+
+    rollOffSection:Checkbox{
+        key = "loot.rollOff.showForOthers",
+        label = "Enable roll off window for rolls started by other players",
+        desc = "When off, the roll off window only opens for rolls you start yourself. Sounds still play either way.",
+        default = true,
     };
 
     --------------------------------------------------------------------------
@@ -183,10 +199,10 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     -- it must be given an explicit height matching its one real child.
     rightFrame:SetHeight(lootChatEditor.frame:GetHeight());
 
-    -- Custom (non-checkbox) reset path for the item list - "Reset This Page"
-    -- walks page.resettableKeys calling Settings.SetPath(key, default); this
-    -- entry's PATH (Core/Settings.lua) just clears the extra-items table.
-    table.insert(page.resettableKeys, { key = "loot.chat.clearExtraItems", default = true });
+    -- "Also print these items" is deliberately NOT wired into
+    -- page.resettableKeys - "Reset This Page" should leave this list alone
+    -- rather than clearing it, unlike the "Always roll on these items" list
+    -- below.
     table.insert(page.refreshers, function() lootChatEditor:Refresh(); end);
 
     ----------------------------------------------------------------------
@@ -286,7 +302,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
 
     arLeftSection:RadioGroup{
         key = "autoRoll.mode",
-        default = "manual",
+        default = "ask",
         options = {
             { value = "manual", label = "Manual", desc = "Roll yourself, like normal." },
             { value = "need",   label = "Need on everything" },

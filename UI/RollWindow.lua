@@ -232,19 +232,6 @@ end
 -- confirms "Start Without Awarding" (see the guard popup section below).
 --------------------------------------------------------------------------
 
---- True only when loading a new item right now would silently discard rolls
---- nobody's been awarded: a real roll-off exists (Setup phase has none), at
---- least one roll came in, and no winner has been recorded yet. Award,
---- Award Copy and Reassign all populate RollOff.winners, so any of them
---- make this false.
-local function hasUnawardedRolls()
-    local RollOff = RollTracker.CurrentRollOff;
-    if (not RollOff) then return false; end
-    if (#RollOff.Rolls == 0) then return false; end
-    if (RollOff.winners and #RollOff.winners > 0) then return false; end
-    return true;
-end
-
 --- Unconditionally discards whatever roll-off is currently tracked (active
 --- or not - unlike the old ShowStartPrompt's conditional discard, this must
 --- also work while a roll is still actively running, since "Start Without
@@ -303,8 +290,8 @@ local function ensureFrame()
 
     local divider = titleBar:CreateTexture(nil, "ARTWORK");
     divider:SetColorTexture(unpack(Colors.divider));
-    divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 0, 0);
-    divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", 0, 0);
+    divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 2, 0);
+    divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
     divider:SetHeight(Pixel.PixelSize(1));
 
     closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
@@ -1689,18 +1676,30 @@ end
 
 --- Opens this window locally, pre-loaded with itemLink and a seconds box +
 --- "Start Roll" button - only ever called on the client that alt+left-clicked
---- the item, so only that client ever sees those controls. If the current
---- roll-off (if any) still has rolls nobody's been awarded, shows the
+--- the item, so only that client ever sees those controls. If a roll-off is
+--- currently active (ours or someone else's), refuses outright rather than
+--- discarding it into a Setup screen whose Start Roll button would just fail
+--- (RollTracker.StartRollOff has the matching guard). Otherwise, if the
+--- current roll-off (if any) still has rolls nobody's been awarded, shows the
 --- "Nobody has been awarded yet" guard instead of silently discarding them -
---- see hasUnawardedRolls()/showGuard() above. Otherwise discards whatever
---- roll-off is sitting in RollTracker.CurrentRollOff (finished-and-awarded,
---- or empty) and loads itemLink straight into Setup phase - see startFresh().
+--- see RollTracker.HasUnawardedRolls()/showGuard() above. Otherwise discards
+--- whatever roll-off is sitting in RollTracker.CurrentRollOff
+--- (finished-and-awarded, or empty) and loads itemLink straight into Setup
+--- phase - see startFresh().
 function RollWindow.ShowStartPrompt(itemLink)
     if (not itemLink) then return; end
 
     ensureFrame();
 
-    if (hasUnawardedRolls()) then
+    local RollOff = RollTracker.CurrentRollOff;
+    if (RollOff and RollOff.active) then
+        print("|cff8865ffForeverLoot|r A roll-off is already in progress.");
+        frame:Show();
+        RollWindow.Refresh();
+        return;
+    end
+
+    if (RollTracker.HasUnawardedRolls()) then
         showGuard(itemLink);
     else
         startFresh(itemLink);

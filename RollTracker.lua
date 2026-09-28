@@ -21,6 +21,13 @@ local rollFrame;
 RollTracker.CurrentRollOff = nil; -- set while a roll-off (ours or someone else's) is active
 local stopTimerHandle;
 
+-- The most recent competing startRollOff broadcast that arrived while we had
+-- our own active/unawarded roll-off in the way (see applyStart's guard and
+-- tryFlushPendingStart below). receivedAt is GetTime() at the moment we
+-- stashed it, used to work out how much of its timer is actually left by the
+-- time we get around to it.
+local pendingStart, pendingStartReceivedAt;
+
 -- Every roll-off gets a unique id, purely so a trade-queue entry can record
 -- which roll-off it came from (see AwardItem below) - two separate roll-offs
 -- for the same item (it dropped twice) must never be confused with each
@@ -136,12 +143,47 @@ end
 -- Start / stop
 --------------------------------------------------------------------------
 
+--- True when the locally-tracked roll-off has ended, was started by us, at
+--- least one roll came in, and nobody's been awarded yet - i.e. starting or
+--- accepting a new roll-off right now would silently discard rolls nobody
+--- got anything for. Award, Award Copy and Reassign all populate
+--- RollOff.winners, so any of them make this false.
+function RollTracker.HasUnawardedRolls()
+    local RollOff = RollTracker.CurrentRollOff;
+    if (not RollOff) then return false; end
+    if (not RollOff.initiatorIsMe) then return false; end
+    if (#RollOff.Rolls == 0) then return false; end
+    if (RollOff.winners and #RollOff.winners > 0) then return false; end
+    return true;
+end
+
+--- True when starting or accepting a new roll-off right now would discard
+--- something still pending here: the current roll-off is still actively
+--- running (ours or someone else's), or it's ours, ended, and unawarded.
+function RollTracker.HasPendingRollOff()
+    local RollOff = RollTracker.CurrentRollOff;
+    if (not RollOff) then return false; end
+    if (RollOff.active) then return true; end
+    return RollTracker.HasUnawardedRolls();
+end
+
 -- Called locally by every client (initiator included) once a startRollOff
 -- payload is processed - mirrors Classes/RollOff.lua:324-453, minus the
 -- BoostedRolls/AutoRoll/TMB integrations which are out of scope here.
 local function applyStart(Message)
     local content = Message.content;
     if (type(content) ~= "table" or type(content.time) ~= "number" or not content.item) then
+        return;
+    end
+
+    -- Don't let a competing roll-off silently clobber one we're still using
+    -- (still running, or ours and not yet awarded) - stash it instead and
+    -- replay it once we're done (see tryFlushPendingStart below).
+    if (not Message.isSelf and RollTracker.HasPendingRollOff()) then
+        pendingStart = Message;
+        pendingStartReceivedAt = GetTime();
+        print(("|cff8865ffForeverLoot|r %s started a roll-off for %s - you'll see it once you finish here."):format(
+            Message.senderFqn or "?", content.item));
         return;
     end
 
@@ -216,19 +258,53 @@ local function applyStart(Message)
 
     -- A louder, more exciting sound when it's our own soft-reserved item up
     -- for roll, so it stands out from every other roll-off's plain raid
-    -- warning chime. Bundled as its own file (rather than a SOUNDKIT id)
-    -- since UI_EPICLOOT_TOAST isn't available on TBC clients.
+    -- warning chime. Both sounds are user-configurable (which sound, and
+    -- on/off) via the General settings page's "Sounds" section - see
+    -- Util.playConfiguredSound and FL.Settings.GetSound*Key/*Enabled.
     if (isSelfSR) then
-        Util.playSoundFile("Interface\\AddOns\\ForeverLoot\\Media\\Sounds\\SonicRing.ogg", "Master");
+        if (FL.Settings.GetSoundSelfSREnabled()) then
+            Util.playConfiguredSound(FL.Settings.GetSoundSelfSRKey(), "Master");
+        end
     else
-        Util.playSound(SOUNDKIT.RAID_WARNING, "Master");
+        if (FL.Settings.GetSoundRaidWarningEnabled()) then
+            Util.playConfiguredSound(FL.Settings.GetSoundRaidWarningKey(), "Master");
+        end
     end
 
-    if (FL.UI.RollWindow and FL.UI.RollWindow.Show) then
+    -- Sounds above always play regardless of this setting - it only gates
+    -- the window itself, and only for a roll-off someone ELSE started; one we
+    -- started ourselves always opens it (we're mid-flow setting it up).
+    local shouldShowWindow = Message.isSelf or FL.Settings.GetRollOffShowForOthers();
+    if (shouldShowWindow and FL.UI.RollWindow and FL.UI.RollWindow.Show) then
         FL.UI.RollWindow.Show();
     end
 
     debugPrint(("Roll-off started by %s for %s (%ds)"):format(Message.senderFqn or "?", content.item, content.time));
+end
+
+--- Replays a stashed competing roll-off start (see applyStart's guard above)
+--- once our own active/unawarded roll-off is no longer in the way - called
+--- from LocalStop (covers a roll-off that ended with zero rolls, so there's
+--- nothing to award) and from AwardItem (covers the normal award case).
+--- Adjusts the stashed duration down by however long we sat on it, so the
+--- replayed countdown roughly lines up with everyone else's by now; drops it
+--- silently if it would already be over.
+local function tryFlushPendingStart()
+    if (not pendingStart or RollTracker.HasPendingRollOff()) then
+        return;
+    end
+
+    local Message = pendingStart;
+    local elapsed = GetTime() - pendingStartReceivedAt;
+    pendingStart, pendingStartReceivedAt = nil, nil;
+
+    local remaining = (Message.content.time or 0) - elapsed;
+    if (remaining < 1) then
+        return;
+    end
+
+    Message.content.time = remaining;
+    applyStart(Message);
 end
 
 -- Stop tracking locally without broadcasting anything (natural timer expiry,
@@ -259,6 +335,8 @@ function RollTracker.LocalStop()
     if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
         FL.UI.RollWindow.Refresh();
     end
+
+    tryFlushPendingStart();
 end
 
 --- Broadcast a roll-off start. Any player can call this (mirrors Gargul's
@@ -268,6 +346,11 @@ end
 ---@param seconds number Must be >= 5
 function RollTracker.StartRollOff(itemLink, seconds)
     seconds = tonumber(seconds);
+
+    if (RollTracker.HasPendingRollOff()) then
+        print("|cff8865ffForeverLoot|r A roll-off is already in progress.");
+        return false;
+    end
 
     if (not Util.isValidItemLink(itemLink)) then
         print("|cff8865ffForeverLoot|r Invalid item link.");
@@ -459,15 +542,10 @@ end
 local function attemptAutoTrade(RollOff, playerName, queueEntry)
     FL.Trade.AttemptTradeForQueueEntry(queueEntry, function(success, reason)
         if (success) then
-            print(("|cff8865ffForeverLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(RollOff.item, playerName));
             return;
         end
 
         debugPrint(("Auto-trade to %s failed: %s"):format(playerName, tostring(reason)));
-
-        print(("|cff8865ffForeverLoot|r Couldn't trade %s to %s (%s) - it stays in the trade queue."):format(
-            RollOff.item, playerName, tostring(reason)
-        ));
 
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
             FL.UI.TradeQueueWindow.Show();
@@ -521,6 +599,8 @@ function RollTracker.AwardItem(playerName, rollData)
 
     broadcastWinners(RollOff, "add");
     attemptAutoTrade(RollOff, playerName, queueEntry);
+
+    tryFlushPendingStart();
 end
 
 --- Replace every current winner of this roll-off with a single new one:
@@ -615,6 +695,15 @@ end
 Comm.Actions[Constants.Actions.startRollOff] = applyStart;
 
 Comm.Actions[Constants.Actions.stopRollOff] = function(Message)
+    -- A stashed competing start (see applyStart's guard above) isn't
+    -- RollTracker.CurrentRollOff yet, so it wouldn't be caught by the check
+    -- below - cancel it here if this stop is from the same sender, rather
+    -- than replaying it once we're free, later, as if it were still running.
+    if (pendingStart and Util.iEquals(Message.senderFqn, pendingStart.senderFqn)) then
+        print(("|cff8865ffForeverLoot|r %s stopped their roll-off before you got to it."):format(Message.senderFqn or "?"));
+        pendingStart, pendingStartReceivedAt = nil, nil;
+    end
+
     local RollOff = RollTracker.CurrentRollOff;
     if (not RollOff or not RollOff.active) then
         return;

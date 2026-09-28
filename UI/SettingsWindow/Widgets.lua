@@ -317,14 +317,17 @@ end
 --- would reskin every other addon's classic dropdowns too).
 ---@param opts table { key, label, options = {{value, label}...}, onChange,
 ---                     default, width, x, advance, rowHeight, maxVisibleRows,
----                     previewTexture(value), previewFont(value) }
+---                     previewTexture(value), previewFont(value), onPreview(value) }
 --- previewTexture/previewFont are resolved into each option's texture/font
 --- once, here, before handing the list off to Skin.Dropdown. `x` positions
 --- this row at a horizontal offset within the section instead of the usual
 --- flush-left (for laying out several dropdowns side by side on one row -
 --- see the Appearance page); `advance` (default true) can be set to false
 --- so the caller places more controls on the same row before advancing past
---- it itself with SectionMethods:AdvanceRow.
+--- it itself with SectionMethods:AdvanceRow. `onPreview`, if given, adds a
+--- speaker icon to each open-list row (not the closed button) that calls
+--- onPreview(value) on click instead of selecting that row - see the Sounds
+--- section's LSM dropdowns in UI/SettingsWindow/Pages/General.lua.
 function SectionMethods:Dropdown(opts)
     local row = CreateFrame("Frame", nil, self.frame);
     row:SetPoint("TOPLEFT", self.frame, "TOPLEFT", opts.x or 0, self.nextRowY);
@@ -362,6 +365,7 @@ function SectionMethods:Dropdown(opts)
             if (opts.key) then FL.Settings.SetPath(opts.key, value); end
             if (opts.onChange) then opts.onChange(value); end
         end,
+        onPreview = opts.onPreview,
     });
     dropdown.button:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -6);
 

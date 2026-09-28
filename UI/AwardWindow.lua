@@ -114,6 +114,7 @@ end
 --------------------------------------------------------------------------
 
 local doRefresh, selectItem, ShowPopup, HidePopup, ConfirmPopup, QuickAssignRaider, updateRightScrollChildWidth
+local ShowEndSessionPopup, ConfirmEndSession
 
 --------------------------------------------------------------------------
 -- Title bar
@@ -321,10 +322,15 @@ local function createHeaderRow()
     Theme.Helpers.SetFlatBackdrop(headerIconBorder, nil, Colors.transparent, 1);
 
     nextButton = Widgets.CreateFlatButton(header, "Next unassigned \226\128\186", "primary");
+    nextButton.mode = "next";
     nextButton:SetHeight(Sizes.mainPanel.navButtonHeight);
     nextButton:SetPoint("RIGHT", header, "RIGHT", 0, 0);
     nextButton:SetWidth(nextButton.text:GetStringWidth() + 24);
     nextButton:SetScript("OnClick", function()
+        if (nextButton.mode == "endSession") then
+            ShowEndSessionPopup();
+            return;
+        end
         local Session = getSession();
         if (not Session or not selectedItemSession) then return; end
         local nextSession = Awards.NextUnassignedItem(Session, selectedItemSession, 1);
@@ -1037,6 +1043,47 @@ function ShowPopup(item, entry)
 end
 
 --------------------------------------------------------------------------
+-- End Session confirmation - reuses the same Skin.ConfirmPopup controller
+-- and warning-box styling as the assign/reassign popup above, just with its
+-- own (simpler) content: no per-candidate summary, only a warning.
+--------------------------------------------------------------------------
+
+function ConfirmEndSession()
+    if (not popupState or popupState.mode ~= "endSession") then return; end
+    HidePopup();
+    Awards.EndSession();
+end
+
+function ShowEndSessionPopup()
+    ensurePopup();
+    local p = Sizes.popup;
+    local popupDialog = popup.dialog;
+    popupState = { mode = "endSession" };
+
+    popupDialog.title:SetText("End session?");
+    popup:SetButtons("Cancel", "End Session", ConfirmEndSession, HidePopup);
+
+    popupDialog.summary:Hide();
+    popupDialog.noteText:Hide();
+    popupDialog.leftRaidText:Hide();
+    popupDialog.warningText:SetText(
+        "This ends the loot council session for everyone. Any remaining unassigned items stay unassigned, and this window can't be reopened once it's ended."
+    );
+
+    popup:Show(function(dialog, y)
+        popupDialog.warningBox:ClearAllPoints();
+        popupDialog.warningBox:SetPoint("TOPLEFT", dialog, "TOPLEFT", p.padding, y);
+        popupDialog.warningBox:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -p.padding, y);
+        local textHeight = popupDialog.warningText:GetStringHeight();
+        popupDialog.warningBox:SetHeight(math.max(p.warningIconSize, textHeight) + p.warningPadding * 2);
+        popupDialog.warningBox:Show();
+        y = y - popupDialog.warningBox:GetHeight() - p.sectionGap;
+
+        return y;
+    end);
+end
+
+--------------------------------------------------------------------------
 -- Refresh
 --------------------------------------------------------------------------
 
@@ -1117,13 +1164,27 @@ local function paintItemPanel()
 end
 
 local function paintHeader(item, candidateCount, voteTotal)
+    local Session = getSession();
+    -- "No more unassigned items" turns the nav button into a leader-only
+    -- "End Session" action instead - a non-leader with everything assigned
+    -- just sees Next unassigned go permanently disabled, same as it always
+    -- has when NextUnassignedItem has nowhere left to go.
+    local _, _, assignedCount, totalCount = Awards.PartitionItems(Session);
+    local canEndSession = totalCount > 0 and assignedCount == totalCount and Awards.CanAwardItems();
+    local nextMode = canEndSession and "endSession" or "next";
+    if (nextButton.mode ~= nextMode) then
+        nextButton.mode = nextMode;
+        nextButton.text:SetText(canEndSession and "End Session" or "Next unassigned \226\128\186");
+        nextButton:SetWidth(nextButton.text:GetStringWidth() + 24);
+    end
+
     if (not item) then
         headerNameText:SetText("");
         headerTypeText:SetText("");
         headerIcon:SetTexture(FALLBACK_ICON);
         headerBadge:Hide();
         prevButton:SetEnabled(false);
-        nextButton:SetEnabled(false);
+        nextButton:SetEnabled(canEndSession);
         return;
     end
 
@@ -1173,11 +1234,10 @@ local function paintHeader(item, candidateCount, voteTotal)
         headerBadge:Hide();
     end
 
-    local Session = getSession();
     local prevSession = Awards.NextUnassignedItem(Session, item.session, -1);
     local nextSession = Awards.NextUnassignedItem(Session, item.session, 1);
     prevButton:SetEnabled(prevSession ~= nil);
-    nextButton:SetEnabled(nextSession ~= nil);
+    nextButton:SetEnabled(canEndSession or nextSession ~= nil);
 end
 
 local function paintFooterPermissions()
@@ -1193,12 +1253,22 @@ end
 doRefresh = function()
     if (not frame) then return; end
 
+    local Session = getSession();
+    -- A session that isn't active anymore (see LootCouncil.EndSession) closes
+    -- this window on every client, not just the one that ended it - matches
+    -- RespondWindow.Refresh's own status=="active" gate. Show() below then
+    -- refuses to reopen it for as long as this Session stays the current one.
+    if (Session and Session.status ~= "active") then
+        HidePopup();
+        frame:Hide();
+        return;
+    end
+
     local leftScrollPos = leftScroll:GetVerticalScroll();
     local rightScrollPos = rightScroll:GetVerticalScroll();
 
     paintItemPanel();
 
-    local Session = getSession();
     if (Session and (not selectedItemSession or not Session.items[selectedItemSession])) then
         selectedItemSession = Session.items[1] and Session.items[1].session or nil;
     end
@@ -1248,8 +1318,11 @@ doRefresh = function()
     -- If an award for this exact item arrived (from any client, including
     -- this one via a different row) while the popup was open, close it and
     -- let the fresh table speak for itself. Otherwise re-run the popup's own
-    -- layout so its "still in the raid" check and vote count stay live.
-    if (popupState) then
+    -- layout so its "still in the raid" check and vote count stay live. The
+    -- End Session popup has no per-item data to resync against, so it just
+    -- stays open until Cancel/Confirm (or the status-guard above hides the
+    -- whole window once it's actually ended).
+    if (popupState and popupState.mode ~= "endSession") then
         local currentAwardCount = popupState.item.awardCount or 0;
         if (currentAwardCount ~= popupState.awardCountAtOpen) then
             HidePopup();
@@ -1361,6 +1434,12 @@ end
 --- else, so there's no way to reach it, not even a briefly-flashing empty one.
 function AwardWindow.Show()
     if (not LootCouncil.CanAccessReviewWindow()) then return; end
+    -- Once a session is ended (see LootCouncil.EndSession) this window can't
+    -- be reopened for it - not via the chat "reopen" link, Debug's Toggle, or
+    -- a later councilSettingsSync auto-show - until a new sessionStart
+    -- replaces Session with a fresh, active one.
+    local Session = getSession();
+    if (Session and Session.status ~= "active") then return; end
     ensureFrame();
     frame:Show();
     doRefresh();

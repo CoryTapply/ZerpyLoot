@@ -389,7 +389,12 @@ local function createFooter()
     startButton:SetPoint("RIGHT", buttonRow, "RIGHT", 0, 0);
     startButton:SetScript("OnClick", function()
         local ok, message = SessionItems.Send();
-        if (not ok and message) then
+        if (ok) then
+            FL.NotifyWindowClosed("StartSession");
+            frame:Hide();
+            return;
+        end
+        if (message) then
             print("|cff8865ffForeverLoot|r " .. message);
         end
         StartSessionWindow.Refresh();

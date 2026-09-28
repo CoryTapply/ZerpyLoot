@@ -414,7 +414,6 @@ local function applySessionStart(Message)
     end
 
     FL.DB.lootCouncil.session = {
-        active = true,
         id = content.sessionId,
         initiatorFqn = Message.senderFqn,
         initiatorIsMe = Message.isSelf,
@@ -881,13 +880,9 @@ function LootCouncil.AwardItem(itemSession, playerName)
 
     FL.Trade.AttemptTradeForQueueEntry(queueEntry, function(success, reason)
         if (success) then
-            print(("|cff8865ffForeverLoot|r %s placed in the trade window with %s - accept the trade to finish."):format(item.itemLink, playerName));
             return;
         end
         lcDebugPrint(("Auto-trade to %s failed: %s"):format(playerName, tostring(reason)));
-        print(("|cff8865ffForeverLoot|r Couldn't trade %s to %s (%s) - it stays in the trade queue."):format(
-            item.itemLink, playerName, tostring(reason)
-        ));
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
             FL.UI.TradeQueueWindow.Show();
         end
@@ -960,3 +955,69 @@ local function applyAward(Message)
     end
 end
 LootCouncil.CommActions.award = applyAward;
+
+--------------------------------------------------------------------------
+-- Session end
+--------------------------------------------------------------------------
+
+--- Ends the current session: leader-only (same gate as AwardItem). Sets
+--- Session.status so every already-wired status=="active" check
+--- (SubmitResponse/ToggleVote/AwardItem, RespondWindow.Refresh) locks out
+--- further activity on every client, not just this one. Optimistic local
+--- mutation first, matching AwardItem's convention, then broadcasts so every
+--- other client converges via applySessionEnd below.
+function LootCouncil.EndSession()
+    local Session = LootCouncil.CurrentSession;
+    if (not LootCouncil.CanAwardItems()) then return; end
+    if (not Session or Session.status ~= "active") then return; end
+
+    Session.status = "ended";
+    -- Printed here rather than left to applySessionEnd's self-looped echo -
+    -- that handler's "already applied" guard (Session.status ~= "active")
+    -- bails out before its own print, since the optimistic mutation above
+    -- already moved status off "active" by the time our own echo arrives.
+    print("|cff8865ffForeverLoot|r You ended the loot council session.");
+
+    local ok = pcall(lcSend, "sessionEnd", { sessionId = Session.id }, "GROUP");
+    if (not ok) then
+        print("|cff8865ffForeverLoot|r Couldn't broadcast the session end - other clients may not see it until they relog or a resync happens.");
+    end
+
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+end
+
+--- Applied by every client (leader included, via the self-looped broadcast)
+--- when a sessionEnd message arrives - the only place non-leader clients ever
+--- see the session's status change. Independently re-verifies the sender is
+--- this session's actual leader, mirroring applyAward.
+local function applySessionEnd(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or not content.sessionId) then return; end
+
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.id ~= content.sessionId) then return; end -- stale/foreign session
+    if (not Util.iEquals(Message.senderFqn, Session.initiatorFqn)) then return; end
+    if (Session.status ~= "active") then return; end -- already applied (e.g. the leader's own echo)
+
+    Session.status = "ended";
+
+    lcDebugPrint(("%s ended loot council session %d"):format(Message.senderName, content.sessionId));
+    -- Only reached on every OTHER client - the leader's own echo is caught by
+    -- the "already applied" guard above (their optimistic mutation in
+    -- EndSession already moved status off "active"), which is why EndSession
+    -- prints its own leader-side confirmation instead of relying on this.
+    print(("|cff8865ffForeverLoot|r %s ended the loot council session."):format(Message.senderName));
+
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+end
+LootCouncil.CommActions.sessionEnd = applySessionEnd;

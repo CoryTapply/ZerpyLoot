@@ -255,6 +255,17 @@ FL.UI.Colors.autoRollPopupAccent = {
     manual = FL.UI.Colors.description,        -- #cfc6b8
 };
 
+-- Choice-button TITLE colors - deliberately a separate table from
+-- autoRollPopupAccent above: Pass and Manual read brighter here than their
+-- own accent-bar color so the title never looks disabled/greyed-out next to
+-- Need/Greed's saturated colors.
+FL.UI.Colors.autoRollPopupTitle = {
+    need   = FL.UI.Colors.gold,               -- #ffd100
+    greed  = FL.UI.Colors.autoRollRule.greed, -- #4aa3ff
+    pass   = FL.UI.Colors.description,        -- #cfc6b8 - brighter than the bar's #8a8176
+    manual = FL.UI.Colors.text,               -- #efe9df - brighter than the bar's #cfc6b8
+};
+
 -- Automatic Rolls section's own colors not already covered above.
 FL.UI.Colors.autoRollMutedNote = { 0.541, 0.506, 0.463 }; -- #8a8176 - bottom-of-
     -- section muted note. Numerically == autoRollPopupAccent.pass, kept as

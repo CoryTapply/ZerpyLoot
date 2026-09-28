@@ -469,6 +469,25 @@ function Util.playSoundFile(filePath, channel)
     pcall(PlaySoundFile, filePath, channel or "SFX");
 end
 
+-- Plays a saved LibSharedMedia "sound" key - RollTracker.lua's roll-off
+-- start, keyed by whatever the user picked in the General settings page's
+-- Sounds section dropdowns (UI/SettingsWindow/Pages/General.lua). `key` ==
+-- Constants.SOUND_RAID_WARNING_KEY is a sentinel (see that constant's own
+-- comment) for Blizzard's built-in raid warning SOUNDKIT rather than a real
+-- LSM-registered file; anything else is resolved through LSM:Fetch and
+-- played as a file, so any sound key registered by any installed addon
+-- (including our own FL.Constants.SOUND_SONIC_RING_KEY) works here.
+local LSM = LibStub("LibSharedMedia-3.0");
+function Util.playConfiguredSound(key, channel)
+    if (key == FL.Constants.SOUND_RAID_WARNING_KEY) then
+        Util.playSound(SOUNDKIT.RAID_WARNING, channel);
+        return;
+    end
+
+    local path = LSM:Fetch("sound", key);
+    if (path) then Util.playSoundFile(path, channel); end
+end
+
 -- Levenshtein edit distance between two strings (case-sensitive - callers
 -- normalize case first, same convention as GL:levenshtein).
 function Util.levenshtein(str1, str2)

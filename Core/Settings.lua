@@ -51,10 +51,20 @@ function Settings.Init()
     -- reasoning as s.lootMessages above.
     s.autoRoll = s.autoRoll or {};
     local ar = s.autoRoll;
-    ar.mode = (type(ar.mode) == "string") and ar.mode or "manual"; -- manual|need|greed|pass|ask
+    ar.mode = (type(ar.mode) == "string") and ar.mode or "ask"; -- manual|need|greed|pass|ask
     ar.overrides = ar.overrides or {}; -- [itemID] = { rule = "need"|"greed"|"pass"|"manual", order = n }
     ar.nextOrder = ar.nextOrder or 1;
     ar.sessionChoices = ar.sessionChoices or {}; -- [instanceID] = "manual"|"need"|"greed"|"pass"
+
+    -- General settings page > "Sounds" section. Both events default on, and
+    -- default to the sound each played before this section had per-event
+    -- LSM pickers (see FL.Constants.SOUND_RAID_WARNING_KEY/SOUND_SONIC_RING_KEY).
+    s.sounds = s.sounds or {};
+    local snd = s.sounds;
+    snd.raidWarning = (snd.raidWarning == nil) and true or (snd.raidWarning == true);
+    snd.selfSR = (snd.selfSR == nil) and true or (snd.selfSR == true);
+    snd.raidWarningSound = snd.raidWarningSound or FL.Constants.SOUND_RAID_WARNING_KEY;
+    snd.selfSRSound = snd.selfSRSound or FL.Constants.SOUND_SONIC_RING_KEY;
 
     -- The theme is what this session's windows get skinned with, so it's
     -- locked in here once (before any window exists) rather than re-read -
@@ -174,18 +184,83 @@ function Settings.SetGroupLootRollLocked(locked)
     FL.DB.settings.groupLootRollLocked = locked and true or false;
 end
 
--- UI/AwardWindow.lua's "Jump to next unassigned after assigning" checkbox -
--- per-character (FL.DBChar, not FL.DB), since which raider is running the
--- council on a given character is a per-character preference, unlike every
--- other setting in this file. Defaults on.
+-- Whether RollTracker.applyStart pops open UI/RollWindow.lua for a roll-off
+-- started by someone else. Sounds still play regardless (see RollTracker.lua)
+-- - this only controls whether the window itself appears. Read live, not
+-- cached at login, same as GroupLootRollLocked above. Never consulted for a
+-- roll-off we started ourselves (Message.isSelf), which always opens it.
+function Settings.GetRollOffShowForOthers()
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.rollOffShowForOthers;
+    if (enabled == nil) then return true; end
+    return enabled;
+end
+
+function Settings.SetRollOffShowForOthers(enabled)
+    FL.DB.settings.rollOffShowForOthers = enabled and true or false;
+end
+
+-- UI/AwardWindow.lua's "Jump to next unassigned after assigning" checkbox.
+-- Defaults on.
 function Settings.GetJumpToNextUnassigned()
-    local enabled = FL.DBChar and FL.DBChar.awardWindowJumpToNextUnassigned;
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.awardWindowJumpToNextUnassigned;
     if (enabled == nil) then return true; end
     return enabled;
 end
 
 function Settings.SetJumpToNextUnassigned(enabled)
-    FL.DBChar.awardWindowJumpToNextUnassigned = enabled and true or false;
+    FL.DB.settings.awardWindowJumpToNextUnassigned = enabled and true or false;
+end
+
+--------------------------------------------------------------------------
+-- General settings page (UI/SettingsWindow/Pages/General.lua), "Sounds"
+-- section. Both read live by RollTracker.lua right before it plays each
+-- sound, not cached at login.
+--------------------------------------------------------------------------
+
+-- The raid-warning chime played when any roll-off starts.
+function Settings.GetSoundRaidWarningEnabled()
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.sounds and FL.DB.settings.sounds.raidWarning;
+    if (enabled == nil) then return true; end
+    return enabled;
+end
+
+function Settings.SetSoundRaidWarningEnabled(enabled)
+    FL.DB.settings.sounds.raidWarning = enabled and true or false;
+end
+
+-- Which sound plays for the event above - an LSM "sound" key, or
+-- FL.Constants.SOUND_RAID_WARNING_KEY for Blizzard's built-in chime (see that
+-- constant's own comment). Read by Util.playConfiguredSound via RollTracker.lua.
+function Settings.GetSoundRaidWarningKey()
+    local key = FL.DB and FL.DB.settings and FL.DB.settings.sounds and FL.DB.settings.sounds.raidWarningSound;
+    return key or FL.Constants.SOUND_RAID_WARNING_KEY;
+end
+
+function Settings.SetSoundRaidWarningKey(key)
+    FL.DB.settings.sounds.raidWarningSound = key;
+end
+
+-- The alert played instead of the raid-warning chime when a roll-off starts
+-- for one of your own soft-reserved items.
+function Settings.GetSoundSelfSREnabled()
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.sounds and FL.DB.settings.sounds.selfSR;
+    if (enabled == nil) then return true; end
+    return enabled;
+end
+
+function Settings.SetSoundSelfSREnabled(enabled)
+    FL.DB.settings.sounds.selfSR = enabled and true or false;
+end
+
+-- Which sound plays for the event above - an LSM "sound" key (defaults to
+-- our own bundled FL.Constants.SOUND_SONIC_RING_KEY).
+function Settings.GetSoundSelfSRKey()
+    local key = FL.DB and FL.DB.settings and FL.DB.settings.sounds and FL.DB.settings.sounds.selfSRSound;
+    return key or FL.Constants.SOUND_SONIC_RING_KEY;
+end
+
+function Settings.SetSoundSelfSRKey(key)
+    FL.DB.settings.sounds.selfSRSound = key;
 end
 
 --------------------------------------------------------------------------
@@ -265,10 +340,6 @@ function Settings.RemoveLootExtraItem(itemID)
     FL.DB.settings.lootMessages.extraItems[itemID] = nil;
 end
 
-function Settings.ClearLootExtraItems()
-    wipe(FL.DB.settings.lootMessages.extraItems);
-end
-
 -- Hides "Item Loot" on ChatFrame1 (the main chat tab) when on, restoring it
 -- when off - but only if WE were the one who removed it (see
 -- removedLootFromMain below); a user who already had it off before enabling
@@ -329,7 +400,7 @@ end
 --------------------------------------------------------------------------
 
 function Settings.GetAutoRollMode()
-    return (FL.DB and FL.DB.settings and FL.DB.settings.autoRoll and FL.DB.settings.autoRoll.mode) or "manual";
+    return (FL.DB and FL.DB.settings and FL.DB.settings.autoRoll and FL.DB.settings.autoRoll.mode) or "ask";
 end
 
 function Settings.SetAutoRollMode(mode)
@@ -395,13 +466,10 @@ local PATHS = {
     ["appearance.enableRespondAnimation"] = { get = Settings.GetRespondAnimationEnabled, set = Settings.SetRespondAnimationEnabled },
     ["loot.replacePopup"] = { get = Settings.GetGroupLootRollEnabled, set = Settings.SetGroupLootRollEnabled },
     ["loot.lockRolls"] = { get = Settings.GetGroupLootRollLocked, set = Settings.SetGroupLootRollLocked },
+    ["loot.rollOff.showForOthers"] = { get = Settings.GetRollOffShowForOthers, set = Settings.SetRollOffShowForOthers },
     ["loot.chat.enabled"] = { get = Settings.GetLootMessagesEnabled, set = Settings.SetLootMessagesEnabled },
     ["loot.chat.hideBlizzardMain"] = { get = Settings.GetLootHideBlizzardMain, set = Settings.SetLootHideBlizzardMain },
     ["loot.chat.lootTab"] = { get = Settings.GetLootTabEnabled, set = Settings.SetLootTabEnabled },
-    -- No real "value" of its own - reset-only path so "Reset This Page" can
-    -- clear the extra-items list the same way it resets every other key
-    -- (Settings.SetPath(key, default) with default=true; see LootRolls.lua).
-    ["loot.chat.clearExtraItems"] = { get = function() return nil; end, set = function(v) if (v) then Settings.ClearLootExtraItems(); end end },
     ["autoRoll.mode"] = { get = Settings.GetAutoRollMode, set = Settings.SetAutoRollMode },
     -- Reset-only path - "Reset This Page" wipes sessionChoices but never
     -- overrides (clearing those would need its own confirm first).
@@ -411,6 +479,10 @@ local PATHS = {
     },
     ["lootCouncil.includeOfficers"] = { get = Settings.GetIncludeGuildOfficers, set = Settings.SetIncludeGuildOfficers },
     ["lootCouncil.officerRankThreshold"] = { get = Settings.GetOfficerRankThreshold, set = Settings.SetOfficerRankThreshold },
+    ["sounds.raidWarning"] = { get = Settings.GetSoundRaidWarningEnabled, set = Settings.SetSoundRaidWarningEnabled },
+    ["sounds.raidWarningSound"] = { get = Settings.GetSoundRaidWarningKey, set = Settings.SetSoundRaidWarningKey },
+    ["sounds.selfSR"] = { get = Settings.GetSoundSelfSREnabled, set = Settings.SetSoundSelfSREnabled },
+    ["sounds.selfSRSound"] = { get = Settings.GetSoundSelfSRKey, set = Settings.SetSoundSelfSRKey },
 };
 
 function Settings.GetPath(path)

@@ -44,7 +44,6 @@ end
 
 function AutoRoll.ScopeOK()
     local inInstance, instanceType = IsInInstance();
-    print(inInstance, instanceType)
     -- TEMP TESTING: also allow dungeons, not just raids. Revert before shipping.
     return inInstance and (instanceType == "raid" or instanceType == "party") and AutoRoll.IsRollLootMethod();
 end
@@ -133,7 +132,7 @@ end
 --- ask, and PrintSessionChoiceMessage announces whatever the player picks.
 function AutoRoll.PrintModeMessage(mode)
     if (mode == "manual") then
-        Util.Print("Automatic rolls: rolling manually.");
+        Util.Print("Automatic rolls: Rolling manually.");
     else
         Util.Print(("Automatic rolls: %s on everything."):format(RULE_TITLE[mode] or mode));
     end

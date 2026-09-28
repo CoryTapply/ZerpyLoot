@@ -4,7 +4,6 @@
 ## Author: Zerpy
 ## Version: 0.1.0
 ## SavedVariables: ForeverLootDB
-## SavedVariablesPerCharacter: ForeverLootDBChar
 ## DefaultState: enabled
 
 # Vendored libraries (each carries its own separate open-source license, see file headers)

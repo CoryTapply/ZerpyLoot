@@ -218,3 +218,8 @@ end
 function Awards.AwardItem(itemSession, playerName)
     LootCouncil.AwardItem(itemSession, playerName);
 end
+
+--- Ends the current session (leader-only) - see LootCouncil.EndSession.
+function Awards.EndSession()
+    LootCouncil.EndSession();
+end

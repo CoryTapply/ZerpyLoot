@@ -795,10 +795,46 @@ function Skin.Dropdown(parent, opts)
             row.check:SetAtlas("common-dropdown-icon-checkmark-yellow");
             row.check:Hide();
 
+            -- Optional preview ("test sound") button, right-aligned on the
+            -- row - only built when the caller wants one (opts.onPreview,
+            -- e.g. the Sounds section's LSM dropdowns in
+            -- UI/SettingsWindow/Pages/General.lua). A separate child Button
+            -- layered over the row's own clickable area, so clicking it
+            -- plays the sound without selecting the row or closing the
+            -- list - WoW routes a click to the topmost frame under the
+            -- cursor, never bubbling it to the row button underneath.
+            if (opts.onPreview) then
+                row.previewButton = CreateFrame("Button", nil, row);
+                local previewSize = math.min(rowHeight - 8, 14);
+                row.previewButton:SetSize(previewSize, previewSize);
+                row.previewButton:SetPoint("RIGHT", row, "RIGHT", -6, 0);
+
+                row.previewIcon = row.previewButton:CreateTexture(nil, "OVERLAY");
+                row.previewIcon:SetAllPoints();
+                row.previewIcon:SetAtlas("voicechat-icon-speaker");
+                row.previewIcon:SetVertexColor(unpack(Colors.muted));
+
+                row.previewButton:SetScript("OnEnter", function(self)
+                    row.previewIcon:SetVertexColor(unpack(Colors.gold));
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+                    GameTooltip:AddLine("Preview sound", 1, 1, 1);
+                    GameTooltip:Show();
+                end);
+                row.previewButton:SetScript("OnLeave", function()
+                    row.previewIcon:SetVertexColor(unpack(Colors.muted));
+                    GameTooltip:Hide();
+                end);
+                row.previewButton:SetScript("OnClick", function() opts.onPreview(opt.value); end);
+            end
+
             row.label = row:CreateFontString(nil, "OVERLAY");
             SetFont(row.label, "body");
             row.label:SetPoint("LEFT", row, "LEFT", 20, 0);
-            row.label:SetPoint("RIGHT", row, "RIGHT", -6, 0);
+            if (row.previewButton) then
+                row.label:SetPoint("RIGHT", row.previewButton, "LEFT", -6, 0);
+            else
+                row.label:SetPoint("RIGHT", row, "RIGHT", -6, 0);
+            end
             row.label:SetJustifyH("LEFT");
             row.label:SetWordWrap(false);
 

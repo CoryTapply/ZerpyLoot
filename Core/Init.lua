@@ -46,8 +46,6 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
     if (event == "ADDON_LOADED" and addonName == FL.name) then
         ForeverLootDB = ForeverLootDB or {};
         FL.DB = ForeverLootDB;
-        ForeverLootDBChar = ForeverLootDBChar or {};
-        FL.DBChar = ForeverLootDBChar;
     elseif (event == "PLAYER_LOGIN") then
         -- Each module is initialised in its own pcall so one module failing
         -- (e.g. registering an event this client doesn't have) can't stop

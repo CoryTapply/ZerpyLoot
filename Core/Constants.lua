@@ -84,3 +84,25 @@ Constants.AUTO_ROLL_RULE_TITLE = { need = "Need", greed = "Greed", pass = "Pass"
 -- Present-participle form for AutoRoll.lua's per-roll chat print ("Needing on
 -- [item]", "Manually rolling on [item]").
 Constants.AUTO_ROLL_RULE_VERB = { need = "Needing", greed = "Greeding", pass = "Passing", manual = "Manually rolling" };
+
+-- General settings page > "Sounds" section (UI/SettingsWindow/Pages/General.lua,
+-- RollTracker.lua's roll-off start). Both dropdowns there list every
+-- LibSharedMedia "sound" entry (LSM:List("sound") - whatever this or any
+-- other installed addon has registered) via Util.playConfiguredSound
+-- (Core/Util.lua), keyed by these two saved-value defaults.
+--
+-- SOUND_RAID_WARNING_KEY is a sentinel, not a real LSM key - PlaySound
+-- SOUNDKIT ids aren't files LSM can Fetch, so Util.playConfiguredSound
+-- special-cases this exact value to call PlaySound(SOUNDKIT.RAID_WARNING)
+-- instead of PlaySoundFile. It's prepended onto the raid-warning dropdown's
+-- option list by hand (see General.lua) since LSM itself has no record of it.
+Constants.SOUND_RAID_WARNING_KEY = "Blizzard Raid Warning";
+
+-- Our one bundled sound file (Media/Sounds/SonicRing.ogg), registered with
+-- LSM below so it's Fetchable like any other sound key and shows up in both
+-- dropdowns' option lists.
+Constants.SOUND_SONIC_RING_KEY = "ForeverLoot: Sonic Ring";
+
+local LSM = LibStub("LibSharedMedia-3.0");
+LSM:Register(LSM.MediaType.SOUND, Constants.SOUND_SONIC_RING_KEY,
+    "Interface\\AddOns\\ForeverLoot\\Media\\Sounds\\SonicRing.ogg");

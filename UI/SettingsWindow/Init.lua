@@ -188,6 +188,11 @@ local function createContentArea(sidebar)
         scrollBar:SetPoint("RIGHT", content, "RIGHT", -Sizes.layout.scrollbarInset, 0);
     end
 
+    -- Page content is freeform (sections/controls, not uniform rows), so
+    -- this uses EnableSmoothScroll's own default step rather than a
+    -- row-height-derived one like the other windows' list scroll areas.
+    Theme.Helpers.EnableSmoothScroll(scroll);
+
     contentArea = content;
     scrollFrame = scroll;
     SettingsWindow.SetFooterShown(true);
@@ -232,14 +237,19 @@ function SettingsWindow.ScrollToSection(id)
     end);
 end
 
---- Flashes a 1px gold outline around `frame`, fading out over
+--- Flashes a 1px gold outline around `sectionFrame`, fading out over
 --- Sizes.autoRoll.overrideFlashDuration seconds - same one-shot border-flash
 --- idiom as UI/RespondWindow.lua's own per-card flash, generalized here as
---- the settings window's first reusable version of it.
-function SettingsWindow.FlashSection(frame)
-    if (not frame.zlFlashAnim) then
+--- the settings window's first reusable version of it. The overlay is
+--- parented to the top-level window frame (not sectionFrame, which lives
+--- inside scrollFrame's scroll child) so its 5px margin isn't clipped by
+--- the scroll frame's rect on the left/right edges.
+function SettingsWindow.FlashSection(sectionFrame)
+    if (not sectionFrame.zlFlashAnim) then
         local overlay = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-        overlay:SetAllPoints(frame);
+        overlay:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", -5, 5);
+        overlay:SetPoint("BOTTOMRIGHT", sectionFrame, "BOTTOMRIGHT", 5, -5);
+        overlay:SetFrameLevel(frame:GetFrameLevel() + 50);
         Theme.Helpers.SetFlatBackdrop(overlay, nil, Colors.gold, 1);
         overlay:SetAlpha(0);
 
@@ -249,11 +259,11 @@ function SettingsWindow.FlashSection(frame)
         fade:SetToAlpha(0);
         fade:SetDuration(Sizes.autoRoll.overrideFlashDuration);
 
-        frame.zlFlashAnim = anim;
+        sectionFrame.zlFlashAnim = anim;
     end
 
-    frame.zlFlashAnim:Stop();
-    frame.zlFlashAnim:Play();
+    sectionFrame.zlFlashAnim:Stop();
+    sectionFrame.zlFlashAnim:Play();
 end
 
 --- Called by Registry.lua on every page switch. When `shown` is true, the

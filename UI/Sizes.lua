@@ -111,8 +111,14 @@ FL.UI.Sizes = {
         local padding, gap = 11, 9; -- mockup 17.6/1.6, 14.4/1.6
         return {
             width = 312, padding = padding, gap = gap,
-            titleBarHeight = 20, accentBarWidth = 2.5, -- mockup 4/1.6
-            gridGap = 5, buttonHeight = 39, -- mockup 62.4/1.6
+            titleBarHeight = 20, accentBarWidth = 3,
+            gridTopMargin = 16, gridGap = 5, buttonHeight = 39, -- mockup 62.4/1.6
+            -- Title -> subtitle gap (own value, distinct from `gap` above -
+            -- this one's inside the header, not between sections).
+            titleSubtitleGap = 3,
+            -- Divider -> footer row gap - narrower than every other section
+            -- gap above (`gap`), per the popup's own spec.
+            footerGap = 7,
             footerDividerHeight = 1, viewOverridesHeight = 19,
             shadowInset = 6, -- same SoftGlow drop-shadow technique as UI/GroupLootFrame.lua
         };
@@ -530,7 +536,7 @@ FL.UI.Sizes = {
                 padding = 4,
                 rowHeight = 22,
                 rowGap = 2,
-                maxVisibleRows = 8,
+                maxVisibleRows = 6,
                 emptyHeight = 40,
                 rowPadX = 6,
                 colGap = 6,
