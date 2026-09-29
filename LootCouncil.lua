@@ -34,6 +34,21 @@ local LC_PREFIX = "ForeverLootLC";
 LootCouncil.CommActions = {}; -- action name (string) -> handler(Message)
 LootCouncil.debugEnabled = false;
 
+-- In-memory (never persisted to FL.DB) proof that a given raid/party member
+-- is actually running ForeverLoot: name -> true, set the moment ANY LC_PREFIX
+-- traffic arrives from them (see onLCMessage below) and by the sessionStart
+-- ack (applySessionStart) so a non-responder can be proven present too.
+LootCouncil.Presence = {};
+
+--- Whether `name` has proven (via LC_PREFIX comm traffic this session) that
+--- they're running ForeverLoot. Used by Session/Awards.lua to tell a
+--- non-responder who simply hasn't answered yet from one who doesn't have
+--- the addon at all.
+---@param name string
+function LootCouncil.HasAddon(name)
+    return LootCouncil.Presence[name] == true;
+end
+
 --------------------------------------------------------------------------
 -- Late item-info arrival - deferred from Phase 2 (see applySessionStart's
 -- comment below). Generalized to loop over Session.items (an array, not a
@@ -166,6 +181,16 @@ onLCMessage = function(prefix, encoded, distribution, senderName)
         channel = distribution,
     };
     Message.isSelf = Util.iEquals(Message.senderFqn, myFqn) or Util.iEquals(Message.senderName, myName);
+
+    -- Any traffic on LC_PREFIX proves the sender is running ForeverLoot -
+    -- only a real client can construct a valid payload here. Deliberately
+    -- NOT excluding Message.isSelf: GROUP-distribution sends loop back to
+    -- the sender through this same function (see applySessionStart's own
+    -- isSelf handling), so this is what marks our own presence the moment
+    -- we send anything on this channel - nothing else ever does.
+    if (Message.senderName) then
+        LootCouncil.Presence[Message.senderName] = true;
+    end
 
     lcDebugPrint(("RECV %s <- %s (%s)"):format(tostring(Message.action), Message.senderFqn or "?", distribution));
 
@@ -425,6 +450,18 @@ local function applySessionStart(Message)
 
     lcDebugPrint(("Loot council session %d started by %s (%d items)"):format(content.sessionId, Message.senderFqn or "?", #items));
 
+    -- Prove to the whole raid/party that we're running ForeverLoot even if
+    -- we never end up responding/voting - lets ANY council member's Award
+    -- window (not just the initiator's) tell "hasn't responded yet" apart
+    -- from "doesn't have the addon" (Session/Awards.lua). Broadcast rather
+    -- than whispered straight to the initiator: a whisper target needs a
+    -- resolvable bare player name, and Message.senderFqn here is the
+    -- wire-protocol "Name-Realm" identity string, not a valid whisper
+    -- target - GROUP sidesteps that entirely and reaches every client.
+    if (not Message.isSelf) then
+        lcSend("presenceAck", nil, "GROUP");
+    end
+
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
         FL.UI.RespondWindow.MaybeAutoShow();
     end
@@ -433,6 +470,17 @@ local function applySessionStart(Message)
     end
 end
 LootCouncil.CommActions.sessionStart = applySessionStart;
+
+-- Presence is already recorded generically for every inbound message
+-- (onLCMessage above); this handler only exists to repaint the Award window
+-- immediately when an ack lands, instead of waiting for some unrelated
+-- refresh to happen to catch it.
+local function applyPresenceAck(Message)
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+end
+LootCouncil.CommActions.presenceAck = applyPresenceAck;
 
 --- Broadcasts the leader's current session item list (owned by
 --- Session/SessionItems.lua) to the raid as a new session.
@@ -620,6 +668,7 @@ local function applyResponse(Message)
 
     local Session = LootCouncil.CurrentSession;
     if (not Session or Session.id ~= content.sessionId) then return; end -- stale/foreign session
+    if (Session.status ~= "active") then return; end -- late response for an ended session
 
     local item = Session.items[content.itemSession];
     if (not item) then return; end
@@ -780,6 +829,7 @@ local function applyVote(Message)
 
     local Session = LootCouncil.CurrentSession;
     if (not Session or Session.id ~= content.sessionId) then return; end -- stale/foreign session
+    if (Session.status ~= "active") then return; end -- late vote for an ended session
 
     -- Independently re-verify the sender may vote - the whole point of this
     -- check is that we do NOT trust the sender's own belief about their
@@ -1101,3 +1151,98 @@ local function applySessionEnd(Message)
     end
 end
 LootCouncil.CommActions.sessionEnd = applySessionEnd;
+
+--------------------------------------------------------------------------
+-- End session early (UI/AwardWindow.lua's title-bar trash button) - distinct
+-- from EndSession above: that one is only reachable once every item is
+-- already assigned (a formality), this one is leader-initiated at any point
+-- and specifically clears out whatever is still unassigned instead of
+-- leaving it dangling forever.
+--------------------------------------------------------------------------
+
+--- Ends the current session early: leader-only (same gate as EndSession).
+--- Every still-unassigned item has its candidates (responses + votes) wiped
+--- and gets flagged item.removedEarly - NOT table.remove'd out of
+--- Session.items, since item.session doubles as that array's own index
+--- everywhere (AwardItem/ToggleVote/SubmitResponse/getSelectedItem all do
+--- Session.items[itemSession]) and a physical remove would shift every later
+--- item's index out from under its own .session field, corrupting already-
+--- awarded items' trade-queue linkage (LootCouncil.AwardItem's
+--- councilAwardId is derived from itemSession). Already-awarded items are
+--- untouched - they keep their place in Session.items and FL.Trade's queue.
+--- Session.status flips to "ended" same as EndSession, which is what
+--- actually locks out further activity and closes every client's Review and
+--- Award/Respond window (both already hide themselves once status isn't
+--- "active" - see AwardWindow.doRefresh/RespondWindow.Refresh) and makes
+--- applyResponse/applyVote drop any late message for this session.
+function LootCouncil.EndSessionEarly()
+    local Session = LootCouncil.CurrentSession;
+    if (not LootCouncil.CanAwardItems()) then return; end
+    if (not Session or Session.status ~= "active") then return; end
+
+    local removedSessions = {};
+    local removedCount = 0;
+    for _, item in ipairs(Session.items) do
+        if (not item.awardedTo) then
+            item.candidates = {};
+            item.preVotes = nil;
+            item.removedEarly = true;
+            removedCount = removedCount + 1;
+            table.insert(removedSessions, item.session);
+        end
+    end
+
+    Session.status = "ended";
+    print(("|cff8865ffForeverLoot|r Session ended. %d unassigned item%s %s not awarded."):format(
+        removedCount, removedCount == 1 and "" or "s", removedCount == 1 and "was" or "were"));
+
+    local ok = pcall(lcSend, "sessionEndEarly", { sessionId = Session.id, removedSessions = removedSessions }, "GROUP");
+    if (not ok) then
+        print("|cff8865ffForeverLoot|r Couldn't broadcast the early session end - other clients may not see it until they relog or a resync happens.");
+    end
+
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+end
+
+--- Applied by every client (leader included, via the self-looped broadcast)
+--- when a sessionEndEarly message arrives - mirrors applySessionEnd's
+--- sessionId/sender/idempotency guards, plus applies the same per-item
+--- removedEarly flagging EndSessionEarly did locally on the leader's client.
+local function applySessionEndEarly(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or not content.sessionId or type(content.removedSessions) ~= "table") then
+        return;
+    end
+
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.id ~= content.sessionId) then return; end -- stale/foreign session
+    if (not Util.iEquals(Message.senderFqn, Session.initiatorFqn)) then return; end
+    if (Session.status ~= "active") then return; end -- already applied (e.g. the leader's own echo)
+
+    for _, itemSession in ipairs(content.removedSessions) do
+        local item = Session.items[itemSession];
+        if (item and not item.awardedTo) then
+            item.candidates = {};
+            item.preVotes = nil;
+            item.removedEarly = true;
+        end
+    end
+    Session.status = "ended";
+
+    lcDebugPrint(("%s ended loot council session %d early (%d unassigned)"):format(
+        Message.senderName, content.sessionId, #content.removedSessions));
+    print(("|cff8865ffForeverLoot|r The loot session was ended by %s."):format(Message.senderName));
+
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+end
+LootCouncil.CommActions.sessionEndEarly = applySessionEndEarly;

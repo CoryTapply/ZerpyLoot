@@ -408,6 +408,15 @@ FL.UI.Sizes = {
                 buttonHeight = 22,
                 buttonGap = 8,
                 buttonWidth = 90,
+
+                -- "End session early" confirm (Step: End Session Early) -
+                -- summary box's counts row + wrapping unassigned-item icon row.
+                endEarlySummaryPadding = 8,
+                endEarlyRowGap = 8, -- counts row -> icon row
+                endEarlyIconSize = 17,
+                endEarlyIconBorderThickness = 1,
+                endEarlyIconGap = 2.5,
+                endEarlyMaxIcons = 12,
             },
         };
     end)(),

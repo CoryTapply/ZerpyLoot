@@ -235,6 +235,10 @@ FL.UI.Colors.responses = {
     -- Grey placeholder pill for Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID
     -- (a candidate row shown before that player has actually responded).
     AWAITING = { color = FL.UI.Colors.muted },
+    -- Dimmer than AWAITING - this player isn't even connected right now.
+    OFFLINE = { color = FL.UI.Colors.disabledText },
+    -- The one non-responder state actually worth flagging to the council.
+    NO_ADDON = { color = FL.UI.Colors.closeButton },
     default = { color = FL.UI.Colors.controlHover },
 };
 

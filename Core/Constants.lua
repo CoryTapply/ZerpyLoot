@@ -71,6 +71,17 @@ end
 Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID = "AWAITING";
 Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID] = "Awaiting";
 
+-- Same synthetic-id convention as AWAITING above, for the two other reasons
+-- a candidate row can be non-responsive: not connected to the game at all,
+-- or connected but never proven (via LootCouncil.Presence) to be running
+-- ForeverLoot. Never sent over comm, never in LOOT_COUNCIL_RESPONSES above,
+-- so Awards.ResponseOrder's math.huge fallback sorts these last too.
+Constants.LOOT_COUNCIL_OFFLINE_RESPONSE_ID = "OFFLINE";
+Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_OFFLINE_RESPONSE_ID] = "Offline";
+
+Constants.LOOT_COUNCIL_NO_ADDON_RESPONSE_ID = "NO_ADDON";
+Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_NO_ADDON_RESPONSE_ID] = "No Addon";
+
 -- Shared "unselected" tint for a response button once its item has moved
 -- into the "Responded" section - every button except the one actually
 -- chosen switches to this grey, so the selection reads clearly at a glance.

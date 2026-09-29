@@ -47,15 +47,16 @@ end
 -- Placeholder candidate handed out below for a group member who hasn't
 -- responded to this item yet - shaped like a real candidate entry (every
 -- field paintRow/EquippedIcons/VoteOrder read) but with an empty/neutral
--- value for each, so the row renders as an unanswered "Awaiting Response"
--- pill instead of nil-erroring. approvals/voteOrder seed from
--- item.preVotes[name] (LootCouncil.lua's getOrCreateCandidate) when the
--- council has already voted for this person before they responded, so
--- those votes show up on the placeholder row instead of looking lost.
-local function awaitingCandidate(item, name)
+-- value for each, so the row renders as an unanswered pill instead of
+-- nil-erroring. approvals/voteOrder seed from item.preVotes[name]
+-- (LootCouncil.lua's getOrCreateCandidate) when the council has already
+-- voted for this person before they responded, so those votes show up on
+-- the placeholder row instead of looking lost.
+---@param statusId string one of the LOOT_COUNCIL_*_RESPONSE_ID synthetic ids
+local function awaitingCandidate(item, name, statusId)
     local preVote = item.preVotes and item.preVotes[name];
     return {
-        response = Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID,
+        response = statusId,
         note = "",
         equipped = {},
         approvals = (preVote and preVote.approvals) or {},
@@ -72,11 +73,12 @@ end
 --- then alphabetically by full name (case-insensitive) as the final
 --- tiebreak. Voting NEVER factors into this order - a row only moves when a
 --- response actually arrives/changes or someone joins/leaves group. Group
---- members who haven't responded yet get a synthetic
---- Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID candidate (awaitingCandidate
---- above); Awards.ResponseOrder returns math.huge for that unrecognized id,
---- which is what sorts every "awaiting" row after every real response
---- without any special-casing here.
+--- members who haven't responded yet get a synthetic placeholder candidate
+--- (awaitingCandidate above) tagged AWAITING, OFFLINE, or NO_ADDON depending
+--- on their connection state and whether LootCouncil.Presence has proven
+--- they're running the addon; Awards.ResponseOrder returns math.huge for all
+--- three unrecognized ids, which is what sorts every such row after every
+--- real response without any special-casing here.
 ---
 --- Class comes from the live roster when the candidate is still in group
 --- (keeps a recent name change/relog's class correct), falling back to
@@ -86,12 +88,23 @@ end
 ---@param item table a LootCouncil.CurrentSession.items[i] entry
 ---@return { name: string, class: string, candidate: table }[]
 function Awards.BuildCandidateList(item)
-    local members = Util.groupMembers();
+    local members, online = Util.groupMembers();
     local out = {};
     local seen = {};
 
     for name, classFile in pairs(members) do
-        local candidate = item.candidates[name] or awaitingCandidate(item, name);
+        local candidate = item.candidates[name];
+        if (not candidate) then
+            -- Offline takes priority over "no addon" - someone who isn't
+            -- connected obviously can't have ack'd anything either.
+            local statusId = Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID;
+            if (online[name] == false) then
+                statusId = Constants.LOOT_COUNCIL_OFFLINE_RESPONSE_ID;
+            elseif (not LootCouncil.HasAddon(name)) then
+                statusId = Constants.LOOT_COUNCIL_NO_ADDON_RESPONSE_ID;
+            end
+            candidate = awaitingCandidate(item, name, statusId);
+        end
         table.insert(out, { name = name, class = classFile or candidate.class, candidate = candidate });
         seen[name] = true;
     end
@@ -231,4 +244,10 @@ end
 --- Ends the current session (leader-only) - see LootCouncil.EndSession.
 function Awards.EndSession()
     LootCouncil.EndSession();
+end
+
+--- Ends the current session early, dropping unassigned items (leader-only) -
+--- see LootCouncil.EndSessionEarly.
+function Awards.EndSessionEarly()
+    LootCouncil.EndSessionEarly();
 end

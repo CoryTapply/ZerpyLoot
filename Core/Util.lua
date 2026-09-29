@@ -138,37 +138,43 @@ Util.FullerName = fullerName;
 -- everyone currently in our group (raid, party, or just ourselves if solo).
 -- The class is false when it isn't known yet, so membership can be tested
 -- with `~= nil` without a missing class hiding the player.
+--
+-- A second map, base-name -> boolean (true == connected), is also returned;
+-- existing callers that only capture the first return value are unaffected.
 function Util.groupMembers()
     local members = {};
-    local function add(name, classFile)
+    local online = {};
+    local function add(name, classFile, isOnline)
         if (name and not Util.isSecret(name)) then
-            members[Util.stripRealm(name)] = classFile or false;
+            local key = Util.stripRealm(name);
+            members[key] = classFile or false;
+            online[key] = isOnline and true or false;
         end
     end
 
     if (IsInRaid()) then
         for i = 1, GetNumGroupMembers() do
-            local name, _, _, _, _, classFile = GetRaidRosterInfo(i);
+            local name, _, _, _, _, classFile, _, isOnline = GetRaidRosterInfo(i);
             local unit = "raid" .. i;
             if (UnitExists(unit)) then
                 name = fullerName(name, Util.UnitName(unit));
             end
-            add(name, classFile);
+            add(name, classFile, isOnline);
         end
     elseif (IsInGroup()) then
-        add(Util.UnitName("player"), select(2, UnitClass("player")));
+        add(Util.UnitName("player"), select(2, UnitClass("player")), true);
 
         for i = 1, (GetNumGroupMembers() or 1) - 1 do
             local unit = "party" .. i;
             if (UnitExists(unit)) then
-                add(Util.UnitName(unit), select(2, UnitClass(unit)));
+                add(Util.UnitName(unit), select(2, UnitClass(unit)), UnitIsConnected(unit));
             end
         end
     else
-        add(Util.UnitName("player"), select(2, UnitClass("player")));
+        add(Util.UnitName("player"), select(2, UnitClass("player")), true);
     end
 
-    return members;
+    return members, online;
 end
 
 -- Finds `name` in a groupMembers() map: the full name first, then any

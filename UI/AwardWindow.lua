@@ -18,6 +18,7 @@ local Theme = FL.Theme;
 local Pixel = FL.Pixel;
 local Colors = FL.UI.Colors;
 local Sizes = FL.UI.Sizes.award;
+local RootSizes = FL.UI.Sizes;
 local SharedLayout = FL.UI.Sizes.layout;
 local SetFont = FL.UI.SetFont;
 local Skin = FL.UI.Skin;
@@ -36,6 +37,10 @@ local DISENCHANT_ICON_ATLAS = "lootroll-toast-icon-disenchant-up";
 local DISENCHANT_TOOLTIP_TEXT = "Disenchant";
 local MOUSE_MIDDLE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\MouseMiddleClick";
 local CROWN_TEXTURE = "Interface\\GroupFrame\\UI-Group-LeaderIcon";
+-- Same trash icon TradeQueueWindow.lua/Theme/Helpers.lua's CreateDeleteButton
+-- already use everywhere else a row can be removed - reused as-is, not a new
+-- texture, for the title bar's "End session early" button below.
+local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
 local LEADER_ONLY_TEXT = "Only the loot council session leader can award this item.";
 local DISENCHANT_RECIPIENT = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
 
@@ -48,6 +53,7 @@ local REFRESH_THROTTLE = 0.1;
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition).
 local frame;
+local endEarlyButton;
 local itemPanel, itemCountText, progressTrack, progressFill, unassignedLabel, assignedLabel;
 local leftScroll, leftScrollChild;
 local gridIcons = {};
@@ -118,6 +124,7 @@ end
 
 local doRefresh, selectItem, ShowPopup, HidePopup, ConfirmPopup, QuickAssignRaider, updateRightScrollChildWidth
 local ShowEndSessionPopup, ConfirmEndSession
+local ShowEndSessionEarlyPopup, ConfirmEndSessionEarly
 
 --------------------------------------------------------------------------
 -- Title bar
@@ -156,6 +163,51 @@ local function createTitleBar()
         FL.NotifyWindowClosed("Award");
         frame:Hide();
     end);
+
+    -- Leader-only "End session early" - shown/hidden per-refresh in
+    -- paintFooterPermissions (same Awards.CanAwardItems() gate as every other
+    -- leader-only control in this window). Built by hand rather than through
+    -- Skin.Button/Skin.CloseButton since neither's hover look matches this
+    -- button's own spec (a distinct red hover on top of a non-close resting
+    -- style) - closest existing cousin is TradeQueueWindow's own row trash
+    -- button, which this mirrors in spirit (flat backdrop + trash icon +
+    -- hover recolor) without sharing code, since that one has no window-chrome
+    -- concerns (positioning against the close button, tooltip, etc.) this one
+    -- does.
+    endEarlyButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
+    endEarlyButton:SetSize(RootSizes.controls.close, RootSizes.controls.close);
+    endEarlyButton:SetPoint("TOPRIGHT", closeButton, "TOPLEFT", -6, 0);
+    endEarlyButton:RegisterForClicks("LeftButtonUp");
+    Theme.Helpers.SetFlatBackdrop(endEarlyButton, Colors.defaultBg, Colors.checkboxBorder, 1);
+
+    -- Same 0.7x icon-to-button ratio TradeQueueWindow's own trash button uses
+    -- (Sizes.trashButtonSize 20 -> icon 14) - both buttons are the same 20px
+    -- size here too, so this comes out to the identical 14px icon.
+    local endEarlyIconSize = math.floor(RootSizes.controls.close * 0.7 + 0.5);
+    endEarlyButton.icon = endEarlyButton:CreateTexture(nil, "ARTWORK");
+    endEarlyButton.icon:SetSize(endEarlyIconSize, endEarlyIconSize);
+    endEarlyButton.icon:SetPoint("CENTER");
+    endEarlyButton.icon:SetTexture(DELETE_ICON_TEXTURE);
+    endEarlyButton.icon:SetVertexColor(unpack(Colors.description));
+
+    endEarlyButton:HookScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.skinCloseBorder));
+        self.icon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT");
+        GameTooltip:AddLine("End session early", 1, 1, 1);
+        GameTooltip:AddLine("For when something went wrong.", unpack(Colors.muted));
+        GameTooltip:Show();
+    end);
+    endEarlyButton:HookScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.checkboxBorder));
+        self.icon:SetVertexColor(unpack(Colors.description));
+        GameTooltip:Hide();
+    end);
+    endEarlyButton:SetScript("OnClick", function()
+        if (not Awards.CanAwardItems()) then return; end
+        ShowEndSessionEarlyPopup();
+    end);
+    endEarlyButton:Hide(); -- shown per-refresh once a session/leader state actually exists
 
     return titleBar;
 end
@@ -957,6 +1009,53 @@ local function ensurePopup()
     popupDialog.leftRaidText:SetWidth(p.width - p.padding * 2);
     popupDialog.leftRaidText:SetJustifyH("LEFT");
     popupDialog.leftRaidText:Hide();
+
+    ----------------------------------------------------------------------
+    -- End-session-early summary box: "<assigned> of <total> assigned" /
+    -- "<n> never awarded" counts row, plus a wrapping row of the unassigned
+    -- items' own icons (built by ShowEndSessionEarlyPopup below).
+    ----------------------------------------------------------------------
+    popupDialog.endEarlySummary = CreateFrame("Frame", nil, popupDialog, "BackdropTemplate");
+    Skin.Backdrop(popupDialog.endEarlySummary, Colors.sessionListBg, Colors.memberBorder);
+
+    popupDialog.endEarlyCountsText = popupDialog.endEarlySummary:CreateFontString(nil, "OVERLAY");
+    SetFont(popupDialog.endEarlyCountsText, "small");
+    popupDialog.endEarlyCountsText:SetTextColor(unpack(Colors.description));
+    popupDialog.endEarlyCountsText:SetJustifyH("LEFT");
+    popupDialog.endEarlyCountsText:SetWordWrap(false);
+
+    popupDialog.endEarlyNeverText = popupDialog.endEarlySummary:CreateFontString(nil, "OVERLAY");
+    SetFont(popupDialog.endEarlyNeverText, "small");
+    popupDialog.endEarlyNeverText:SetTextColor(unpack(Colors.muted));
+    popupDialog.endEarlyNeverText:SetJustifyH("RIGHT");
+    popupDialog.endEarlyNeverText:SetWordWrap(false);
+
+    popupDialog.endEarlyIcons = {};
+    for i = 1, p.endEarlyMaxIcons do
+        local icon = CreateFrame("Frame", nil, popupDialog.endEarlySummary, "BackdropTemplate");
+        icon:SetSize(p.endEarlyIconSize, p.endEarlyIconSize);
+        local bt = p.endEarlyIconBorderThickness;
+        icon.tex = icon:CreateTexture(nil, "ARTWORK");
+        icon.tex:SetPoint("TOPLEFT", icon, "TOPLEFT", bt, -bt);
+        icon.tex:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -bt, bt);
+        icon.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92);
+        Theme.Helpers.SetFlatBackdrop(icon, nil, Colors.transparent, bt);
+        icon:EnableMouse(true);
+        icon:HookScript("OnEnter", function(self)
+            if (not self.itemLink) then return; end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            GameTooltip:SetHyperlink(self.itemLink);
+            GameTooltip:Show();
+        end);
+        icon:HookScript("OnLeave", function() GameTooltip:Hide(); end);
+        icon:Hide();
+        popupDialog.endEarlyIcons[i] = icon;
+    end
+
+    popupDialog.endEarlyMoreText = popupDialog.endEarlySummary:CreateFontString(nil, "OVERLAY");
+    SetFont(popupDialog.endEarlyMoreText, "small");
+    popupDialog.endEarlyMoreText:SetTextColor(unpack(Colors.muted));
+    popupDialog.endEarlyMoreText:Hide();
 end
 
 function HidePopup()
@@ -1001,10 +1100,20 @@ function ShowPopup(item, entry)
     popupState = { item = item, entry = entry, mode = isReassign and "reassign" or "assign", awardCountAtOpen = item.awardCount or 0 };
 
     popupDialog.title:SetText(isReassign and "Reassign item?" or "Assign item?");
+    -- Every button role reverts to its own conventional look here - a prior
+    -- End Session Early open (see ShowEndSessionEarlyPopup below) swaps both
+    -- buttons' variants and overrides confirmButton's text color, since this
+    -- whole popup/dialog/button trio is one shared singleton across every
+    -- mode.
+    Skin.SetButtonVariant(popup.cancelButton, "default");
+    Skin.SetButtonVariant(popup.confirmButton, "primary");
     -- onCancel is the window's own HidePopup (not just popup:Hide()) so a
     -- dismiss via Cancel/Escape/scrim-click also clears popupState - onConfirm
     -- is ConfirmPopup, which already calls HidePopup itself before awarding.
     popup:SetButtons("Cancel", isReassign and "Reassign" or "Assign", ConfirmPopup, HidePopup);
+    popupDialog.endEarlySummary:Hide();
+    -- The End Session popups hide the summary box; this mode must re-show it.
+    popupDialog.summary:Show();
 
     local quality = Util.GetItemQuality(item.itemLink);
     local qr, qg, qb = Util.GetItemQualityColor(quality);
@@ -1112,11 +1221,16 @@ function ShowEndSessionPopup()
     popupState = { mode = "endSession" };
 
     popupDialog.title:SetText("End session?");
+    -- See ShowPopup's own reset comment above - this popup/dialog/button trio
+    -- is a shared singleton, so every mode reasserts its own button look.
+    Skin.SetButtonVariant(popup.cancelButton, "default");
+    Skin.SetButtonVariant(popup.confirmButton, "primary");
     popup:SetButtons("Cancel", "End Session", ConfirmEndSession, HidePopup);
 
     popupDialog.summary:Hide();
     popupDialog.noteText:Hide();
     popupDialog.leftRaidText:Hide();
+    popupDialog.endEarlySummary:Hide();
     popupDialog.warningText:SetText(
         "This ends the loot council session for everyone. Any remaining unassigned items stay unassigned, and this window can't be reopened once it's ended."
     );
@@ -1132,6 +1246,157 @@ function ShowEndSessionPopup()
 
         return y;
     end);
+end
+
+--------------------------------------------------------------------------
+-- End session EARLY confirmation - same Skin.ConfirmPopup controller and
+-- warning-box styling as End Session above, but reachable at any point (see
+-- the title bar's endEarlyButton) rather than only once every item is
+-- assigned, so it carries its own richer content: an assigned/unassigned
+-- count + the unassigned items' own icons, ahead of the warning box.
+--
+-- Button roles are intentionally inverted from every other popup in this
+-- file: Skin.ConfirmPopup always wires Escape/scrim-click to the CANCEL
+-- button's own action (see ConfirmPopupMethods' OnKeyDown/scrim OnMouseUp),
+-- and the spec requires Escape to keep the session running - so "Keep
+-- Session" has to BE the cancel button (gold/primary-styled here to read as
+-- the safe default choice) while "End Session" takes the confirm button's
+-- slot (default-styled, red text) even though that puts the destructive
+-- action on Enter. That mirrors ShowEndSessionPopup's own existing
+-- End-Session-on-Enter convention above, just with Keep Session now also
+-- getting Escape.
+--------------------------------------------------------------------------
+
+function ConfirmEndSessionEarly()
+    if (not popupState or popupState.mode ~= "endSessionEarly") then return; end
+    HidePopup();
+    Awards.EndSessionEarly();
+end
+
+function ShowEndSessionEarlyPopup()
+    -- Closes any already-open Assign/Reassign confirm (reachable while this
+    -- window's title bar - unlike its item list/main panel - stays clickable
+    -- under that popup's own scrim, see Skin.ConfirmPopup's scrimTopInset).
+    HidePopup();
+    ensurePopup();
+
+    local Session = getSession();
+    if (not Session) then return; end
+
+    local p = Sizes.popup;
+    local popupDialog = popup.dialog;
+    local unassigned, _, assignedCount, totalCount = Awards.PartitionItems(Session);
+    popupState = { mode = "endSessionEarly" };
+
+    popupDialog.title:SetText("End this session early?");
+
+    Skin.SetButtonVariant(popup.cancelButton, "primary");
+    Skin.SetButtonVariant(popup.confirmButton, "default");
+    -- cancelButton/onCancel = "Keep Session" (Escape/scrim-click/click all
+    -- route through it - see the comment above), confirmButton/onConfirm =
+    -- "End Session".
+    popup:SetButtons("Keep Session", "End Session", ConfirmEndSessionEarly, HidePopup);
+
+    popupDialog.summary:Hide();
+    popupDialog.noteText:Hide();
+    popupDialog.leftRaidText:Hide();
+
+    popupDialog.endEarlyCountsText:SetText(("|cff%s%d|r of %d items assigned"):format(hex(Colors.gold), assignedCount, totalCount));
+    popupDialog.endEarlyCountsText:ClearAllPoints();
+    popupDialog.endEarlyCountsText:SetPoint("TOPLEFT", popupDialog.endEarlySummary, "TOPLEFT", p.endEarlySummaryPadding, -p.endEarlySummaryPadding);
+
+    popupDialog.endEarlyNeverText:SetText(("%d never awarded"):format(#unassigned));
+    popupDialog.endEarlyNeverText:ClearAllPoints();
+    popupDialog.endEarlyNeverText:SetPoint("TOPRIGHT", popupDialog.endEarlySummary, "TOPRIGHT", -p.endEarlySummaryPadding, -p.endEarlySummaryPadding);
+
+    local countsHeight = math.max(popupDialog.endEarlyCountsText:GetStringHeight(), popupDialog.endEarlyNeverText:GetStringHeight());
+
+    -- Wrapping icon grid, laid out the same top-down col/row way
+    -- paintItemPanel's own layoutGrid does, just with a column count derived
+    -- from this popup's fixed width instead of a hardcoded constant (that
+    -- window's item panel has its own fixed pixel width too, its gridColumns
+    -- is just precomputed by hand instead - see UI/Sizes.lua's comment there).
+    local showIconRow = #unassigned > 0;
+    local iconRowHeight = 0;
+    if (showIconRow) then
+        local availWidth = p.width - p.padding * 2 - p.endEarlySummaryPadding * 2;
+        local step = p.endEarlyIconSize + p.endEarlyIconGap;
+        local columns = math.max(1, math.floor((availWidth + p.endEarlyIconGap) / step));
+        local shownCount = math.min(#unassigned, p.endEarlyMaxIcons);
+        local extra = #unassigned - shownCount;
+        local totalSlots = shownCount + (extra > 0 and 1 or 0); -- "+N more" occupies a trailing slot
+        local rows = math.max(1, math.ceil(totalSlots / columns));
+        iconRowHeight = p.endEarlyRowGap + rows * p.endEarlyIconSize + (rows - 1) * p.endEarlyIconGap;
+
+        local rowTop = -(p.endEarlySummaryPadding + countsHeight + p.endEarlyRowGap);
+        for i = 1, shownCount do
+            local item = unassigned[i];
+            local icon = popupDialog.endEarlyIcons[i];
+            local col = (i - 1) % columns;
+            local row = math.floor((i - 1) / columns);
+            icon:ClearAllPoints();
+            icon:SetPoint("TOPLEFT", popupDialog.endEarlySummary, "TOPLEFT",
+                p.endEarlySummaryPadding + col * step, rowTop - row * (p.endEarlyIconSize + p.endEarlyIconGap));
+            local quality = Util.GetItemQuality(item.itemLink);
+            local qr, qg, qb = Util.GetItemQualityColor(quality);
+            icon.tex:SetTexture(itemIcon(item));
+            icon:SetBackdropBorderColor(qr or 0.6, qg or 0.6, qb or 0.6);
+            icon.itemLink = item.itemLink;
+            icon:Show();
+        end
+        for i = shownCount + 1, p.endEarlyMaxIcons do
+            popupDialog.endEarlyIcons[i]:Hide();
+            popupDialog.endEarlyIcons[i].itemLink = nil;
+        end
+
+        if (extra > 0) then
+            local slot = shownCount; -- 0-based - the cell right after the last shown icon
+            local col = slot % columns;
+            local row = math.floor(slot / columns);
+            popupDialog.endEarlyMoreText:SetText(("+%d more"):format(extra));
+            popupDialog.endEarlyMoreText:ClearAllPoints();
+            popupDialog.endEarlyMoreText:SetPoint("LEFT", popupDialog.endEarlySummary, "TOPLEFT",
+                p.endEarlySummaryPadding + col * step, rowTop - row * (p.endEarlyIconSize + p.endEarlyIconGap) - p.endEarlyIconSize / 2);
+            popupDialog.endEarlyMoreText:Show();
+        else
+            popupDialog.endEarlyMoreText:Hide();
+        end
+    else
+        for i = 1, p.endEarlyMaxIcons do
+            popupDialog.endEarlyIcons[i]:Hide();
+            popupDialog.endEarlyIcons[i].itemLink = nil;
+        end
+        popupDialog.endEarlyMoreText:Hide();
+    end
+
+    popupDialog.warningText:SetText(
+        "Unassigned items stay in your bags and leave the session. Everyone's Review & Vote window closes and their votes are discarded. Items already assigned stay in the trade queue."
+    );
+
+    popup:Show(function(dialog, y)
+        local summaryHeight = p.endEarlySummaryPadding * 2 + countsHeight + iconRowHeight;
+        popupDialog.endEarlySummary:SetHeight(summaryHeight);
+        popupDialog.endEarlySummary:ClearAllPoints();
+        popupDialog.endEarlySummary:SetPoint("TOPLEFT", dialog, "TOPLEFT", p.padding, y);
+        popupDialog.endEarlySummary:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -p.padding, y);
+        popupDialog.endEarlySummary:Show();
+        y = y - summaryHeight - p.sectionGap;
+
+        popupDialog.warningBox:ClearAllPoints();
+        popupDialog.warningBox:SetPoint("TOPLEFT", dialog, "TOPLEFT", p.padding, y);
+        popupDialog.warningBox:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -p.padding, y);
+        local textHeight = popupDialog.warningText:GetStringHeight();
+        popupDialog.warningBox:SetHeight(math.max(p.warningIconSize, textHeight) + p.warningPadding * 2);
+        popupDialog.warningBox:Show();
+        y = y - popupDialog.warningBox:GetHeight() - p.sectionGap;
+
+        return y;
+    end);
+
+    -- Set after Show() (which unconditionally re-enables confirmButton, and
+    -- so would re-fire OnEnable -> applyEnabled -> reset this back to the
+    -- "default" variant's own text color if set any earlier).
+    popup.confirmButton.text:SetTextColor(unpack(Colors.awardWarningIcon));
 end
 
 --------------------------------------------------------------------------
@@ -1309,6 +1574,7 @@ local function paintFooterPermissions()
     footerMiddleHintText:SetShown(canAward);
     footerMiddleHintText:SetText("Middle-click to quick assign");
     jumpCheckboxRow.frame:SetShown(canAward);
+    endEarlyButton:SetShown(canAward);
 end
 
 doRefresh = function()
@@ -1379,11 +1645,12 @@ doRefresh = function()
     -- If an award for this exact item arrived (from any client, including
     -- this one via a different row) while the popup was open, close it and
     -- let the fresh table speak for itself. Otherwise re-run the popup's own
-    -- layout so its "still in the raid" check and vote count stay live. The
-    -- End Session popup has no per-item data to resync against, so it just
-    -- stays open until Cancel/Confirm (or the status-guard above hides the
-    -- whole window once it's actually ended).
-    if (popupState and popupState.mode ~= "endSession") then
+    -- layout so its "still in the raid" check and vote count stay live. Only
+    -- assign/reassign popupState carries an .item to resync against - the
+    -- End Session and End Session Early popups have no per-item data, so they
+    -- just stay open until Cancel/Confirm (or the status-guard above hides
+    -- the whole window once the session's actually ended).
+    if (popupState and (popupState.mode == "assign" or popupState.mode == "reassign")) then
         local currentAwardCount = popupState.item.awardCount or 0;
         if (currentAwardCount ~= popupState.awardCountAtOpen) then
             HidePopup();
