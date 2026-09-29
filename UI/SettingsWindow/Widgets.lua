@@ -15,7 +15,13 @@ local Skin = FL.UI.Skin;
 local Widgets = {};
 FL.UI.SettingsWidgets = Widgets;
 
-local COLUMN_GAP = 30;
+-- Exposed on Widgets (not just a private local) so a page that hand-builds
+-- its own 2-column layout without page:Section() (e.g. LootResponses.lua's
+-- Preview block, which needs a full-width row Section() can't produce) can
+-- still line its own columns up with every Section()-based page's, off the
+-- same source of truth.
+Widgets.COLUMN_GAP = 30;
+local COLUMN_GAP = Widgets.COLUMN_GAP;
 local SECTION_GAP = Sizes.layout.sectionGap;
 -- Also the section heading rule -> first row gap (PageMethods:Section) -
 -- see Sizes.lua's own comment on rowGap.

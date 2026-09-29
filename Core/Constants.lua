@@ -35,29 +35,15 @@ Constants.DEFAULT_BRACKETS = {
     { "OS", 1, 99, 3, true, false },
 };
 
--- Loot council response options (Phase 3). This project's own dedicated
--- "ForeverLootLC" comm prefix uses plain string ids, not Gargul's numeric
--- action ids, so a simple ordered array is enough - order here is also the
--- button display order in UI/RespondWindow.lua.
---
--- `color` ({ r, g, b }, no alpha - each skin decides how strongly to apply
--- it) is a placeholder pick, one per response, purely so each response
--- button is visually distinct at a glance - not yet user-configurable. A
--- later options-panel phase is expected to let the user override these same
--- fields rather than replace this table's shape.
-Constants.LOOT_COUNCIL_RESPONSES = {
-    { id = "MAJOR",   label = "Major",   color = { 0.80, 0.20, 0.20 } }, -- red
-    { id = "MINOR",   label = "Minor",   color = { 0.85, 0.55, 0.15 } }, -- orange
-    { id = "OFFSPEC", label = "Offspec", color = { 0.20, 0.45, 0.80 } }, -- blue
-    { id = "MOG",     label = "Transmog", color = { 0.65, 0.30, 0.80 } }, -- purple
-    { id = "PASS",    label = "Pass",    color = { 0.25, 0.70, 0.30 } }, -- green
-};
-
--- Reverse lookup: response id -> label, same convention as ActionNames above.
+-- Loot council response options are now user-configurable - see
+-- Core/Responses.lua (FL.Responses), which owns the leader's live list
+-- (FL.DB.responses.list), the session snapshot broadcast at session start,
+-- and the id-less {label,color,kind} copy written into history. The ids
+-- below are NOT part of that configurable list - they're synthetic,
+-- non-real response ids used only for candidates who haven't answered (or
+-- can't) this item's prompt, so they still need a label lookup table of
+-- their own.
 Constants.LOOT_COUNCIL_RESPONSE_LABELS = {};
-for _, entry in ipairs(Constants.LOOT_COUNCIL_RESPONSES) do
-    Constants.LOOT_COUNCIL_RESPONSE_LABELS[entry.id] = entry.label;
-end
 
 -- Synthetic response id for the Award window's placeholder row shown for a
 -- party/raid member who hasn't answered this item's prompt yet. Deliberately
@@ -74,8 +60,9 @@ Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_AWAITING_RESPONSE_
 -- Same synthetic-id convention as AWAITING above, for the two other reasons
 -- a candidate row can be non-responsive: not connected to the game at all,
 -- or connected but never proven (via LootCouncil.Presence) to be running
--- ForeverLoot. Never sent over comm, never in LOOT_COUNCIL_RESPONSES above,
--- so Awards.ResponseOrder's math.huge fallback sorts these last too.
+-- ForeverLoot. Never sent over comm, never part of a session's real response
+-- snapshot (Core/Responses.lua), so Awards.ResponseOrder's math.huge
+-- fallback sorts these last too.
 Constants.LOOT_COUNCIL_OFFLINE_RESPONSE_ID = "OFFLINE";
 Constants.LOOT_COUNCIL_RESPONSE_LABELS[Constants.LOOT_COUNCIL_OFFLINE_RESPONSE_ID] = "Offline";
 

@@ -26,6 +26,7 @@ FL.UI.Sizes = {
         -- one size down from `small`, per the item-anatomy spec those two
         -- share.
         helper        = 9,
+        smaller       = 8, -- two sizes down from `small`; AwardWindow response-pill label's last shrink step before it ellipsizes
         tiny          = 7.5, -- RespondWindow note popover's "Enter to save" hint
 
         -- Every other Theme.fonts object's point size (unchanged values,
@@ -220,6 +221,12 @@ FL.UI.Sizes = {
         cardSectionGap = 6,
         shadowInset = 6,
         scrollMaxHeightPct = 0.60,
+        -- Card/header/toggle-bar width never exceeds this fraction of
+        -- UIParent's width, however wide the session's response list's
+        -- labels naturally want to be (see RespondWindow.lua's
+        -- updateCardWidthForSession) - same idiom as scrollMaxHeightPct
+        -- above, just for width instead of height.
+        cardWidthMaxPct = 0.60,
 
         headerHeight = 26,
         headerCloseSize = 18,
@@ -247,14 +254,13 @@ FL.UI.Sizes = {
         buttonGap = 4,
         buttonDotSize = 6,
         buttonDotLabelGap = 4,
-        maxResponseButtons = 7, -- pool size per card; today's Constants table has 5
 
         -- Button-row redesign: Note button + icon-only Transmog/Pass buttons,
         -- and the shared note popover (UI/RespondWindow.lua).
         noteButtonWidth = 19,
         iconButtonWidth = 26, -- Transmog/Pass width, both share this
         noteIconSize = 11, -- NoteIcon/NoteIconBadge layer size (stacked, centered)
-        responseIconSize = 12.5, -- Transmog/Pass atlas icon size
+        responseIconSize = 15, -- Transmog/Pass atlas icon size
 
         popoverPadding = 5,
         popoverRowGap = 5,
@@ -315,7 +321,7 @@ FL.UI.Sizes = {
 
         local padX = 14;
         local rowPadX = 8; -- horizontal inset of row/column-header content from its own row's edges (distinct from padX, the mainPanel's own outer margin)
-        local colPlayer, colEquipped, colResponse, colVotes, colVoteBtn = 130, 54, 76, 46, 26;
+        local colPlayer, colEquipped, colResponse, colVotes, colVoteBtn = 130, 54, 86, 46, 26;
         local colGap = 8;
         local colNote = mainPanelWidth - padX * 2 - rowPadX * 2
             - (colPlayer + colEquipped + colResponse + colVotes + colVoteBtn) - colGap * 5;

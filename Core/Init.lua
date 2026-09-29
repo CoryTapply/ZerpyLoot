@@ -10,6 +10,7 @@ FL.name = "ForeverLoot";
 -- Sub-namespaces populated by their respective files
 FL.Constants = FL.Constants or {};
 FL.Util = FL.Util or {};
+FL.Responses = FL.Responses or {};
 FL.Comm = FL.Comm or {};
 FL.RollTracker = FL.RollTracker or {};
 FL.RollSession = FL.RollSession or {};
@@ -33,6 +34,7 @@ FL.UI.AutoRollPopup = FL.UI.AutoRollPopup or {};
 FL.UI.SoftResImportWindow = FL.UI.SoftResImportWindow or {};
 FL.UI.TradeQueueWindow = FL.UI.TradeQueueWindow or {};
 FL.UI.StartSessionWindow = FL.UI.StartSessionWindow or {};
+FL.UI.ResponseRow = FL.UI.ResponseRow or {};
 FL.UI.RespondWindow = FL.UI.RespondWindow or {};
 FL.UI.AwardWindow = FL.UI.AwardWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
@@ -52,6 +54,7 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
         -- every module after it from loading.
         local modules = {
             { "Settings", FL.Settings },
+            { "Responses", FL.Responses },
             { "Comm", FL.Comm },
             { "RollTracker", FL.RollTracker },
             { "GroupLootRoll", FL.GroupLootRoll },

@@ -410,6 +410,17 @@ local function applySessionStart(Message)
         applyRosterNames(content.names);
     end
 
+    -- The leader's response-button list at the moment the session started
+    -- (Core/Responses.lua's SessionSnapshot) - every raider's Respond popup
+    -- and every Review & Vote pill for this session reads ONLY from this
+    -- snapshot from here on, never from this client's own local settings.
+    -- Falls back to the defaults for a leader running a version that
+    -- doesn't send this field yet, rather than leaving the session with no
+    -- response options at all.
+    local responses = (type(content.responses) == "table" and #content.responses > 0)
+        and content.responses
+        or FL.Responses.CloneList(FL.Responses.DEFAULT_LIST);
+
     local items = {};
     for i, itemLink in ipairs(content.items) do
         local itemID = Util.itemIDFromLink(itemLink);
@@ -445,6 +456,7 @@ local function applySessionStart(Message)
         startedAt = GetTime(),
         status = "active",
         items = items,
+        responses = responses,
     };
     LootCouncil.CurrentSession = FL.DB.lootCouncil.session;
 
@@ -499,7 +511,12 @@ function LootCouncil.SendToRaid()
         itemLinks[i] = draftItem.itemLink;
     end
 
-    lcSend("sessionStart", { sessionId = nextSessionId, items = itemLinks, names = LootCouncil.RosterNames() }, "GROUP");
+    lcSend("sessionStart", {
+        sessionId = nextSessionId,
+        items = itemLinks,
+        names = LootCouncil.RosterNames(),
+        responses = FL.Responses.SessionSnapshot(),
+    }, "GROUP");
 
     return true;
 end
@@ -590,14 +607,14 @@ local nextArrivalIndex = 0;
 --- "Failed to send" and sort the item to the bottom of the pending list
 --- instead of leaving it looking answered.
 ---@param itemSession number
----@param responseId string one of Constants.LOOT_COUNCIL_RESPONSES ids
+---@param responseId number one of the current SESSION's response snapshot ids (Session.responses)
 ---@param note string|nil
 function LootCouncil.SubmitResponse(itemSession, responseId, note)
     local Session = LootCouncil.CurrentSession;
     if (not Session or Session.status ~= "active") then return; end
     local item = Session.items[itemSession];
     if (not item) then return; end
-    if (not FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[responseId]) then return; end
+    if (not Session.responses or not FL.Responses.GetById(Session.responses, responseId)) then return; end
 
     local myName = Util.stripRealm(Util.UnitName("player"));
     local _, classFile = UnitClass("player");
@@ -884,10 +901,21 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         if (entry.id == id) then return; end -- this exact award already recorded
     end
 
+    -- Ids aren't stable between sessions (Core/Responses.lua), so history
+    -- never stores a response id - only an immutable {label,color,kind}
+    -- copy resolved from THIS session's own response snapshot, taken at the
+    -- moment of the award. A later rename/recolor/delete in settings (or
+    -- even a whole new session reusing the same id for something else) can
+    -- never change what a past award's history entry shows. The literal
+    -- fallback below only fires for a genuinely unresolvable id (e.g. a
+    -- session with no response snapshot at all, from before this feature
+    -- existed).
     local responses = {};
     for name, candidate in pairs(item.candidates) do
+        local responseCopy = FL.Responses.HistoryCopy(Session.responses, candidate.response)
+            or { label = tostring(candidate.response), color = "8a8176", kind = "text" };
         responses[name] = {
-            response = candidate.response,
+            response = responseCopy,
             note = candidate.note,
             votes = Util.tcount(candidate.approvals),
         };
@@ -958,7 +986,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
     local queueEntry = {
         itemLink = item.itemLink, itemIcon = item.itemIcon, itemID = item.itemID,
         winner = playerName, rollOffId = councilAwardId, rollAmount = nil,
-        classification = candidate and FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[candidate.response],
+        classification = candidate and FL.Awards.ResponseLabel(candidate.response),
         winnerClass = candidate and candidate.class,
     };
     FL.Trade.QueueAdd(queueEntry);

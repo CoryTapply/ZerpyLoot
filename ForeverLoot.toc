@@ -20,6 +20,7 @@ Libs\LibSerialize\LibSerialize.lua
 Core\Init.lua
 Core\Constants.lua
 Core\Util.lua
+Core\Responses.lua
 Core\WindowReopenLinks.lua
 Core\PixelPerfect.lua
 Core\Settings.lua
@@ -60,10 +61,12 @@ UI\SettingsWindow\Widgets.lua
 UI\SettingsWindow\ItemListEditor.lua
 UI\SettingsWindow\Registry.lua
 UI\SettingsWindow\Init.lua
+UI\ResponseRow.lua
 UI\SettingsWindow\Pages\General.lua
 UI\SettingsWindow\Pages\Appearance.lua
 UI\SettingsWindow\Pages\LootRolls.lua
 UI\SettingsWindow\Pages\LootCouncil.lua
+UI\SettingsWindow\Pages\LootResponses.lua
 UI\SettingsWindow\Pages\Announcements.lua
 UI\SettingsWindow\Pages\Profiles.lua
 UI\SettingsWindow\Pages\About.lua

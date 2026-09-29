@@ -395,21 +395,31 @@ end
 --- runtime, e.g. "Sync to Raid" going gold while a roster change is pending)
 --- can recompute the same colors without re-running Skin.Button's one-time
 --- setup (which would stack duplicate HookScript handlers).
+-- "danger" - a red-text confirm button (e.g. the "Reset" side of a
+-- destructive confirm popup) - keeps the same neutral bg/border/hover chrome
+-- as "default", only the label and hover border read as a warning, so it
+-- doesn't need its own bg/border color tokens.
 local function computeButtonVariant(variant)
     local isPrimary = (variant == "primary");
+    local isDanger = (variant == "danger");
     local bg = isPrimary and Colors.primaryBg or Colors.defaultBg;
     return {
         bg = bg,
         border = isPrimary and Colors.primaryBorder or Colors.checkboxBorder,
-        hoverBorder = isPrimary and Colors.gold or Colors.controlHover,
-        textColor = isPrimary and Colors.gold or Colors.textBright,
+        hoverBorder = isPrimary and Colors.gold or (isDanger and Colors.lrErrorFlash or Colors.controlHover),
+        textColor = isPrimary and Colors.gold or (isDanger and Colors.lrResetConfirmText or Colors.textBright),
         pressedBg = isPrimary and Colors.primaryPressed or bg,
     };
 end
 
+local function normalizeButtonVariant(variant)
+    if (variant == "primary" or variant == "danger") then return variant; end
+    return "default";
+end
+
 function Skin.Button(button, variant)
     stripButtonArt(button);
-    button.skinVariant = computeButtonVariant((variant == "primary") and "primary" or "default");
+    button.skinVariant = computeButtonVariant(normalizeButtonVariant(variant));
 
     if (not button.text) then
         local text = button:CreateFontString(nil, "OVERLAY");
@@ -464,9 +474,9 @@ end
 --- current enabled/disabled state immediately so the new colors show right
 --- away rather than waiting for the next OnEnable/OnDisable.
 ---@param button Frame a button previously passed through Skin.Button
----@param variant string|nil "default"|"primary"
+---@param variant string|nil "default"|"primary"|"danger"
 function Skin.SetButtonVariant(button, variant)
-    button.skinVariant = computeButtonVariant((variant == "primary") and "primary" or "default");
+    button.skinVariant = computeButtonVariant(normalizeButtonVariant(variant));
     if (button:IsEnabled()) then button.applyEnabled(); else button.applyDisabled(); end
 end
 
@@ -1054,6 +1064,492 @@ function Skin.Pill(pill)
     function pill:SetPillFillColor(r, g, b)
         for _, tex in ipairs(self.fill) do tex:SetVertexColor(r, g, b); end
     end
+end
+
+--- Sets a response pill's label text so it fits within `maxWidth`, shared by
+--- UI/AwardWindow.lua's roster-row pills and UI/SettingsWindow/Pages/
+--- LootResponses.lua's "COUNCIL SEES" preview pills so a renamed response
+--- label degrades identically in both places. Response labels are free text,
+--- so they can outgrow a pill sized to the award window's fixed response
+--- column; try "small" (the normal pill-label size), then step down through
+--- "helper" and "smaller" (Sizes.fonts: one and two sizes below "small"), and
+--- only ellipsize - at that smallest size - if it still doesn't fit.
+function Skin.FitPillLabel(fontString, text, maxWidth)
+    for _, sizeKey in ipairs({ "small", "helper", "smaller" }) do
+        SetFont(fontString, sizeKey);
+        fontString:SetText(text);
+        if (fontString:GetStringWidth() <= maxWidth or text == "") then return; end
+    end
+
+    while (fontString:GetStringWidth() > maxWidth and #text > 1) do
+        text = text:sub(1, -2);
+        fontString:SetText(text .. "...");
+    end
+end
+
+--------------------------------------------------------------------------
+-- UI/SettingsWindow/Pages/LootResponses.lua's row controls - built as real
+-- Skin.* helpers (not page-local one-offs) per that page's own design: every
+-- piece marked NEW there is meant to be reusable.
+--------------------------------------------------------------------------
+
+local ARROW_UP_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\ArrowUp.tga";
+local LOCK_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\Lock.tga";
+local TRASH_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
+local PLUS_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Plus.tga"; -- same plus texture StartSessionWindow.lua already uses
+
+--------------------------------------------------------------------------
+-- Skin.MoveArrows - a response row's up/down reorder buttons, sharing one
+-- 13-wide slot with the Pass row's lock icon (ShowLock/ShowArrows toggle
+-- between the two - both are built once, never recreated, same idea
+-- Skin.Dropdown's own list frame reuses across opens).
+--------------------------------------------------------------------------
+
+local function paintArrowButton(button, enabled)
+    button:SetEnabled(enabled);
+    if (enabled) then
+        Skin.Backdrop(button, Colors.lrArrowBg, Colors.lrArrowBorder);
+        button.arrow:SetVertexColor(unpack(Colors.lrArrowIcon));
+        button:SetAlpha(1);
+    else
+        button:SetAlpha(0.3);
+    end
+end
+
+--- opts: { onMoveUp = fn, onMoveDown = fn, upTooltip, downTooltip, lockTooltip }
+---@return Frame frame with :SetEnabledStates(canUp, canDown), :ShowLock(tooltipText), :ShowArrows()
+function Skin.MoveArrows(parent, opts)
+    opts = opts or {};
+    local frame = CreateFrame("Frame", nil, parent);
+    frame:SetSize(13, 21.5);
+
+    local function makeArrowButton(flipped, tooltipText, onClick)
+        local button = CreateFrame("Button", nil, frame, "BackdropTemplate");
+        button:SetSize(13, 10);
+        Skin.Backdrop(button, Colors.lrArrowBg, Colors.lrArrowBorder);
+
+        button.arrow = button:CreateTexture(nil, "ARTWORK");
+        button.arrow:SetSize(6, 5);
+        button.arrow:SetPoint("CENTER");
+        button.arrow:SetTexture(ARROW_UP_TEXTURE);
+        if (flipped) then button.arrow:SetTexCoord(0, 1, 1, 0); end
+        button.arrow:SetVertexColor(unpack(Colors.lrArrowIcon));
+
+        button:HookScript("OnEnter", function(self)
+            if (not self:IsEnabled()) then return; end
+            self:SetBackdropBorderColor(unpack(Colors.lrArrowHover));
+            self.arrow:SetVertexColor(unpack(Colors.lrArrowHover));
+            if (tooltipText) then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+                GameTooltip:AddLine(tooltipText);
+                GameTooltip:Show();
+            end
+        end);
+        button:HookScript("OnLeave", function(self)
+            if (self:IsEnabled()) then
+                self:SetBackdropBorderColor(unpack(Colors.lrArrowBorder));
+                self.arrow:SetVertexColor(unpack(Colors.lrArrowIcon));
+            end
+            if (GameTooltip:GetOwner() == self) then GameTooltip:Hide(); end
+        end);
+        button:SetScript("OnClick", function() if (onClick) then onClick(); end end);
+
+        return button;
+    end
+
+    frame.upButton = makeArrowButton(false, opts.upTooltip or "Move left", opts.onMoveUp);
+    frame.upButton:SetPoint("TOP", frame, "TOP", 0, 0);
+
+    frame.downButton = makeArrowButton(true, opts.downTooltip or "Move right", opts.onMoveDown);
+    frame.downButton:SetPoint("TOP", frame.upButton, "BOTTOM", 0, -1.5);
+
+    frame.lockFrame = CreateFrame("Frame", nil, frame);
+    frame.lockFrame:SetAllPoints(frame);
+    frame.lockFrame:EnableMouse(true);
+    frame.lockFrame:Hide();
+
+    frame.lockIcon = frame.lockFrame:CreateTexture(nil, "ARTWORK");
+    frame.lockIcon:SetSize(9, 9);
+    frame.lockIcon:SetPoint("CENTER");
+    frame.lockIcon:SetTexture(LOCK_TEXTURE);
+    frame.lockIcon:SetVertexColor(unpack(Colors.lrLockIcon));
+
+    frame.lockFrame:SetScript("OnEnter", function(self)
+        if (not self.tooltipText) then return; end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+        GameTooltip:AddLine(self.tooltipText);
+        GameTooltip:Show();
+    end);
+    frame.lockFrame:SetScript("OnLeave", function() GameTooltip:Hide(); end);
+
+    function frame:SetEnabledStates(canMoveUp, canMoveDown)
+        paintArrowButton(self.upButton, canMoveUp);
+        paintArrowButton(self.downButton, canMoveDown);
+    end
+
+    function frame:ShowLock(tooltipText)
+        self.upButton:Hide();
+        self.downButton:Hide();
+        self.lockFrame.tooltipText = tooltipText;
+        self.lockFrame:Show();
+    end
+
+    function frame:ShowArrows()
+        self.lockFrame:Hide();
+        self.upButton:Show();
+        self.downButton:Show();
+    end
+
+    return frame;
+end
+
+--------------------------------------------------------------------------
+-- Skin.ColorSwatch - an 18x18 button showing a response's current color,
+-- opening Skin.ColorPalette on click (wired by the caller via opts.onClick).
+--------------------------------------------------------------------------
+
+function Skin.ColorSwatch(parent, opts)
+    opts = opts or {};
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate");
+    button:SetSize(18, 18);
+    Skin.Backdrop(button, Colors.lrSwatchBg, Colors.lrSwatchBorder);
+
+    button.fill = button:CreateTexture(nil, "ARTWORK");
+    button.fill:SetTexture(Helpers.FLAT_TEXTURE);
+    button.fill:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -2);
+    button.fill:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2);
+
+    function button:SetColor(hex)
+        self.hex = hex;
+        self.fill:SetVertexColor(FL.Util.HexToRGB(hex));
+    end
+
+    button:HookScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.lrSwatchHover));
+        if (opts.tooltip) then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            GameTooltip:AddLine(opts.tooltip);
+            GameTooltip:Show();
+        end
+    end);
+    button:HookScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.lrSwatchBorder));
+        if (GameTooltip:GetOwner() == self) then GameTooltip:Hide(); end
+    end);
+    button:SetScript("OnClick", function(self) if (opts.onClick) then opts.onClick(self); end end);
+
+    return button;
+end
+
+--------------------------------------------------------------------------
+-- Skin.ColorPalette - one shared popover (per parent) reused for every row's
+-- swatch: a 6x2 grid of the 12 presets plus a "Custom color..." link that
+-- opens Blizzard's own ColorPickerFrame. Only one instance is ever built per
+-- parent - call Skin.ColorPalette(parent) once and reuse the same `palette`
+-- for every row's Open().
+--------------------------------------------------------------------------
+
+-- Every open palette, across every parent - so Init.lua's window-hide hook
+-- (SettingsWindow.Hide calling Skin.ColorPalette.CloseActive) doesn't need
+-- to know which parent(s) ever built one.
+local activePalettes = {};
+
+function Skin.ColorPalette(parent)
+    local palette = { parent = parent };
+
+    palette.catcher = CreateFrame("Frame", nil, UIParent);
+    palette.catcher:SetAllPoints(UIParent);
+    palette.catcher:SetFrameStrata("DIALOG");
+    palette.catcher:SetFrameLevel(parent:GetFrameLevel() + 50);
+    palette.catcher:EnableMouse(true);
+    palette.catcher:Hide();
+
+    -- Frame level bumped well above the row hierarchy (parent -> listBox ->
+    -- row -> swatch) so the popover draws on top of every row instead of
+    -- underneath the later ones - same strata as the settings window means
+    -- frame level alone decides draw order here.
+    palette.frame = CreateFrame("Frame", nil, parent, "BackdropTemplate");
+    palette.frame:SetFrameStrata("DIALOG");
+    palette.frame:SetFrameLevel(palette.catcher:GetFrameLevel() + 5);
+    palette.frame:SetSize(6 * 15 + 5 * 3 + 5 * 2, 5 + 2 * 15 + 3 + 5 + 14 + 5);
+    Skin.Backdrop(palette.frame, Colors.lrPopoverBg, Colors.lrPopoverBorder);
+    local shadow = palette.frame:CreateTexture(nil, "BACKGROUND", nil, -1);
+    shadow:SetTexture("Interface\\AddOns\\ForeverLoot\\Media\\Respond\\SoftGlow");
+    shadow:SetPoint("TOPLEFT", palette.frame, "TOPLEFT", -6, 6);
+    shadow:SetPoint("BOTTOMRIGHT", palette.frame, "BOTTOMRIGHT", 6, -6);
+    palette.frame:Hide();
+    palette.frame:EnableKeyboard(false);
+
+    palette.swatches = {};
+    for i, color in ipairs(Colors.responsePalette) do
+        local col = (i - 1) % 6;
+        local row = math.floor((i - 1) / 6);
+        local square = CreateFrame("Button", nil, palette.frame, "BackdropTemplate");
+        square:SetSize(15, 15);
+        square:SetPoint("TOPLEFT", palette.frame, "TOPLEFT", 5 + col * (15 + 3), -5 - row * (15 + 3));
+        Skin.Backdrop(square, color, Colors.lrListBorder);
+        square.color = color;
+        square.hex = FL.Util.RGBToHex(color[1], color[2], color[3]);
+
+        -- "Selected" is shown via the swatch's own border color (like hover),
+        -- not a covering texture - a texture child of `square` would always
+        -- draw on top of `square`'s own backdrop fill (a frame's backdrop is
+        -- always the bottommost layer), hiding the swatch's actual color
+        -- instead of ringing it.
+        square:HookScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(Colors.lrSwatchHover)); end);
+        square:HookScript("OnLeave", function(self)
+            self:SetBackdropBorderColor(unpack(self.isSelected and Colors.lrSwatchHover or Colors.lrListBorder));
+        end);
+        square:SetScript("OnClick", function(self)
+            if (palette.onChange) then palette.onChange(self.hex); end
+            palette:Close();
+        end);
+
+        palette.swatches[i] = square;
+    end
+
+    palette.customText = palette.frame:CreateFontString(nil, "OVERLAY");
+    SetFont(palette.customText, "small");
+    palette.customText:SetTextColor(unpack(Colors.lrInfoText));
+    palette.customText:SetText("Custom color...");
+    palette.customText:SetPoint("TOPLEFT", palette.frame, "TOPLEFT", 5, -(5 + 2 * 15 + 3 + 5));
+
+    palette.customUnderline = palette.frame:CreateTexture(nil, "OVERLAY");
+    palette.customUnderline:SetColorTexture(unpack(Colors.lrInfoText));
+    palette.customUnderline:SetHeight(1);
+    palette.customUnderline:SetPoint("BOTTOMLEFT", palette.customText, "BOTTOMLEFT", 0, -1);
+    palette.customUnderline:SetPoint("BOTTOMRIGHT", palette.customText, "BOTTOMRIGHT", 0, -1);
+    palette.customUnderline:Hide();
+
+    palette.customButton = CreateFrame("Button", nil, palette.frame);
+    palette.customButton:SetAllPoints(palette.customText);
+    palette.customButton:HookScript("OnEnter", function() palette.customUnderline:Show(); end);
+    palette.customButton:HookScript("OnLeave", function() palette.customUnderline:Hide(); end);
+
+    -- Blizzard's ColorPickerFrame integration - opens at the palette's
+    -- current color, applies live while dragging, restores on cancel. Older
+    -- clients (no SetupColorPickerAndShow) fall back to the func/cancelFunc/
+    -- previousValues + ShowUIPanel path.
+    local function openCustomPicker()
+        local startHex = palette.currentHex;
+        local r, g, b = FL.Util.HexToRGB(startHex);
+
+        local function apply()
+            local nr, ng, nb = ColorPickerFrame:GetColorRGB();
+            local hex = FL.Util.RGBToHex(nr, ng, nb);
+            if (palette.onChange) then palette.onChange(hex); end
+        end
+        local function cancel(previousValues)
+            local hex = FL.Util.RGBToHex(previousValues and previousValues.r or r, previousValues and previousValues.g or g, previousValues and previousValues.b or b);
+            if (palette.onChange) then palette.onChange(hex); end
+        end
+
+        if (ColorPickerFrame.SetupColorPickerAndShow) then
+            ColorPickerFrame:SetupColorPickerAndShow({
+                r = r, g = g, b = b, hasOpacity = false,
+                swatchFunc = apply, cancelFunc = cancel,
+            });
+        else
+            ColorPickerFrame.func = apply;
+            ColorPickerFrame.cancelFunc = cancel;
+            ColorPickerFrame.hasOpacity = false;
+            ColorPickerFrame.previousValues = { r = r, g = g, b = b };
+            ColorPickerFrame:SetColorRGB(r, g, b);
+            ShowUIPanel(ColorPickerFrame);
+        end
+    end
+
+    palette.customButton:SetScript("OnClick", function()
+        palette:Close();
+        openCustomPicker();
+    end);
+
+    palette.catcher:SetScript("OnMouseDown", function() palette:Close(); end);
+    palette.frame:SetScript("OnKeyDown", function(self, key)
+        if (key == "ESCAPE") then
+            self:SetPropagateKeyboardInput(false);
+            palette:Close();
+        else
+            self:SetPropagateKeyboardInput(true);
+        end
+    end);
+
+    function palette:Open(anchorFrame, currentHex, onChange, onClose)
+        if (self.isOpen and self.anchorFrame ~= anchorFrame) then self:Close(); end
+        for other in pairs(activePalettes) do
+            if (other ~= self) then other:Close(); end
+        end
+
+        self.anchorFrame = anchorFrame;
+        self.currentHex = currentHex;
+        self.onChange = onChange;
+        self.onClose = onClose;
+
+        for _, square in ipairs(self.swatches) do
+            square.isSelected = FL.Util.iEquals(square.hex, currentHex);
+            square:SetBackdropBorderColor(unpack(square.isSelected and Colors.lrSwatchHover or Colors.lrListBorder));
+        end
+
+        self.frame:ClearAllPoints();
+        self.frame:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", 0, -3);
+        self.frame:Show();
+        self.frame:EnableKeyboard(true);
+        self.catcher:Show();
+        self.isOpen = true;
+        activePalettes[self] = true;
+    end
+
+    function palette:IsOpenFor(anchorFrame)
+        return self.isOpen and self.anchorFrame == anchorFrame;
+    end
+
+    function palette:Close()
+        if (not self.isOpen) then return; end
+        self.isOpen = false;
+        self.frame:Hide();
+        self.frame:EnableKeyboard(false);
+        self.catcher:Hide();
+        activePalettes[self] = nil;
+        local onClose = self.onClose;
+        self.onClose = nil;
+        if (onClose) then onClose(); end
+    end
+
+    return palette;
+end
+
+--- Closes every currently-open color palette popover, regardless of which
+--- settings page/parent built it - called from the settings window's own
+--- Hide() so a palette never survives the window closing under it. A plain
+--- top-level function (not Skin.ColorPalette.CloseActive) since
+--- Skin.ColorPalette is itself a function value, not a table - functions
+--- can't have fields attached in Lua.
+function Skin.CloseAnyOpenColorPalette()
+    for palette in pairs(activePalettes) do palette:Close(); end
+end
+
+--------------------------------------------------------------------------
+-- Skin.DashedAddButton - the full-width "+ Add Response" button. Reuses
+-- Skin.DashedBorder directly for the border rather than re-implementing
+-- dash drawing.
+--------------------------------------------------------------------------
+
+function Skin.DashedAddButton(parent, opts)
+    opts = opts or {};
+    local button = CreateFrame("Button", nil, parent);
+    button:SetHeight(26);
+    button:SetMotionScriptsWhileDisabled(true); -- see Skin.DeleteButton's identical comment on this
+
+    Skin.DashedBorder(button, Colors.lrDashedBorder[1], Colors.lrDashedBorder[2], Colors.lrDashedBorder[3], 1);
+
+    button.bg = button:CreateTexture(nil, "BACKGROUND");
+    button.bg:SetTexture(Helpers.FLAT_TEXTURE);
+    button.bg:SetAllPoints();
+    button.bg:SetVertexColor(unpack(Colors.lrRowHoverBg));
+    button.bg:Hide();
+
+    local plus = button:CreateTexture(nil, "ARTWORK");
+    plus:SetSize(10, 10);
+    plus:SetTexture(PLUS_ICON_TEXTURE);
+    plus:SetVertexColor(unpack(Colors.gold));
+
+    local label = button:CreateFontString(nil, "OVERLAY");
+    SetFont(label, "sectionHeader");
+    label:SetTextColor(unpack(Colors.gold));
+    label:SetText(opts.label or "Add Response");
+
+    local group = CreateFrame("Frame", nil, button);
+    group:SetSize(plus:GetWidth() + 5 + label:GetStringWidth(), 14);
+    group:SetPoint("CENTER");
+    plus:SetPoint("LEFT", group, "LEFT", 0, 0);
+    label:SetPoint("LEFT", plus, "RIGHT", 5, 0);
+
+    button:HookScript("OnEnter", function(self)
+        if (not self:IsEnabled()) then return; end
+        self:SetDashColor(Colors.lrArrowHover[1], Colors.lrArrowHover[2], Colors.lrArrowHover[3], 1);
+        self.bg:Show();
+    end);
+    button:HookScript("OnLeave", function(self)
+        self:SetDashColor(Colors.lrDashedBorder[1], Colors.lrDashedBorder[2], Colors.lrDashedBorder[3], 1);
+        self.bg:Hide();
+    end);
+    button:SetScript("OnClick", function(self) if (opts.onClick) then opts.onClick(self); end end);
+
+    function button:SetDisabledTooltip(text)
+        opts.disabledTooltip = text;
+    end
+
+    button:SetScript("OnEnable", function(self)
+        self:SetAlpha(1);
+    end);
+    button:SetScript("OnDisable", function(self)
+        self:SetAlpha(0.4);
+        self.bg:Hide();
+    end);
+
+    button:HookScript("OnEnter", function(self)
+        if (not self:IsEnabled() and opts.disabledTooltip) then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            GameTooltip:AddLine(opts.disabledTooltip);
+            GameTooltip:Show();
+        end
+    end);
+    button:HookScript("OnLeave", function(self)
+        if (GameTooltip:GetOwner() == self) then GameTooltip:Hide(); end
+    end);
+
+    return button;
+end
+
+--------------------------------------------------------------------------
+-- Skin.DeleteButton - a small trash-icon button, matching the hand-rolled
+-- pattern several windows already use (TradeQueueWindow.lua/ItemListEditor.lua/
+-- AwardWindow.lua) but as a real reusable Skin.* helper.
+--------------------------------------------------------------------------
+
+function Skin.DeleteButton(parent, opts)
+    opts = opts or {};
+    local size = opts.size or 17;
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate");
+    button:SetSize(size, size);
+    Skin.Backdrop(button, Colors.lrArrowBg, Colors.lrArrowBorder);
+    -- A disabled Button blocks mouse-motion scripts by default (OnEnter/
+    -- OnLeave never fire) - without this, the disabled-state tooltip below
+    -- would never actually show (same fix LootCouncil.lua's own
+    -- syncButton/selectOfficersButton need for the same reason).
+    button:SetMotionScriptsWhileDisabled(true);
+
+    button.icon = button:CreateTexture(nil, "ARTWORK");
+    local iconSize = math.floor(size * 0.7 + 0.5);
+    button.icon:SetSize(iconSize, iconSize);
+    button.icon:SetPoint("CENTER");
+    button.icon:SetTexture(TRASH_ICON_TEXTURE);
+    button.icon:SetVertexColor(unpack(Colors.lrArrowIcon));
+
+    button:HookScript("OnEnter", function(self)
+        if (not self:IsEnabled()) then
+            if (opts.disabledTooltip) then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+                GameTooltip:AddLine(opts.disabledTooltip);
+                GameTooltip:Show();
+            end
+            return;
+        end
+        self:SetBackdropBorderColor(unpack(Colors.lrErrorFlash));
+        self.icon:SetVertexColor(unpack(Colors.lrErrorText));
+    end);
+    button:HookScript("OnLeave", function(self)
+        if (self:IsEnabled()) then
+            self:SetBackdropBorderColor(unpack(Colors.lrArrowBorder));
+            self.icon:SetVertexColor(unpack(Colors.lrArrowIcon));
+        end
+        if (GameTooltip:GetOwner() == self) then GameTooltip:Hide(); end
+    end);
+    button:SetScript("OnClick", function(self) if (opts.onClick) then opts.onClick(self); end end);
+    button:SetScript("OnDisable", function(self) self:SetAlpha(0.3); end);
+    button:SetScript("OnEnable", function(self) self:SetAlpha(1); end);
+
+    return button;
 end
 
 --------------------------------------------------------------------------

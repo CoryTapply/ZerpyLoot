@@ -515,3 +515,23 @@ function Util.levenshtein(str1, str2)
 
     return matrix[len1][len2];
 end
+
+-- Response colors (Core/Responses.lua) are stored as plain 6-hex-digit
+-- strings (no '#'), while every render call site needs the 0-1 float RGB
+-- triple SetVertexColor/SetTextColor/etc. expect - these two are the only
+-- hex<->float conversion in the addon (everywhere else already stores/reads
+-- plain {r,g,b} tables).
+function Util.HexToRGB(hex)
+    hex = hex or "ffffff";
+    local r = tonumber(hex:sub(1, 2), 16) or 255;
+    local g = tonumber(hex:sub(3, 4), 16) or 255;
+    local b = tonumber(hex:sub(5, 6), 16) or 255;
+    return r / 255, g / 255, b / 255;
+end
+
+function Util.RGBToHex(r, g, b)
+    return string.format("%02x%02x%02x",
+        math.floor(math.min(1, math.max(0, r)) * 255 + 0.5),
+        math.floor(math.min(1, math.max(0, g)) * 255 + 0.5),
+        math.floor(math.min(1, math.max(0, b)) * 255 + 0.5));
+end

@@ -821,7 +821,8 @@ local function paintRow(row, entry, item, index, myName)
     row.pill:SetWidth(mp.colResponse);
     row.pill:SetPillColor(unpack(colorEntry.color));
     row.pill.dot:SetVertexColor(unpack(colorEntry.color));
-    row.pill.label:SetText(FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[entry.candidate.response] or entry.candidate.response);
+    local pillLabelMaxWidth = mp.colResponse - (mp.pillPadX * 2 + mp.pillDotSize + mp.pillDotGap);
+    Skin.FitPillLabel(row.pill.label, Awards.ResponseLabel(entry.candidate.response), pillLabelMaxWidth);
 
     row.noteText:SetTextColor(unpack(Colors.description));
     row.noteTruncated = setTextEllipsized(row.noteText, entry.candidate.note or "", mp.colNote);
@@ -1128,7 +1129,7 @@ function ShowPopup(item, entry)
     local colorEntry = Awards.ResponseColor(entry.candidate.response);
     popupDialog.summaryPill:SetPillColor(unpack(colorEntry.color));
     popupDialog.summaryPill.dot:SetVertexColor(unpack(colorEntry.color));
-    popupDialog.summaryPill.label:SetText(FL.Constants.LOOT_COUNCIL_RESPONSE_LABELS[entry.candidate.response] or entry.candidate.response);
+    popupDialog.summaryPill.label:SetText(Awards.ResponseLabel(entry.candidate.response));
     popupDialog.summaryPill:SetWidth(mp.pillPadX + mp.pillDotSize + mp.pillDotGap + popupDialog.summaryPill.label:GetStringWidth() + mp.pillPadX);
     popupDialog.summaryPill:ClearAllPoints();
     popupDialog.summaryPill:SetPoint("LEFT", popupDialog.summaryToLine, "RIGHT", 2, 0);

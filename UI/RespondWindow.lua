@@ -22,13 +22,12 @@ local Sizes = FL.UI.Sizes.respond;
 local SetFont = FL.UI.SetFont;
 local Skin = FL.UI.Skin;
 local Util = FL.Util;
-local Constants = FL.Constants;
+local ResponseRow = FL.UI.ResponseRow;
 local LootCouncil = FL.LootCouncil;
 local RespondWindow = FL.UI.RespondWindow;
 
 local FALLBACK_ICON = FL.LootCouncil.FALLBACK_ICON;
 
-local DOT_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Dot";
 local SWEEP_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Sweep";
 local SOFTGLOW_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\SoftGlow";
 local SENT_CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready";
@@ -37,13 +36,14 @@ local NOTE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteIco
 local NOTE_ICON_BADGE_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteIconBadge";
 local NOTE_BUBBLE_ARROW_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\NoteBubbleArrow";
 
--- Icon-only response buttons' atlases. "talents-button-reset" is confirmed
--- to exist (Blizzard_SharedTalentUI); "Crosshair_Transmogrify_32" is not
--- independently confirmed on this client - createIconResponseButton guards
--- both with C_Texture.GetAtlasInfo before committing to SetAtlas, same
--- pattern as UI/AwardWindow.lua's own atlas use.
-local MOG_ATLAS = "Crosshair_Transmogrify_32";
-local PASS_ATLAS = "talents-button-reset";
+-- The card/header/toggle-bar/note-popover width actually in use - starts at
+-- the default (Sizes.cardWidth) and is recomputed once per session (see
+-- updateCardWidthForSession) from that session's own response list, so the
+-- popup always widens to fit every label in full but never gets narrower
+-- than the default. A plain mutable upvalue (not Sizes.cardWidth itself)
+-- since every function below that used to read Sizes.cardWidth directly
+-- needs to pick up a later resize without being redefined.
+local cardWidth = Sizes.cardWidth;
 
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition). Deliberately not migrated
@@ -83,10 +83,10 @@ local cards = {};
 -- - see the popover module below.
 local noteDrafts = {};
 
--- Forward declarations: createResponseButton (below) and the note/icon
--- buttons all need to call into the shared note-popover module, which is
--- defined later in this file (where the old inline note box used to live) -
--- see the "Note popover" section.
+-- Forward declarations: the Note button and the response buttons built by
+-- UI/ResponseRow.lua's onSelect callback all need to call into the shared
+-- note-popover module, which is defined later in this file (where the old
+-- inline note box used to live) - see the "Note popover" section.
 local notePopover, isNotePopoverOpen, dismissPopoverSilently, CloseNote, OpenNote, onResponseButtonClick, paintNoteButton;
 
 -- Reset to false every Show() (not persisted) - see RespondWindow.Show().
@@ -209,24 +209,6 @@ do
     DONE_BUTTON_WIDTH = probe:GetStringWidth() + Sizes.popoverDoneButtonPadX * 2;
 end
 
--- Constants.LOOT_COUNCIL_RESPONSES, partitioned once: Transmog (MOG) and
--- Pass become their own fixed-width icon-only buttons (see
--- createIconResponseButton below); everything else (today: Major/Minor/
--- Offspec) keeps the original dot+label treatment and shares the row's
--- leftover width equally. Constants.LOOT_COUNCIL_RESPONSES itself is never
--- modified - its "Transmog" label is still what UI/AwardWindow.lua's own council
--- grid reads via Session/Awards.lua.
-local EQUAL_SHARE_RESPONSES, MOG_RESPONSE, PASS_RESPONSE = {}, nil, nil;
-for _, entry in ipairs(Constants.LOOT_COUNCIL_RESPONSES) do
-    if (entry.id == "MOG") then
-        MOG_RESPONSE = entry;
-    elseif (entry.id == "PASS") then
-        PASS_RESPONSE = entry;
-    else
-        table.insert(EQUAL_SHARE_RESPONSES, entry);
-    end
-end
-
 --------------------------------------------------------------------------
 -- Item card content (name/type/quality) - split out from paintCard since it
 -- re-runs asynchronously once an uncached item's info actually loads (same
@@ -234,7 +216,7 @@ end
 --------------------------------------------------------------------------
 
 local function nameMaxWidth(isPending, isAwarded)
-    local width = Sizes.cardWidth - Sizes.cardPadding * 2 - Sizes.iconSize - Sizes.iconTextGap;
+    local width = cardWidth - Sizes.cardPadding * 2 - Sizes.iconSize - Sizes.iconTextGap;
     if (isAwarded) then
         width = width - AWARDED_INDICATOR_WIDTH - Sizes.iconTextGap;
     elseif (not isPending) then
@@ -269,57 +251,10 @@ local function paintCardItemInfo(card, entry)
 end
 
 --------------------------------------------------------------------------
--- Response buttons
+-- Response buttons - built by the shared UI/ResponseRow.lua (also used by
+-- the Loot Responses settings page's preview), not this file. See
+-- paintCard's own ResponseRow.Build call below.
 --------------------------------------------------------------------------
-
--- Centers the dot+label pair as a group (selected buttons show no dot, just
--- a centered label) - the pair's combined width depends on the label's own
--- rendered width, so this has to run after the label text is set.
-local function layoutButtonContent(btn, showDot)
-    btn.label:ClearAllPoints();
-    if (showDot) then
-        btn.dot:Show();
-        local totalWidth = Sizes.buttonDotSize + Sizes.buttonDotLabelGap + btn.label:GetStringWidth();
-        btn.dot:ClearAllPoints();
-        btn.dot:SetPoint("LEFT", btn, "CENTER", -totalWidth / 2, 0);
-        btn.label:SetPoint("LEFT", btn.dot, "RIGHT", Sizes.buttonDotLabelGap, 0);
-    else
-        btn.dot:Hide();
-        btn.label:SetPoint("CENTER", btn, "CENTER", 0, 0);
-    end
-end
-
-local function createResponseButton(card)
-    local btn = CreateFrame("Button", nil, card, "BackdropTemplate");
-    btn:SetHeight(Sizes.buttonHeight);
-
-    btn.dot = btn:CreateTexture(nil, "ARTWORK");
-    btn.dot:SetSize(Sizes.buttonDotSize, Sizes.buttonDotSize);
-    btn.dot:SetTexture(DOT_TEXTURE);
-
-    btn.label = btn:CreateFontString(nil, "OVERLAY");
-    SetFont(btn.label, "body");
-
-    -- Polled rather than OnEnter/OnLeave: clicking a response button reflows
-    -- the whole card stack (see RespondWindow.Refresh), which can slide a
-    -- different card's button under a mouse that never actually moved -
-    -- WoW won't refire OnEnter for that, so the highlight would go stale.
-    -- Edge-triggered on self.isHovered so it's a no-op most frames; paintCard
-    -- resets that cache on every repaint so a post-reflow (or post-repaint)
-    -- mismatch gets corrected on the very next tick.
-    btn:SetScript("OnUpdate", function(self)
-        if (not self.hoverColor or not self.baseBorder) then return; end
-        local isHovered = Util.IsMouseOverVisible(self, scrollFrame);
-        if (isHovered ~= self.isHovered) then
-            self.isHovered = isHovered;
-            self:SetBackdropBorderColor(unpack(isHovered and self.hoverColor or self.baseBorder));
-        end
-    end);
-
-    btn:SetScript("OnClick", function(self) onResponseButtonClick(self, self:GetParent()); end);
-
-    return btn;
-end
 
 --------------------------------------------------------------------------
 -- Note popover - one shared floating frame for the whole window (only one
@@ -420,7 +355,7 @@ end
 local function ensurePopover()
     if (notePopover.frame) then return; end
 
-    notePopover.frame = CreateCard(frame, Sizes.cardWidth - Sizes.popoverOffsetX * 2, Colors.windowBg, "Frame", Colors.controlFocus);
+    notePopover.frame = CreateCard(frame, cardWidth - Sizes.popoverOffsetX * 2, Colors.windowBg, "Frame", Colors.controlFocus);
     notePopover.frame:SetHeight(Sizes.popoverPadding * 2 + Sizes.noteHeight);
     -- One strata above the window root's own DIALOG - same convention
     -- Skin.Dropdown's own floating list uses to sit above a DIALOG-strata
@@ -485,10 +420,9 @@ end
 -- Skin.Button: that helper's OnEnter/OnLeave hooks unconditionally reset
 -- border/bg colors on every native hover event (HookScript is additive, so
 -- those hooks can't be overridden), which would fight this button's 4-state
--- paint logic below. Instead, same hand-rolled shape createResponseButton
--- already uses: a one-shot flat backdrop plus an OnUpdate hover-poll
--- (native OnEnter/OnLeave can go stale across a reflow - see
--- createResponseButton's own comment on this).
+-- paint logic below. Instead, same hand-rolled shape UI/ResponseRow.lua's
+-- pooled buttons use: a one-shot flat backdrop plus an OnUpdate hover-poll
+-- (native OnEnter/OnLeave can go stale across a reflow).
 --------------------------------------------------------------------------
 
 paintNoteButton = function(btn, card)
@@ -558,79 +492,15 @@ local function createNoteButton(card)
 end
 
 --------------------------------------------------------------------------
--- Transmog/Pass - icon-only response buttons. Built once per card (not
--- pooled - there's always exactly one of each), reusing the same hover-poll
--- + Theme.Helpers.SetFlatBackdrop pattern as createResponseButton.
+-- Shared response-button click handler - used for every response kind
+-- (text/mog/pass), via a per-card opts.onSelect wrapper paintCard hands to
+-- ResponseRow.Build (see paintCard below). Popover-aware: closes a different
+-- card's open popover first, folds an already-open popover's current text
+-- into the submitted note, and lets CloseNote() alone handle the "clicked
+-- the already-selected response but the note text changed" resend case.
 --------------------------------------------------------------------------
 
-local function createIconResponseButton(card, responseEntry, tooltipText, atlasName, hoverBorder, selectedBorder, selectedBg)
-    local btn = CreateFrame("Button", nil, card, "BackdropTemplate");
-    btn:SetSize(Sizes.iconButtonWidth, Sizes.buttonHeight);
-    btn.responseId = responseEntry.id;
-    btn.tooltipText = tooltipText;
-    btn.hoverBorder = hoverBorder;
-    btn.selectedBorder = selectedBorder;
-    btn.selectedBg = selectedBg;
-
-    btn.icon = btn:CreateTexture(nil, "ARTWORK");
-    btn.icon:SetSize(Sizes.responseIconSize, Sizes.responseIconSize);
-    btn.icon:SetPoint("CENTER");
-    if (C_Texture.GetAtlasInfo(atlasName)) then
-        btn.icon:SetAtlas(atlasName);
-    else
-        btn.icon:Hide();
-        Util.Print(("missing atlas '%s' for the %s button - icon will render blank."):format(atlasName, tooltipText));
-    end
-
-    Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.respondButtonBorder, 1);
-    btn.baseBorder = Colors.respondButtonBorder;
-
-    -- Same reflow-safe hover-poll pattern as createResponseButton.
-    btn:SetScript("OnUpdate", function(self)
-        local isHovered = Util.IsMouseOverVisible(self, scrollFrame);
-        if (isHovered ~= self.isHovered) then
-            self.isHovered = isHovered;
-            self:SetBackdropBorderColor(unpack(isHovered and self.hoverBorder or self.baseBorder));
-        end
-        if (isHovered) then
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
-            GameTooltip:AddLine(self.tooltipText);
-            GameTooltip:Show();
-        elseif (GameTooltip:GetOwner() == self) then
-            GameTooltip:Hide();
-        end
-    end);
-
-    btn:SetScript("OnClick", function(self) onResponseButtonClick(self, self:GetParent()); end);
-
-    return btn;
-end
-
-local function paintIconResponseButton(btn, candidate, isPending)
-    local isSelected = candidate and candidate.response == btn.responseId;
-    btn.isHovered = nil; -- forces the OnUpdate poll to reconcile the border on the next tick
-    if (isSelected) then
-        Theme.Helpers.SetFlatBackdrop(btn, btn.selectedBg, btn.selectedBorder, 1);
-        btn.baseBorder = btn.selectedBorder;
-        btn.icon:SetAlpha(1);
-    else
-        Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.respondButtonBorder, 1);
-        btn.baseBorder = Colors.respondButtonBorder;
-        btn.icon:SetAlpha(isPending and 1 or 0.5);
-    end
-    btn:Show();
-end
-
---------------------------------------------------------------------------
--- Shared response-button click handler - used by both the pooled dot+label
--- buttons (Major/Minor/Offspec) and the two icon-only buttons
--- (Transmog/Pass). Popover-aware: closes a different card's open popover
--- first, folds an already-open popover's current text into the submitted
--- note, and lets CloseNote() alone handle the "clicked the already-selected
--- response but the note text changed" resend case.
---------------------------------------------------------------------------
-
-onResponseButtonClick = function(self, card)
+onResponseButtonClick = function(card, responseId)
     local entry = card.entry;
     if (not entry) then return; end
 
@@ -640,7 +510,7 @@ onResponseButtonClick = function(self, card)
 
     local myName = Util.stripRealm(Util.UnitName("player"));
     local candidate = entry.candidates[myName];
-    local isAlreadySelected = candidate and candidate.response == self.responseId;
+    local isAlreadySelected = candidate and candidate.response == responseId;
     local popoverOpenHere = (notePopover.card == card); -- re-read AFTER the close-other-card step above
 
     if (isAlreadySelected and not popoverOpenHere) then return; end -- unchanged existing no-op shortcut
@@ -661,7 +531,7 @@ onResponseButtonClick = function(self, card)
     end
 
     local wasPending = candidate == nil;
-    LootCouncil.SubmitResponse(entry.session, self.responseId, noteText);
+    LootCouncil.SubmitResponse(entry.session, responseId, noteText);
 
     if (popoverOpenHere) then dismissPopoverSilently(); end -- UI-only close, no duplicate SubmitResponse
 
@@ -703,7 +573,7 @@ end
 --------------------------------------------------------------------------
 
 local function createCard(parent)
-    local card = CreateCard(parent, Sizes.cardWidth);
+    local card = CreateCard(parent, cardWidth);
     card:SetHeight(CARD_HEIGHT);
     card:SetClipsChildren(true);
     card:Hide();
@@ -762,21 +632,10 @@ local function createCard(parent)
         end
     end);
 
-    -- Note button (opens/closes the shared popover) + response buttons.
-    -- Equal-share dot+label buttons (Major/Minor/Offspec today) are pooled
-    -- to the largest option list this window supports
-    -- (Sizes.maxResponseButtons) - extras hidden when
-    -- EQUAL_SHARE_RESPONSES has fewer entries. Transmog/Pass are always
-    -- exactly one each, not pooled.
+    -- Note button (opens/closes the shared popover). The response buttons
+    -- themselves are built/pooled by ResponseRow.Build (UI/ResponseRow.lua)
+    -- against this card as their parent - see paintCard below.
     card.noteButton = createNoteButton(card);
-    card.buttons = {};
-    for i = 1, Sizes.maxResponseButtons do
-        card.buttons[i] = createResponseButton(card);
-    end
-    card.mogButton = createIconResponseButton(card, MOG_RESPONSE, "Transmog", MOG_ATLAS,
-        Colors.responses.MOG.color, Colors.responses.MOG.color, Colors.respondMogSelectedBg);
-    card.passButton = createIconResponseButton(card, PASS_RESPONSE, "Pass", PASS_ATLAS,
-        Colors.respondPassHover, Colors.respondPassHover, Colors.respondPassSelectedBg);
 
     -- Send sweep (gold light sweeping across the card + a gold border flash)
     -- - played whenever a sent card's response or note changes.
@@ -784,14 +643,14 @@ local function createCard(parent)
     card.sweep:SetTexture(SWEEP_TEXTURE);
     card.sweep:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], Sizes.sweepAlpha);
     card.sweep:SetBlendMode("ADD");
-    card.sweep:SetSize(Sizes.cardWidth * Sizes.sweepWidthPct, CARD_HEIGHT);
+    card.sweep:SetSize(cardWidth * Sizes.sweepWidthPct, CARD_HEIGHT);
     card.sweep:Hide();
 
     card.sweepAnim = card.sweep:CreateAnimationGroup();
-    local sweepMove = card.sweepAnim:CreateAnimation("Translation");
-    sweepMove:SetOffset(Sizes.cardWidth + card.sweep:GetWidth(), 0);
-    sweepMove:SetDuration(Sizes.sweepDuration);
-    sweepMove:SetSmoothing("OUT");
+    card.sweepMove = card.sweepAnim:CreateAnimation("Translation");
+    card.sweepMove:SetOffset(cardWidth + card.sweep:GetWidth(), 0);
+    card.sweepMove:SetDuration(Sizes.sweepDuration);
+    card.sweepMove:SetSmoothing("OUT");
     card.sweepAnim:SetScript("OnPlay", function()
         card.sweep:Show();
         card.sweep:ClearAllPoints();
@@ -904,64 +763,24 @@ local function paintCard(card, entry, isPending, myName)
         card.paintedSessionId = Session.id;
     end
 
-    -- Button row: Note button, then the equal-share dot+label responses
-    -- (Major/Minor/Offspec today), then the fixed-width Transmog/Pass icon
-    -- buttons - one row, Sizes.buttonGap between every element.
-    local n = math.max(#EQUAL_SHARE_RESPONSES, 1);
-    local totalElements = 1 + n + 2; -- note + equal-share + mog + pass
-    local gapCount = totalElements - 1;
-    local equalShareWidth = (Sizes.cardWidth - Sizes.cardPadding * 2
-        - Sizes.noteButtonWidth - Sizes.iconButtonWidth * 2 - Sizes.buttonGap * gapCount) / n;
+    -- Button row: Note button, then one button per entry in the SESSION's
+    -- own response snapshot, in that snapshot's order - built/pooled by the
+    -- shared ResponseRow.Build (UI/ResponseRow.lua), so this row is
+    -- pixel-identical to the settings page's own preview.
     local buttonsTop = Sizes.cardPadding + Sizes.iconSize + Sizes.cardSectionGap;
-
-    card.noteButton:ClearAllPoints();
-    card.noteButton:SetPoint("TOPLEFT", card, "TOPLEFT", Sizes.cardPadding, -buttonsTop);
     paintNoteButton(card.noteButton, card);
 
-    local prev = card.noteButton;
-    for i = 1, Sizes.maxResponseButtons do
-        local btn = card.buttons[i];
-        local optionEntry = EQUAL_SHARE_RESPONSES[i];
-        if (optionEntry) then
-            local colorEntry = Colors.responses[optionEntry.id] or Colors.responses.default;
-            btn.responseId = optionEntry.id;
-            btn:SetWidth(equalShareWidth);
-            btn:ClearAllPoints();
-            btn:SetPoint("LEFT", prev, "RIGHT", Sizes.buttonGap, 0);
-            btn:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
-            btn.label:SetText(optionEntry.label);
-            btn.hoverColor = colorEntry.color;
-
-            local isSelected = candidate and candidate.response == optionEntry.id;
-            if (isSelected) then
-                Theme.Helpers.SetFlatBackdrop(btn, colorEntry.color, colorEntry.color, 1);
-                btn.label:SetTextColor(1, 1, 1);
-                btn.baseBorder = colorEntry.color;
-                layoutButtonContent(btn, false);
-            else
-                Theme.Helpers.SetFlatBackdrop(btn, Colors.defaultBg, Colors.respondButtonBorder, 1);
-                btn.label:SetTextColor(unpack(isPending and Colors.respondLabel or Colors.muted));
-                btn.dot:SetVertexColor(colorEntry.color[1], colorEntry.color[2], colorEntry.color[3], isPending and 1 or 0.55);
-                btn.baseBorder = Colors.respondButtonBorder;
-                layoutButtonContent(btn, true);
-            end
-            btn.isHovered = nil;
-            btn:Show();
-            prev = btn;
-        else
-            btn:Hide();
-        end
-    end
-
-    card.mogButton:ClearAllPoints();
-    card.mogButton:SetPoint("LEFT", prev, "RIGHT", Sizes.buttonGap, 0);
-    card.mogButton:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
-    paintIconResponseButton(card.mogButton, candidate, isPending);
-
-    card.passButton:ClearAllPoints();
-    card.passButton:SetPoint("LEFT", card.mogButton, "RIGHT", Sizes.buttonGap, 0);
-    card.passButton:SetPoint("TOP", card.noteButton, "TOP", 0, 0);
-    paintIconResponseButton(card.passButton, candidate, isPending);
+    local list = Session.responses or {};
+    local row = ResponseRow.Build(card, list, {
+        noteButton = card.noteButton,
+        getSelectedId = function() return candidate and candidate.response or nil; end,
+        isPending = isPending,
+        scrollFrame = scrollFrame,
+        width = cardWidth - Sizes.cardPadding * 2,
+        onSelect = function(responseId) onResponseButtonClick(card, responseId); end,
+    });
+    row:ClearAllPoints();
+    row:SetPoint("TOPLEFT", card, "TOPLEFT", Sizes.cardPadding, -buttonsTop);
 end
 
 --------------------------------------------------------------------------
@@ -969,7 +788,7 @@ end
 --------------------------------------------------------------------------
 
 local function createToggleBar(parent)
-    local bar = CreateCard(parent, Sizes.cardWidth, Colors.respondToggleBarBg, "Button", Colors.respondBorderMuted);
+    local bar = CreateCard(parent, cardWidth, Colors.respondToggleBarBg, "Button", Colors.respondBorderMuted);
     bar:SetHeight(Sizes.toggleBarHeight);
     bar:RegisterForClicks("LeftButtonUp");
 
@@ -1087,7 +906,7 @@ end
 --------------------------------------------------------------------------
 
 local function createAllSentCard(parent)
-    local card = CreateCard(parent, Sizes.cardWidth);
+    local card = CreateCard(parent, cardWidth);
     card:SetHeight(ALL_SENT_CARD_HEIGHT);
     card:Hide();
 
@@ -1235,7 +1054,7 @@ end
 --------------------------------------------------------------------------
 
 local function createHeader()
-    header = CreateCard(frame, Sizes.cardWidth);
+    header = CreateCard(frame, cardWidth);
     header:SetHeight(Sizes.headerHeight);
     header:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0);
 
@@ -1299,7 +1118,7 @@ local function ensureFrame()
     -- close it) and never clamped to the screen (nothing in Pixel.* clamps).
 
     Pixel.RegisterWindow(frame, {
-        width = Sizes.cardWidth, height = Sizes.headerHeight,
+        width = cardWidth, height = Sizes.headerHeight,
         x = savedPosition and savedPosition.x or 0, y = savedPosition and savedPosition.y or 0,
     }, nil);
 
@@ -1323,7 +1142,7 @@ local function ensureFrame()
     scrollFrame:SetHeight(1);
 
     scrollChild = CreateFrame("Frame", nil, scrollFrame);
-    scrollChild:SetSize(Sizes.cardWidth, 1);
+    scrollChild:SetSize(cardWidth, 1);
     scrollFrame:SetScrollChild(scrollChild);
 
     Theme.Helpers.EnableSmoothScroll(scrollFrame, { step = CARD_HEIGHT + Sizes.stackSpacing });
@@ -1334,6 +1153,46 @@ local function ensureFrame()
     ensurePopover();
 
     frame:SetScript("OnShow", RespondWindow.RefreshTimerState);
+end
+
+--------------------------------------------------------------------------
+-- Card width - recomputed once per session from that session's own response
+-- list (Core/Responses.lua's SessionSnapshot, carried on the session as
+-- Session.responses - see LootCouncil.lua's applySessionStart), so the
+-- popup always widens to fit every label in full but never gets narrower
+-- than the default, and the clamp never exceeds 60% of the screen.
+--------------------------------------------------------------------------
+
+local cardWidthSessionId;
+
+local function applyCardWidth(newWidth)
+    if (newWidth == cardWidth) then return; end
+    cardWidth = newWidth;
+    if (not frame) then return; end -- not built yet - ensureFrame() will read the already-updated local
+
+    frame:SetWidth(cardWidth);
+    header:SetWidth(cardWidth);
+    allSentCard:SetWidth(cardWidth);
+    scrollChild:SetWidth(cardWidth);
+    toggleBar:SetWidth(cardWidth);
+    if (notePopover.frame) then
+        notePopover.frame:SetWidth(cardWidth - Sizes.popoverOffsetX * 2);
+    end
+    for _, card in pairs(cards) do
+        card:SetWidth(cardWidth);
+        card.sweep:SetWidth(cardWidth * Sizes.sweepWidthPct);
+        card.sweepMove:SetOffset(cardWidth + card.sweep:GetWidth(), 0);
+    end
+end
+
+local function updateCardWidthForSession(Session)
+    if (not Session or not Session.responses or cardWidthSessionId == Session.id) then return; end
+    cardWidthSessionId = Session.id;
+
+    local naturalRowWidth = ResponseRow.MeasureNaturalWidth(Session.responses);
+    local desired = math.max(Sizes.cardWidth, Sizes.cardPadding * 2 + naturalRowWidth);
+    desired = math.min(desired, Sizes.cardWidthMaxPct * UIParent:GetWidth());
+    applyCardWidth(desired);
 end
 
 function RespondWindow.Refresh()
@@ -1347,6 +1206,8 @@ function RespondWindow.Refresh()
         end
         return;
     end
+
+    updateCardWidthForSession(Session);
 
     local myName = Util.stripRealm(Util.UnitName("player"));
     local pending, sent = {}, {};

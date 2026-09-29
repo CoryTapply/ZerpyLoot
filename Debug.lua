@@ -35,7 +35,7 @@ local function ensureTestDisabledFrame()
     local tintedButton = FL.Theme.CreateButton(frame);
     tintedButton:SetPoint("TOP", title, "BOTTOM", 0, -14);
     tintedButton:SetText("Tinted (Major)");
-    FL.Theme.SkinButton(tintedButton, FL.Constants.LOOT_COUNCIL_RESPONSES[1].color);
+    FL.Theme.SkinButton(tintedButton, { 0.80, 0.20, 0.20 }); -- was Major's placeholder color (Core/Responses.lua now owns response colors)
     tintedButton:Disable();
 
     local accentButton = FL.Theme.CreateButton(frame);

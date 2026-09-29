@@ -12,36 +12,71 @@ local FL = ForeverLoot;
 local LootCouncil = FL.LootCouncil;
 local Util = FL.Util;
 local Constants = FL.Constants;
+local Responses = FL.Responses;
 
 FL.Awards = FL.Awards or {};
 local Awards = FL.Awards;
-
--- Response id -> its index in Constants.LOOT_COUNCIL_RESPONSES, i.e. the
--- table's sort order (Major, Minor, Offspec, Mog, Pass) - the SAME order
--- raiders see the response buttons in (UI/RespondWindow.lua). Not
--- user-configurable yet, so this is effectively hardcoded to match.
-local RESPONSE_ORDER_BY_ID = {};
-for i, entry in ipairs(Constants.LOOT_COUNCIL_RESPONSES) do
-    RESPONSE_ORDER_BY_ID[entry.id] = i;
-end
 
 --------------------------------------------------------------------------
 -- Candidate list (the main panel's table rows)
 --------------------------------------------------------------------------
 
---- This item's index (1..#LOOT_COUNCIL_RESPONSES) in the response option
---- order, or math.huge for an unrecognized id so it sorts last instead of
---- erroring.
----@param responseId string
-function Awards.ResponseOrder(responseId)
-    return RESPONSE_ORDER_BY_ID[responseId] or math.huge;
+-- The current session's response snapshot's id->order map, i.e. each
+-- response's position in Session.responses (the SAME order raiders see the
+-- response buttons in - UI/RespondWindow.lua). Cached on the Session table
+-- itself (a session's response list never mutates mid-session - see
+-- Core/Responses.lua's "editing settings during a session doesn't change
+-- the running session" rule) and rebuilt only when the session identity
+-- changes, so a candidate-list sort never re-scans the list per candidate.
+local cachedSessionId, cachedOrderById;
+
+local function orderByIdForSession(Session)
+    if (not Session or not Session.responses) then return nil; end
+    if (cachedSessionId ~= Session.id) then
+        cachedOrderById = {};
+        for i, entry in ipairs(Session.responses) do
+            cachedOrderById[entry.id] = i;
+        end
+        cachedSessionId = Session.id;
+    end
+    return cachedOrderById;
 end
 
---- The UI.Colors.responses entry for `responseId`, or its `default` fallback.
----@param responseId string
+--- This response's position in the current session's response snapshot, or
+--- math.huge for an id that isn't in it (covers the synthetic AWAITING/
+--- OFFLINE/NO_ADDON ids, and any response from a session with no snapshot
+--- at all, e.g. one started before this feature existed) so it sorts last
+--- instead of erroring.
+---@param responseId number|string
+function Awards.ResponseOrder(responseId)
+    local orderById = orderByIdForSession(LootCouncil.CurrentSession);
+    return (orderById and orderById[responseId]) or math.huge;
+end
+
+--- `{ color = {r,g,b} }` for `responseId` - resolved against the current
+--- session's response snapshot first (a real, user-configured response),
+--- falling back to UI.Colors.responses[id]/.default for an id the session
+--- snapshot doesn't know about (the synthetic AWAITING/OFFLINE/NO_ADDON ids,
+--- or a session with no snapshot at all).
+---@param responseId number|string
 function Awards.ResponseColor(responseId)
     local Colors = FL.UI.Colors;
+    local Session = LootCouncil.CurrentSession;
+    local entry = Session and Session.responses and Responses.GetById(Session.responses, responseId);
+    if (entry) then
+        return { color = { Util.HexToRGB(entry.color) } };
+    end
     return Colors.responses[responseId] or Colors.responses.default;
+end
+
+--- The display label for `responseId` - same session-snapshot-first,
+--- synthetic-id-fallback pattern as ResponseColor above.
+---@param responseId number|string
+function Awards.ResponseLabel(responseId)
+    local Session = LootCouncil.CurrentSession;
+    local entry = Session and Session.responses and Responses.GetById(Session.responses, responseId);
+    if (entry) then return entry.label; end
+    return Constants.LOOT_COUNCIL_RESPONSE_LABELS[responseId] or tostring(responseId);
 end
 
 -- Placeholder candidate handed out below for a group member who hasn't

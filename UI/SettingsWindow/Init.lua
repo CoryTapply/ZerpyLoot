@@ -320,6 +320,11 @@ end
 
 function SettingsWindow.Hide()
     if (frame) then frame:Hide(); end
+    -- A Loot Responses row's color palette popover (Skin.ColorPalette) is
+    -- its own DIALOG-strata frame, not a child the window hiding otherwise
+    -- clips/hides - close it explicitly so it never survives the window
+    -- closing under it.
+    Skin.CloseAnyOpenColorPalette();
 end
 
 function SettingsWindow.Toggle()

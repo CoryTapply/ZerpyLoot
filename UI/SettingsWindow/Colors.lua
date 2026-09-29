@@ -117,16 +117,15 @@ FL.UI.Colors = {
     respondTimerPausedFill  = { 0.290, 0.239, 0.078 }, -- #4a3d14
 
     ----------------------------------------------------------------------
-    -- UI/RespondWindow.lua - icon-button colors added for the button-row
-    -- redesign (Note button + icon-only Transmog/Pass). Everything else the
-    -- redesign uses (gold, muted, text, textBright, windowBg, selectedFill,
-    -- selectedBorder, defaultBg, checkboxBorder, controlFocus,
-    -- respondNotePlaceholder, respondButtonBorder, responses.MOG.color) is
-    -- reused as-is.
+    -- UI/ResponseRow.lua - icon-kind (Transmog/Pass) response buttons. Both
+    -- kinds' colors are user-configurable now (Core/Responses.lua), so
+    -- there's no more per-kind fixed color here (the old respondMogSelectedBg/
+    -- respondPassHover/respondPassSelectedBg) - hover/selected border is
+    -- always the entry's own color at full opacity, and the selected
+    -- background is that same color at this one shared alpha (the same
+    -- translucent-tint treatment Transmog's selected bg always used).
     ----------------------------------------------------------------------
-    respondMogSelectedBg  = { 0.690, 0.310, 0.851, 0.28 }, -- #b04fd9 @28% - Transmog selected bg (translucent, not the shared opaque responses.MOG.color)
-    respondPassHover      = { 0.541, 0.506, 0.463 }, -- #8a8176 - Pass hover/selected border (own constant - numerically == controlHover but never aliased to it, and never reuses the shared responses.PASS)
-    respondPassSelectedBg = { 0.227, 0.208, 0.188 }, -- #3a3530 - Pass selected bg (solid, unlike Transmog's translucent one)
+    respondIconSelectedBgAlpha = 0.28,
 
     ----------------------------------------------------------------------
     -- UI/AwardWindow.lua - the colors below aren't already covered by an
@@ -216,22 +215,19 @@ FL.UI.Colors = {
     groupLootTimerDangerStart = { 0.427, 0.106, 0.106 }, -- #6d1b1b - last-10s gradient start
 };
 
--- Per-response-option colors (UI/RespondWindow.lua, UI/AwardWindow.lua),
--- keyed by the same `id` strings as Constants.LOOT_COUNCIL_RESPONSES -
--- deliberately independent from that table's own muted `color` field.
--- `default` is the fallback for an id this table
--- doesn't know about, so a future user-configurable response list degrades
--- gracefully instead of erroring.
+-- Colors for the 3 SYNTHETIC, non-configurable response ids (a candidate row
+-- shown before/instead of a real response - see Core/Constants.lua's
+-- LOOT_COUNCIL_AWAITING/OFFLINE/NO_ADDON_RESPONSE_ID) plus the `default`
+-- fallback. Every REAL response's color now lives on its own entry in
+-- Core/Responses.lua's list (a plain hex string) - see
+-- Session/Awards.lua's ResponseColor, which checks the current session's
+-- response snapshot first and only falls back to this table for an id it
+-- doesn't find there (which is exactly what these synthetic ids are).
 -- Selected-button label is always plain white regardless of the option's
 -- own fill color (kept simple after Minor's/Pass's originally-planned dark
 -- text - #1a1100/#0d1a0f, for contrast against their lighter fills - read as
 -- an unwanted color shift rather than intentional contrast).
 FL.UI.Colors.responses = {
-    MAJOR   = { color = { 0.851, 0.212, 0.212 } }, -- #d93636
-    MINOR   = { color = { 0.910, 0.573, 0.165 } }, -- #e8922a
-    OFFSPEC = { color = { 0.184, 0.498, 0.851 } }, -- #2f7fd9
-    MOG     = { color = { 0.690, 0.310, 0.851 } }, -- #b04fd9
-    PASS    = { color = { 0.247, 0.702, 0.310 } }, -- #3fb34f
     -- Grey placeholder pill for Constants.LOOT_COUNCIL_AWAITING_RESPONSE_ID
     -- (a candidate row shown before that player has actually responded).
     AWAITING = { color = FL.UI.Colors.muted },
@@ -286,3 +282,45 @@ FL.UI.Colors.autoRollMutedNote = { 0.541, 0.506, 0.463 }; -- #8a8176 - bottom-of
     -- its own token since the two are semantically unrelated.
 FL.UI.Colors.autoRollPopupButtonBorder = { 0.290, 0.263, 0.231 }; -- #4a433b -
     -- 2x2 grid button's unselected border.
+
+----------------------------------------------------------------------
+-- UI/SettingsWindow/Pages/LootResponses.lua - the colors below aren't
+-- already covered by an entry above; everything else the page uses
+-- (sessionListBg, memberBorder, memberBg, defaultBg, border, muted, gold,
+-- disabledText, controlBg, checkboxBorder, text, windowBg, controlFocus,
+-- primaryBorder, skinCloseBorder, sessionDeleteHoverIcon, respondSentLabel,
+-- description, arrowBoxBorder, awardWarningIcon, respondBorderMuted) is
+-- reused as-is (see the aliases below).
+----------------------------------------------------------------------
+FL.UI.Colors.lrListBg          = FL.UI.Colors.sessionListBg;    -- #0f0d0c - list box fill
+FL.UI.Colors.lrListBorder      = FL.UI.Colors.memberBorder;     -- #2e2a25 - list box border
+FL.UI.Colors.lrRowDivider      = { 0.122, 0.110, 0.098 };       -- #1f1c19 - between-row divider (new)
+FL.UI.Colors.lrRowHoverBg      = FL.UI.Colors.memberBg;         -- #1a1714 - row hover fill
+FL.UI.Colors.lrArrowBg         = FL.UI.Colors.defaultBg;        -- #1c1916 - move-arrow/delete button bg
+FL.UI.Colors.lrArrowBorder     = FL.UI.Colors.border;           -- #4b443b - move-arrow/delete button border
+FL.UI.Colors.lrArrowIcon       = FL.UI.Colors.muted;            -- #a39a8e - move-arrow icon
+FL.UI.Colors.lrArrowHover      = FL.UI.Colors.gold;             -- #ffd100 - move-arrow hover border/icon
+FL.UI.Colors.lrLockIcon        = FL.UI.Colors.disabledText;     -- #6f685f - Pass row's lock icon
+FL.UI.Colors.lrSwatchBg        = FL.UI.Colors.controlBg;        -- #0c0b0a - color swatch bg
+FL.UI.Colors.lrSwatchBorder    = FL.UI.Colors.checkboxBorder;   -- #5a534a - color swatch border
+FL.UI.Colors.lrSwatchHover     = FL.UI.Colors.text;             -- #efe9df - color swatch hover border
+FL.UI.Colors.lrPopoverBg       = FL.UI.Colors.windowBg;         -- #151311 - color palette popover bg
+FL.UI.Colors.lrPopoverBorder   = FL.UI.Colors.controlFocus;     -- #9c7c1c - color palette popover border
+FL.UI.Colors.lrErrorFlash      = FL.UI.Colors.skinCloseBorder;  -- #c0392b - invalid-label border flash
+FL.UI.Colors.lrErrorText       = FL.UI.Colors.sessionDeleteHoverIcon; -- #ff6b5e - status line error text
+FL.UI.Colors.lrSuccessText     = FL.UI.Colors.respondSentLabel; -- #4fd964 - status line success text
+FL.UI.Colors.lrInfoText        = FL.UI.Colors.description;      -- #cfc6b8 - status line info text
+FL.UI.Colors.lrDashedBorder    = FL.UI.Colors.arrowBoxBorder;   -- #6b604f - "Add Response" dashed border
+FL.UI.Colors.lrResetConfirmText = FL.UI.Colors.awardWarningIcon; -- #ff8a70 - "Reset" confirm button text
+FL.UI.Colors.lrEditBoxBg       = FL.UI.Colors.controlBg;        -- #0c0b0a - label EditBox bg
+FL.UI.Colors.lrEditBoxBorder   = FL.UI.Colors.respondBorderMuted; -- #3f3a33 - label EditBox border
+FL.UI.Colors.lrEditBoxFocus    = FL.UI.Colors.controlFocus;     -- #9c7c1c - label EditBox focused border
+
+-- The 12 color-palette presets (Skin.ColorPalette) - built off
+-- Core/Responses.lua's own hex list (Responses.PALETTE_PRESETS), not a
+-- second hardcoded copy, so Responses.AddText's "first unused preset" logic
+-- and this popover's swatches can never drift apart.
+FL.UI.Colors.responsePalette = {};
+for i, hex in ipairs(FL.Responses.PALETTE_PRESETS) do
+    FL.UI.Colors.responsePalette[i] = { FL.Util.HexToRGB(hex) };
+end
