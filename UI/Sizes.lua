@@ -536,7 +536,7 @@ FL.UI.Sizes = {
                 confirmDuration = 4,
             },
 
-            resultList = { padTop = 6.5, gap = 1 },
+            resultList = { padTop = 8, gap = 4 },
 
             -- Shared response-pill metrics for the result row's meta line and
             -- the expanded candidate table - smaller than award.mainPanel's
@@ -544,15 +544,15 @@ FL.UI.Sizes = {
             pill = { height = 14, padX = 6, dotSize = 5, dotGap = 3 },
 
             resultRow = {
-                collapsedHeight = 36, pad = 5, gap = 6.5,
-                iconSize = 24, iconBorder = 1,
-                textLineGap = 4, metaGap = 4,
+                collapsedHeight = 40, pad = 6, gap = 8,
+                iconSize = 26, iconBorder = 1,
+                textLineGap = 5, metaGap = 5,
                 chevronSize = 16,
                 manualTagGap = 5, manualTagPadX = 4,
             },
 
             expanded = {
-                leftInset = 35, rightMargin = 6.5, bottomMargin = 6.5, topPad = 5,
+                leftInset = 40, rightMargin = 6.5, bottomMargin = 6.5, topPad = 5,
                 headerRowHeight = 14, rowHeight = 18, rowGap = 1,
                 colCandidate = 104, colResponse = 72, colVotes = 39,
                 crownSize = 9, crownGap = 3,

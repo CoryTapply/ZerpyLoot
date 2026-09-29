@@ -87,7 +87,9 @@ function Skin.AddInnerShadow(frame)
 end
 
 --------------------------------------------------------------------------
--- Skin.EditBox - the sidebar "Search settings" box (SearchBoxTemplate).
+-- Skin.EditBox - the sidebar "Search settings" box (SearchBoxTemplate), also
+-- reused by LootHistoryWindow.lua's plain text fields (Awarded To, Date,
+-- Time, Note) for just the backdrop/shadow/focus-color chrome below.
 -- Template art being stripped: EditBox.Left/Right/Middle (border, from
 -- InputBoxVisualTemplate) plus EditBox.searchIcon and EditBox.clearButton
 -- (SearchBoxTemplate's own magnifying-glass icon and X button) - confirmed
@@ -96,9 +98,14 @@ end
 -- kept - Blizzard's own OnTextChanged/OnEditFocusGained/Lost scripts already
 -- show/hide it exactly per the spec ("hidden while there's text or focus"),
 -- just recolored/refonted here.
+--
+-- `clearOnEscape` (default false): opt in for an actual search box, where
+-- Escape clearing the query is the expected shortcut. Left off for a plain
+-- data-entry field (LootHistoryWindow's Add Entry dialog) - there Escape
+-- should only blur the field, not discard what was typed.
 --------------------------------------------------------------------------
 
-function Skin.EditBox(editBox)
+function Skin.EditBox(editBox, clearOnEscape)
     hideTexture(editBox.Left);
     hideTexture(editBox.Right);
     hideTexture(editBox.Middle);
@@ -130,11 +137,13 @@ function Skin.EditBox(editBox)
     end);
 
     -- SearchBoxTemplate's own OnEscapePressed only clears focus
-    -- (EditBox_ClearFocus) - the spec wants the text cleared too. Hooked
-    -- (not replaced) so that focus-clear still runs.
-    editBox:HookScript("OnEscapePressed", function(self)
-        self:SetText("");
-    end);
+    -- (EditBox_ClearFocus) - for a real search box the spec wants the text
+    -- cleared too. Hooked (not replaced) so that focus-clear still runs.
+    if (clearOnEscape) then
+        editBox:HookScript("OnEscapePressed", function(self)
+            self:SetText("");
+        end);
+    end;
 end
 
 --------------------------------------------------------------------------

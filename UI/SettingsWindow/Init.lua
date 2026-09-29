@@ -115,7 +115,7 @@ local function createSidebar()
         SearchBoxTemplate_OnTextChanged(self);
         FL.UI.SettingsRegistry.ApplySearch(self:GetText());
     end);
-    Skin.EditBox(searchBox);
+    Skin.EditBox(searchBox, true);
 
     return sidebar, searchBox;
 end

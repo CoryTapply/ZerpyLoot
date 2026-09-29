@@ -345,7 +345,7 @@ local function buildFilterColumn(parent, opts)
             SearchBoxTemplate_OnTextChanged(self);
             col.refresh();
         end);
-        Skin.EditBox(searchBox);
+        Skin.EditBox(searchBox, true);
     end
 
     ------------------------------------------------------------------
@@ -1042,8 +1042,10 @@ local function measureAndPaintResultRow(row, entry)
 
     if (isExpanded) then
         Theme.Helpers.SetFlatBackdrop(row, Colors.lhExpandedBg, Colors.disabledBorder, 1);
+        row.divider:Hide();
     else
         Theme.Helpers.SetFlatBackdrop(row, Colors.transparent, Colors.transparent, 1);
+        row.divider:Show();
     end
 
     row.icon:SetTexture(entry.itemIcon or Util.GetItemIcon(entry.itemID) or FALLBACK_ICON);
@@ -1433,6 +1435,10 @@ local function makeValidatedField(fieldBox)
             self:SetBackdropBorderColor(unpack(self:HasFocus() and Colors.controlFocus or Colors.controlBorder));
         end
     end);
+    -- Plain EditBox doesn't blur itself on Escape by default (unlike an
+    -- EditBox built off a template with its own OnEscapePressed) - mirrors
+    -- dialog.itemBox's own explicit handler below.
+    fieldBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); end);
     return fieldBox;
 end
 
@@ -1477,7 +1483,7 @@ local function ensureAddEntryPopup()
 
     dialog.itemBox.placeholder = dialog.itemBox:CreateFontString(nil, "OVERLAY");
     SetFont(dialog.itemBox.placeholder, "body");
-    dialog.itemBox.placeholder:SetPoint("LEFT", dialog.itemBox, "LEFT", 6, 0);
+    dialog.itemBox.placeholder:SetPoint("LEFT", dialog.itemBox, "LEFT", 8, 0);
     dialog.itemBox.placeholder:SetPoint("RIGHT", dialog.itemBox, "RIGHT", -6, 0);
     dialog.itemBox.placeholder:SetJustifyH("LEFT");
     dialog.itemBox.placeholder:SetWordWrap(false);
@@ -1598,10 +1604,11 @@ local function ensureAddEntryPopup()
     dialog.noteBox:SetHeight(p.inputHeight);
     dialog.noteBox:SetMaxLetters(p.noteMaxLetters);
     Skin.EditBox(dialog.noteBox);
+    dialog.noteBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); end);
 
     dialog.noteBox.placeholder = dialog.noteBox:CreateFontString(nil, "OVERLAY");
     SetFont(dialog.noteBox.placeholder, "search");
-    dialog.noteBox.placeholder:SetPoint("LEFT", dialog.noteBox, "LEFT", 6, 0);
+    dialog.noteBox.placeholder:SetPoint("LEFT", dialog.noteBox, "LEFT", 12, 0);
     dialog.noteBox.placeholder:SetJustifyH("LEFT");
     dialog.noteBox.placeholder:SetText("e.g. traded after the raid");
     dialog.noteBox.placeholder:SetTextColor(unpack(Colors.controlHover));
