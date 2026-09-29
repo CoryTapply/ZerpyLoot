@@ -33,6 +33,20 @@ local currentSearchText = "";
 local contentFrame; -- the scroll child every page's frame is anchored into
 local footerRowFrame; -- the footer container's button row; each page gets its own subframe of this
 
+-- Sidebar search (see Registry.ApplySearch/Registry.Build below). While a
+-- query is active, the nav button list (navButtonsById + profileDivider) is
+-- swapped out for resultsContainer, a flat cross-page list of matching
+-- settings built from every page's own searchEntries (see Widgets.lua's
+-- addSearchEntry) the first time it's actually needed.
+local searchBoxRef; -- the sidebar EditBox itself (Init.lua's `topAnchor`) - cleared on a result click so the nav list reappears
+local profileDivider; -- the one fixed divider before "Profiles" (DIVIDER_BEFORE_ID) - hidden alongside the nav buttons during a search
+local resultsContainer;
+local resultButtons = {}; -- pooled result-row buttons, reused across searches/keystrokes
+local searchIndex; -- built lazily, once, on first non-empty query: array of { label, labelLower, frame, pageId, pageLabel }
+local RESULT_ROW_PAD_Y = Sizes.layout.searchResultPadY;
+local RESULT_ROW_LINE_GAP = Sizes.layout.searchResultLineGap;
+local RESULT_ROW_GAP = Sizes.layout.searchResultGap;
+
 --- `opts.footer` (optional): a page-owned footer builder `function(footerFrame,
 --- page)`, `false` for no footer at all, or omitted for the default footer
 --- ("Reset This Page" + "Changes save automatically" - see
@@ -76,6 +90,7 @@ local function ensurePageBuilt(entry)
         checkboxByKey = {},
         resettableKeys = {},
         refreshers = {},
+        searchEntries = {},
     }, Widgets.PageMethods);
 
     entry.page = page;
@@ -108,26 +123,169 @@ local function ensurePageBuilt(entry)
     entry.built = true;
 end
 
+local function setNavChromeShown(shown)
+    for _, button in pairs(navButtonsById) do button:SetShown(shown); end
+    if (profileDivider) then profileDivider:SetShown(shown); end
+end
+
+--- Forces every page to build (see ensurePageBuilt) so each one's
+--- searchEntries is populated, then flattens them into one cross-page list -
+--- built once, lazily, the first time the search box actually has text in
+--- it (not at window-open time), and cached from then on since a page's
+--- widget labels/frames never change once built.
+local function buildSearchIndex()
+    if (searchIndex) then return; end
+    searchIndex = {};
+    for _, entry in ipairs(pageEntries) do
+        ensurePageBuilt(entry);
+        for _, se in ipairs(entry.page.searchEntries) do
+            table.insert(searchIndex, {
+                label = se.label,
+                labelLower = string.lower(se.label),
+                frame = se.frame,
+                pageId = entry.id,
+                pageLabel = entry.label,
+            });
+        end
+    end
+end
+
+--- Returns resultButtons[index], creating it the first time that slot is
+--- needed - same reuse-across-searches pooling idiom as the rest of this
+--- window, so retyping a query doesn't churn frames every keystroke. Sized
+--- (width AND height) fresh by the caller on every population pass below,
+--- not here - a row's real height depends on how many lines its own label
+--- wraps to, which isn't known until that label's actually set.
+local function acquireResultButton(index)
+    local button = resultButtons[index];
+    if (button) then return button; end
+
+    button = CreateFrame("Button", nil, resultsContainer, "BackdropTemplate");
+
+    local title = button:CreateFontString(nil, "OVERLAY");
+    SetFont(title, "body");
+    title:SetJustifyH("LEFT");
+    title:SetJustifyV("TOP");
+    title:SetPoint("TOPLEFT", button, "TOPLEFT", Sizes.layout.sidebarTextInset, -RESULT_ROW_PAD_Y);
+    title:SetTextColor(unpack(Colors.text));
+    button.title = title;
+
+    local subtitle = button:CreateFontString(nil, "OVERLAY");
+    SetFont(subtitle, "small");
+    subtitle:SetJustifyH("LEFT");
+    subtitle:SetJustifyV("TOP");
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -RESULT_ROW_LINE_GAP);
+    subtitle:SetTextColor(unpack(Colors.muted));
+    button.subtitle = subtitle;
+
+    button:SetScript("OnEnter", function(self) Theme.Helpers.SetFlatBackdrop(self, Colors.hoverBg, Colors.transparent, 1); end);
+    button:SetScript("OnLeave", function(self) self:SetBackdrop(nil); end);
+
+    resultButtons[index] = button;
+    return button;
+end
+
+--- Clears the search box (so the nav list reappears), switches to the
+--- match's page, then scrolls/flashes the exact row the player picked - same
+--- SelectPage-then-scroll-to-it pattern already used by
+--- UI/AutoRollPopup.lua's "View Overrides" and UI/GroupLootFrame.lua's
+--- right-click-to-settings (see Init.lua's ScrollToSection), just resolved
+--- straight from the match's own frame instead of a fixed sectionAnchors id.
+local function selectSearchResult(match)
+    if (searchBoxRef) then searchBoxRef:SetText(""); searchBoxRef:ClearFocus(); end
+    Registry.SelectPage(match.pageId);
+    SettingsWindow.ScrollToFrame(match.frame);
+end
+
+--- Drives the sidebar search box (Init.lua's searchBox OnTextChanged). Empty
+--- text restores the normal nav button list; non-empty text hides it and
+--- shows resultsContainer instead, filled with every setting (across every
+--- page, not just the one currently open) whose label contains the query -
+--- clicking one navigates to and flashes it (see selectSearchResult above).
+--- Deliberately no longer hides non-matching rows in place on the current
+--- page - that old behavior collapsed page layout out from under the player
+--- and couldn't find a setting on another page at all.
 function Registry.ApplySearch(text)
     currentSearchText = string.lower(strtrim(text or ""));
-    local entry = currentEntry;
-    if (not entry or not entry.page) then return; end
-    local page = entry.page;
 
-    for _, row in pairs(page.checkboxByKey) do
-        local visible = (currentSearchText == "") or (string.find(row.labelLower, currentSearchText, 1, true) ~= nil);
-        row.frame:SetShown(visible);
+    if (currentSearchText == "") then
+        if (resultsContainer) then resultsContainer:Hide(); end
+        setNavChromeShown(true);
+        return;
     end
 
-    for _, section in ipairs(page.sections or {}) do
-        local anyVisible = (#section.rows == 0);
-        for _, row in ipairs(section.rows) do
-            if (row.frame:IsShown()) then anyVisible = true; break; end
+    if (not resultsContainer) then return; end -- ApplySearch("") can fire before Registry.Build has run its course
+
+    buildSearchIndex();
+    setNavChromeShown(false);
+    resultsContainer:Show();
+    resultsContainer.emptyText:Hide();
+    resultsContainer.moreText:Hide();
+    for _, button in pairs(resultButtons) do button:Hide(); end
+
+    local matches = {};
+    for _, e in ipairs(searchIndex) do
+        if (string.find(e.labelLower, currentSearchText, 1, true) ~= nil) then
+            table.insert(matches, e);
         end
-        section.frame:SetShown(anyVisible);
     end
 
-    SettingsWindow.RefreshScrollBar();
+    if (#matches == 0) then
+        resultsContainer.emptyText:Show();
+        return;
+    end
+
+    -- Each row's height is MEASURED from its own (possibly wrapped) label
+    -- text, not assumed fixed - a label longer than the sidebar is wide
+    -- wraps to 2-3 lines, and a fixed row height would let that spill into
+    -- the next row instead of pushing it down. Rows are added one at a time
+    -- until they've used up the space actually available below the search
+    -- box (resultsContainer:GetHeight()), with a "+N more" hint for whatever
+    -- didn't fit - always showing at least one match, however tall, so a
+    -- single very long label never results in an empty-looking list.
+    local containerHeight = resultsContainer:GetHeight();
+    local rowWidth = resultsContainer:GetWidth();
+    local textWidth = math.max(1, rowWidth - (Sizes.layout.sidebarTextInset * 2));
+
+    local y = 0;
+    local shown = 0;
+    for i = 1, #matches do
+        local match = matches[i];
+        local button = acquireResultButton(i);
+
+        -- Width -> text -> measure, in that order (same rule
+        -- Widgets.BuildCheckboxRow's own comment spells out) - an explicit
+        -- SetWidth measures correctly the same frame, unlike a width derived
+        -- from a RIGHT anchor point, which can lag a frame behind on this
+        -- client.
+        button.title:SetWidth(textWidth);
+        button.title:SetText(match.label);
+        button.subtitle:SetWidth(textWidth);
+        button.subtitle:SetText(match.pageLabel);
+
+        local rowHeight = RESULT_ROW_PAD_Y + button.title:GetStringHeight()
+            + RESULT_ROW_LINE_GAP + button.subtitle:GetStringHeight() + RESULT_ROW_PAD_Y;
+
+        if (shown > 0 and (-y + rowHeight) > containerHeight) then break; end
+
+        button:ClearAllPoints();
+        button:SetPoint("TOPLEFT", resultsContainer, "TOPLEFT", 0, y);
+        button:SetWidth(rowWidth);
+        button:SetHeight(rowHeight);
+        button:SetScript("OnClick", function() selectSearchResult(match); end);
+        button:Show();
+
+        y = y - rowHeight - RESULT_ROW_GAP;
+        shown = shown + 1;
+    end
+
+    if (shown < #matches) then
+        resultsContainer.moreText:ClearAllPoints();
+        resultsContainer.moreText:SetPoint("TOPLEFT", resultsContainer, "TOPLEFT", Sizes.layout.sidebarTextInset, y);
+        resultsContainer.moreText:SetPoint("RIGHT", resultsContainer, "RIGHT", -Sizes.layout.sidebarTextInset, 0);
+        resultsContainer.moreText:SetText(("+%d more - keep typing to narrow it down"):format(#matches - shown));
+        resultsContainer.moreText:Show();
+    end
 end
 
 function Registry.SelectPage(id)
@@ -196,11 +354,43 @@ end
 function Registry.Build(sidebar, content, topAnchor, footerRow)
     contentFrame = content;
     footerRowFrame = footerRow;
+    searchBoxRef = topAnchor;
 
     table.sort(pageEntries, function(a, b) return a.order < b.order; end);
 
     local padX = Sizes.layout.sidebarPadX;
     local textInset = Sizes.layout.sidebarTextInset;
+
+    -- Search results list: occupies the same sidebar space as the nav button
+    -- list below, swapped in by Registry.ApplySearch while a query is
+    -- active. Anchored off topAnchor (the search box itself) rather than
+    -- padX/sidebar directly, so it picks up the exact same left/right inset
+    -- the search box already has. Built once, up front, so it exists (even
+    -- if hidden and empty) by the time the very first Registry.SelectPage
+    -- call below runs its own Registry.ApplySearch("").
+    resultsContainer = CreateFrame("Frame", nil, sidebar);
+    resultsContainer:SetPoint("TOPLEFT", topAnchor, "BOTTOMLEFT", 0, -Sizes.layout.searchNavGap);
+    resultsContainer:SetPoint("TOPRIGHT", topAnchor, "BOTTOMRIGHT", 0, -Sizes.layout.searchNavGap);
+    resultsContainer:SetPoint("BOTTOM", sidebar, "BOTTOM", 0, Sizes.layout.sidebarPadTop);
+    resultsContainer:SetClipsChildren(true);
+    resultsContainer:Hide();
+
+    local emptyText = resultsContainer:CreateFontString(nil, "OVERLAY");
+    SetFont(emptyText, "small");
+    emptyText:SetJustifyH("LEFT");
+    emptyText:SetPoint("TOPLEFT", resultsContainer, "TOPLEFT", textInset, -4);
+    emptyText:SetPoint("RIGHT", resultsContainer, "RIGHT", -textInset, 0);
+    emptyText:SetText("No matching settings.");
+    emptyText:SetTextColor(unpack(Colors.muted));
+    emptyText:Hide();
+    resultsContainer.emptyText = emptyText;
+
+    local moreText = resultsContainer:CreateFontString(nil, "OVERLAY");
+    SetFont(moreText, "small");
+    moreText:SetJustifyH("LEFT");
+    moreText:SetTextColor(unpack(Colors.muted));
+    moreText:Hide();
+    resultsContainer.moreText = moreText;
 
     -- Nav buttons/divider are inset padX from both sidebar edges - same
     -- width as the search box above them, not edge to edge (an inset pill
@@ -221,6 +411,7 @@ function Registry.Build(sidebar, content, topAnchor, footerRow)
             divider:SetHeight(FL.Pixel.PixelSize(1));
             prevAnchor = divider;
             prevWasDivider = true;
+            profileDivider = divider;
         end
 
         local gapAbove;

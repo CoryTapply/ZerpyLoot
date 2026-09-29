@@ -296,7 +296,7 @@ function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
         SoftRes.Broadcast();
 
         local channel = Util.GroupChatChannel();
-        if (channel) then
+        if (channel and FL.Settings.GetRaidChatSoftresImportedEnabled()) then
             Util.SendChatMessageSafe("Softres data was imported", channel);
         end
     end
@@ -499,6 +499,7 @@ local function canAnswerWhisperCommand()
 end
 
 local function sendWhisperReply(sender, text)
+    if (not FL.Settings.GetRaidChatSoftresWhisperReplyEnabled()) then return; end
     Util.SendChatMessageSafe(text, "WHISPER", nil, sender);
 end
 

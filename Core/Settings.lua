@@ -56,6 +56,17 @@ function Settings.Init()
     ar.nextOrder = ar.nextOrder or 1;
     ar.sessionChoices = ar.sessionChoices or {}; -- [instanceID] = "manual"|"need"|"greed"|"pass"
 
+    -- Announcements settings page > "Raid Chat" section. Each field gates
+    -- one chat announcement/reply sent by SoftRes.lua / RollTracker.lua - see
+    -- FL.Settings.GetRaidChat*/SetRaidChat* below for which. All default on.
+    s.raidChat = s.raidChat or {};
+    local rc = s.raidChat;
+    rc.softresImported = (rc.softresImported == nil) and true or (rc.softresImported == true);
+    rc.softresWhisperReply = (rc.softresWhisperReply == nil) and true or (rc.softresWhisperReply == true);
+    rc.rollCountdown = (rc.rollCountdown == nil) and true or (rc.rollCountdown == true);
+    rc.rollCountdownSeconds = rc.rollCountdownSeconds or 5;
+    rc.lootCouncilAward = (rc.lootCouncilAward == nil) and true or (rc.lootCouncilAward == true);
+
     -- General settings page > "Sounds" section. Both events default on, and
     -- default to the sound each played before this section had per-event
     -- LSM pickers (see FL.Constants.SOUND_RAID_WARNING_KEY/SOUND_SONIC_RING_KEY).
@@ -450,6 +461,73 @@ function Settings.SetAutoRollSessionChoice(instanceID, choice)
 end
 
 --------------------------------------------------------------------------
+-- Announcements settings page (UI/SettingsWindow/Pages/Announcements.lua),
+-- "Raid Chat" section. Each checkbox individually gates one chat
+-- announcement/reply - see SoftRes.lua:300 (import), SoftRes.lua's
+-- sendWhisperReply (soft-reserve whisper lookup), RollTracker.lua's
+-- "N seconds to roll" countdown, and LootCouncil.lua's award/disenchant
+-- announcements for the call sites these guard.
+--------------------------------------------------------------------------
+
+function Settings.GetRaidChatSoftresImportedEnabled()
+    local rc = FL.DB and FL.DB.settings and FL.DB.settings.raidChat;
+    if (rc == nil or rc.softresImported == nil) then return true; end
+    return rc.softresImported == true;
+end
+
+function Settings.SetRaidChatSoftresImportedEnabled(enabled)
+    FL.DB.settings.raidChat.softresImported = enabled and true or false;
+end
+
+function Settings.GetRaidChatSoftresWhisperReplyEnabled()
+    local rc = FL.DB and FL.DB.settings and FL.DB.settings.raidChat;
+    if (rc == nil or rc.softresWhisperReply == nil) then return true; end
+    return rc.softresWhisperReply == true;
+end
+
+function Settings.SetRaidChatSoftresWhisperReplyEnabled(enabled)
+    FL.DB.settings.raidChat.softresWhisperReply = enabled and true or false;
+end
+
+function Settings.GetRaidChatRollCountdownEnabled()
+    local rc = FL.DB and FL.DB.settings and FL.DB.settings.raidChat;
+    if (rc == nil or rc.rollCountdown == nil) then return true; end
+    return rc.rollCountdown == true;
+end
+
+function Settings.SetRaidChatRollCountdownEnabled(enabled)
+    FL.DB.settings.raidChat.rollCountdown = enabled and true or false;
+end
+
+-- How many seconds before a roll-off ends the "N seconds to roll" countdown
+-- starts announcing in chat (counts down from this value to 1 in RollTracker
+-- .lua's `for i = n, 1, -1` loop). Clamped to a sane range since it's read
+-- straight off a free-typed EditBox.
+function Settings.GetRaidChatRollCountdownSeconds()
+    local rc = FL.DB and FL.DB.settings and FL.DB.settings.raidChat;
+    return (rc and rc.rollCountdownSeconds) or 5;
+end
+
+function Settings.SetRaidChatRollCountdownSeconds(seconds)
+    seconds = math.floor(tonumber(seconds) or 5);
+    if (seconds < 1) then seconds = 1; end
+    if (seconds > 30) then seconds = 30; end
+    FL.DB.settings.raidChat.rollCountdownSeconds = seconds;
+end
+
+-- Gates both LootCouncil.lua award announcements ("<item> was awarded to
+-- <player>!" and "<item> will be disenchanted!") behind a single checkbox.
+function Settings.GetRaidChatLootCouncilAwardEnabled()
+    local rc = FL.DB and FL.DB.settings and FL.DB.settings.raidChat;
+    if (rc == nil or rc.lootCouncilAward == nil) then return true; end
+    return rc.lootCouncilAward == true;
+end
+
+function Settings.SetRaidChatLootCouncilAwardEnabled(enabled)
+    FL.DB.settings.raidChat.lootCouncilAward = enabled and true or false;
+end
+
+--------------------------------------------------------------------------
 -- Dotted-path accessors (UI/SettingsWindow/Widgets.lua's Section:Checkbox
 -- and Section:Dropdown read/write settings by a "key" path string, e.g.
 -- "loot.replacePopup", rather than calling a named getter/setter directly -
@@ -483,6 +561,11 @@ local PATHS = {
     ["sounds.raidWarningSound"] = { get = Settings.GetSoundRaidWarningKey, set = Settings.SetSoundRaidWarningKey },
     ["sounds.selfSR"] = { get = Settings.GetSoundSelfSREnabled, set = Settings.SetSoundSelfSREnabled },
     ["sounds.selfSRSound"] = { get = Settings.GetSoundSelfSRKey, set = Settings.SetSoundSelfSRKey },
+    ["raidChat.softresImported"] = { get = Settings.GetRaidChatSoftresImportedEnabled, set = Settings.SetRaidChatSoftresImportedEnabled },
+    ["raidChat.softresWhisperReply"] = { get = Settings.GetRaidChatSoftresWhisperReplyEnabled, set = Settings.SetRaidChatSoftresWhisperReplyEnabled },
+    ["raidChat.rollCountdown"] = { get = Settings.GetRaidChatRollCountdownEnabled, set = Settings.SetRaidChatRollCountdownEnabled },
+    ["raidChat.rollCountdownSeconds"] = { get = Settings.GetRaidChatRollCountdownSeconds, set = Settings.SetRaidChatRollCountdownSeconds },
+    ["raidChat.lootCouncilAward"] = { get = Settings.GetRaidChatLootCouncilAwardEnabled, set = Settings.SetRaidChatLootCouncilAwardEnabled },
 };
 
 function Settings.GetPath(path)

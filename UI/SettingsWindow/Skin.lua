@@ -618,12 +618,24 @@ function Skin.Dropdown(parent, opts)
     previewBar:SetPoint("BOTTOMRIGHT", arrowBox, "BOTTOMLEFT", -2, 0);
     previewBar:Hide();
 
+    -- Small per-option color swatch (e.g. a response's own color), opt-in via
+    -- opts.hasColorDot - every existing caller leaves this unset and is
+    -- unaffected. Reuses the response pill's own dot texture/size for visual
+    -- consistency rather than introducing a new asset.
+    local dot;
+    if (opts.hasColorDot) then
+        dot = button:CreateTexture(nil, "ARTWORK");
+        dot:SetSize(6, 6);
+        dot:SetTexture("Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Dot");
+        dot:SetPoint("LEFT", button, "LEFT", textPaddingLeftRight, 0);
+    end
+
     local valueText = button:CreateFontString(nil, "OVERLAY");
     SetFont(valueText, "body");
     valueText:SetTextColor(unpack(Colors.textBright));
     valueText:SetJustifyH("RIGHT");
     valueText:SetWordWrap(false);
-    valueText:SetPoint("LEFT", button, "LEFT", textPaddingLeftRight, 0);
+    valueText:SetPoint("LEFT", button, "LEFT", dot and (textPaddingLeftRight + 6 + 4) or textPaddingLeftRight, 0);
     valueText:SetPoint("RIGHT", arrowBox, "LEFT", -textPaddingLeftRight, 0);
 
     button:HookScript("OnEnter", function(self)
@@ -693,6 +705,15 @@ function Skin.Dropdown(parent, opts)
         -- sets opt.color, so this always falls back to the normal look.
         valueText:SetTextColor(unpack((opt and opt.color) or Colors.textBright));
 
+        if (dot) then
+            if (opt and opt.color) then
+                dot:SetVertexColor(unpack(opt.color));
+                dot:Show();
+            else
+                dot:Hide();
+            end
+        end
+
         if (opt and opt.texture) then
             previewBar:SetTexture(opt.texture);
             previewBar:SetVertexColor(0.6, 0.5, 0.2, 0.7);
@@ -729,6 +750,16 @@ function Skin.Dropdown(parent, opts)
                 end
 
                 row.label:SetTextColor(unpack(isSelected and Colors.gold or Colors.textBright));
+
+                if (row.dot) then
+                    if (opt.color) then
+                        row.dot:SetVertexColor(unpack(opt.color));
+                        row.dot:Show();
+                    else
+                        row.dot:Hide();
+                    end
+                end
+
                 row:Show();
             else
                 row:Hide();
@@ -805,6 +836,16 @@ function Skin.Dropdown(parent, opts)
             row.check:SetAtlas("common-dropdown-icon-checkmark-yellow");
             row.check:Hide();
 
+            -- Same per-option color swatch as the closed button above
+            -- (opts.hasColorDot), sitting just right of the checkmark slot so
+            -- the two can coexist on the selected row.
+            if (opts.hasColorDot) then
+                row.dot = row:CreateTexture(nil, "OVERLAY");
+                row.dot:SetSize(6, 6);
+                row.dot:SetPoint("LEFT", row, "LEFT", 20, 0);
+                row.dot:SetTexture("Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Dot");
+            end
+
             -- Optional preview ("test sound") button, right-aligned on the
             -- row - only built when the caller wants one (opts.onPreview,
             -- e.g. the Sounds section's LSM dropdowns in
@@ -839,7 +880,7 @@ function Skin.Dropdown(parent, opts)
 
             row.label = row:CreateFontString(nil, "OVERLAY");
             SetFont(row.label, "body");
-            row.label:SetPoint("LEFT", row, "LEFT", 20, 0);
+            row.label:SetPoint("LEFT", row, "LEFT", opts.hasColorDot and 28 or 20, 0);
             if (row.previewButton) then
                 row.label:SetPoint("RIGHT", row.previewButton, "LEFT", -6, 0);
             else

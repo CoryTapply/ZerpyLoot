@@ -217,24 +217,33 @@ end
 --- LootRolls.lua exposing any of its own locals.
 SettingsWindow.sectionAnchors = SettingsWindow.sectionAnchors or {};
 
---- Scrolls the content area so `id`'s registered section frame sits at the
---- top of the viewport, then flashes a gold outline around it. Deferred one
---- frame: called right after SelectPage, whose page may only just now be
+--- Scrolls the content area so `targetFrame` sits at the top of the
+--- viewport, then flashes a gold outline around it - the generic engine
+--- behind ScrollToSection(id) below (a page's own hand-registered
+--- sectionAnchors) and Registry.lua's sidebar search results (an arbitrary
+--- row/control frame looked up by label instead of by a fixed id). Deferred
+--- one frame: called right after SelectPage, whose page may only just now be
 --- getting its real height (a fresh page is built lazily on first show), so
 --- GetTop()/the scroll range can still be stale on the same frame.
-function SettingsWindow.ScrollToSection(id)
-    local sectionFrame = SettingsWindow.sectionAnchors[id];
-    if (not sectionFrame or not scrollFrame) then return; end
+function SettingsWindow.ScrollToFrame(targetFrame)
+    if (not targetFrame or not scrollFrame) then return; end
 
     C_Timer.After(0, function()
-        local sectionTop, viewTop = sectionFrame:GetTop(), scrollFrame:GetTop();
-        if (not sectionTop or not viewTop) then return; end
+        local targetTop, viewTop = targetFrame:GetTop(), scrollFrame:GetTop();
+        if (not targetTop or not viewTop) then return; end
 
         local current = scrollFrame:GetVerticalScroll();
-        local target = Clamp(current + (viewTop - sectionTop), 0, scrollFrame:GetVerticalScrollRange() or 0);
+        local target = Clamp(current + (viewTop - targetTop), 0, scrollFrame:GetVerticalScrollRange() or 0);
         scrollFrame:SetVerticalScroll(target);
-        SettingsWindow.FlashSection(sectionFrame);
+        SettingsWindow.FlashSection(targetFrame);
     end);
+end
+
+--- Looks `id` up in sectionAnchors and defers to ScrollToFrame above - kept
+--- as its own function since UI/AutoRollPopup.lua and UI/GroupLootFrame.lua
+--- both call it by a fixed id rather than holding a live frame reference.
+function SettingsWindow.ScrollToSection(id)
+    SettingsWindow.ScrollToFrame(SettingsWindow.sectionAnchors[id]);
 end
 
 --- Flashes a 1px gold outline around `sectionFrame`, fading out over

@@ -213,6 +213,20 @@ FL.UI.Colors = {
     groupLootButtonHoverBg    = { 0.165, 0.149, 0.133 }, -- #2a2622
     groupLootTrackBorder      = { 0, 0, 0, 1 }, -- timer track border
     groupLootTimerDangerStart = { 0.427, 0.106, 0.106 }, -- #6d1b1b - last-10s gradient start
+
+    ----------------------------------------------------------------------
+    -- UI/LootHistoryWindow.lua - the 3 colors below aren't already covered
+    -- by an entry above; everything else it uses (gold, text, muted,
+    -- description, windowBg, sidebarBg, divider, selectedFill, selectedBorder,
+    -- hoverBg, controlBg, controlBorder, controlFocus/primaryBorder,
+    -- controlHover, disabledText, disabledBorder, skinCloseBorder,
+    -- sessionDeleteHoverIcon, respondSentLabel, respondBorderMuted,
+    -- sessionListBg, memberBorder, lootChatQuestTag, councilFill,
+    -- lrDashedBorder, awardVoteCheckDark, transparent) is reused as-is.
+    ----------------------------------------------------------------------
+    lhExpandedBg    = { 0.090, 0.082, 0.071 }, -- #171512 - expanded result row bg
+    lhResultDivider = { 0.133, 0.122, 0.106 }, -- #221f1b - result row bottom divider
+    lhFilterBarBg   = { 0.071, 0.063, 0.055 }, -- #12100e - filter bar bg
 };
 
 -- Colors for the 3 SYNTHETIC, non-configurable response ids (a candidate row
@@ -315,6 +329,20 @@ FL.UI.Colors.lrResetConfirmText = FL.UI.Colors.awardWarningIcon; -- #ff8a70 - "R
 FL.UI.Colors.lrEditBoxBg       = FL.UI.Colors.controlBg;        -- #0c0b0a - label EditBox bg
 FL.UI.Colors.lrEditBoxBorder   = FL.UI.Colors.respondBorderMuted; -- #3f3a33 - label EditBox border
 FL.UI.Colors.lrEditBoxFocus    = FL.UI.Colors.controlFocus;     -- #9c7c1c - label EditBox focused border
+
+----------------------------------------------------------------------
+-- UI/LootHistoryWindow.lua aliases - everything below is reused as-is from
+-- an entry already defined above (must come after lrDashedBorder, line 327).
+----------------------------------------------------------------------
+FL.UI.Colors.lhPreviewBg       = FL.UI.Colors.sessionListBg;         -- #0f0d0c - Add Entry item preview bg
+FL.UI.Colors.lhPreviewBorder   = FL.UI.Colors.memberBorder;          -- #2e2a25 - Add Entry item preview border
+FL.UI.Colors.lhDashedBorder    = FL.UI.Colors.lrDashedBorder;        -- #6b604f - Add Entry item box dashed border
+FL.UI.Colors.lhCandidateFill   = FL.UI.Colors.councilFill;           -- #2b240f - winner's candidate line background
+FL.UI.Colors.lhErrorBorder     = FL.UI.Colors.skinCloseBorder;       -- #c0392b - invalid Add Entry field border
+FL.UI.Colors.lhErrorText       = FL.UI.Colors.sessionDeleteHoverIcon; -- #ff6b5e - Add Entry error line
+FL.UI.Colors.lhConfirmText     = FL.UI.Colors.respondSentLabel;      -- #4fd964 - post-add confirmation line
+FL.UI.Colors.lhManualTagText   = FL.UI.Colors.lootChatQuestTag;      -- #d9b54a - MANUAL tag text
+FL.UI.Colors.lhManualTagBorder = FL.UI.Colors.selectedBorder;        -- #6b5520 - MANUAL tag border
 
 -- The 12 color-palette presets (Skin.ColorPalette) - built off
 -- Core/Responses.lua's own hex list (Responses.PALETTE_PRESETS), not a

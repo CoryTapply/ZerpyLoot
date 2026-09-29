@@ -239,8 +239,8 @@ local function applyStart(Message)
     -- re-checks it's still the same, still-active roll-off before printing -
     -- that's what guards against a stale tick firing after an early stop or
     -- a new roll-off superseding this one.
-    if (Message.isSelf) then
-        for i = 5, 1, -1 do
+    if (Message.isSelf and FL.Settings.GetRaidChatRollCountdownEnabled()) then
+        for i = FL.Settings.GetRaidChatRollCountdownSeconds(), 1, -1 do
             local delay = thisRollOff.time - i;
             if (delay >= 0) then
                 C_Timer.After(delay, function()

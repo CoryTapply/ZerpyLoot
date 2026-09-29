@@ -104,8 +104,10 @@ function LootCouncil.Init()
         draft = { items = {} },
         history = {},
         session = nil,
+        nextSessionId = 0,
     };
     local db = FL.DB.lootCouncil;
+    db.nextSessionId = db.nextSessionId or 0; -- upgrade path: field didn't exist before this fix
 
     LootCouncil.Roster = db.roster;
     LootCouncil.History = db.history;
@@ -391,8 +393,6 @@ LootCouncil.CommActions.councilSettingsSync = applyCouncilSettingsSync;
 -- Session lifecycle
 --------------------------------------------------------------------------
 
-local nextSessionId = 0;
-
 -- Applied locally by every client (initiator included, via the self-looped
 -- broadcast) when a sessionStart message is processed - mirrors
 -- RollTracker.lua's applyStart. The sessionId always comes from the message,
@@ -504,7 +504,16 @@ function LootCouncil.SendToRaid()
         return false;
     end
 
-    nextSessionId = nextSessionId + 1;
+    -- Persisted (FL.DB.lootCouncil.nextSessionId), NOT a module-local counter
+    -- reset to 0 on every reload/relog - LootCouncil.History survives across
+    -- logins, and RecordHistory's dedupe id is keyed on Session.id, so a
+    -- counter that restarts at 1 every login would collide with old history
+    -- entries (almost always on awardSeq 1, the most common value ever
+    -- recorded) and silently drop the new award from history. See
+    -- RecordHistory's id comment.
+    local db = FL.DB.lootCouncil;
+    db.nextSessionId = (db.nextSessionId or 0) + 1;
+    local sessionId = db.nextSessionId;
 
     local itemLinks = {};
     for i, draftItem in ipairs(sessionItems) do
@@ -512,7 +521,7 @@ function LootCouncil.SendToRaid()
     end
 
     lcSend("sessionStart", {
-        sessionId = nextSessionId,
+        sessionId = sessionId,
         items = itemLinks,
         names = LootCouncil.RosterNames(),
         responses = FL.Responses.SessionSnapshot(),
@@ -879,14 +888,22 @@ LootCouncil.CommActions.vote = applyVote;
 --------------------------------------------------------------------------
 
 --- Appends an award to the persistent history log (FL.DB.lootCouncil.history),
---- deduped by "sessionId-itemSession-awardSeq" (one id per award EVENT, not
---- per item - an item can be re-awarded, each award gets its own history
---- row) so processing the same award broadcast twice can't create a
+--- deduped by "initiatorFqn-sessionId-itemSession-awardSeq" (one id per award
+--- EVENT, not per item - an item can be re-awarded, each award gets its own
+--- history row) so processing the same award broadcast twice can't create a
 --- duplicate entry. Called by BOTH AwardItem (the leader's own optimistic
 --- path) and applyAward (every other client's only path) - see
 --- docs/LOOT_COUNCIL_PLAN.md §1: "every client appends to it... not just the
 --- leader," so the log survives the leader disconnecting or swapping
 --- characters.
+---
+--- Session.id alone isn't enough: it's just each client's own nextSessionId
+--- counter (see SendToRaid), so two different council leaders' "session 3"
+--- collide on the exact same id despite being unrelated sessions. Prefixing
+--- the leader's realm-qualified name turns it into a compound key that's
+--- unique across different people's logs too, not just across a single
+--- person's logins - load-bearing the moment history from two people is ever
+--- merged (e.g. a future import feature), not just today's single-log case.
 ---@param Session table the CurrentSession this award belongs to
 ---@param itemSession number
 ---@param playerName string the award winner
@@ -896,7 +913,7 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     local item = Session.items[itemSession];
     if (not item) then return; end
 
-    local id = ("%d-%d-%d"):format(Session.id, itemSession, awardSeq);
+    local id = ("%s-%d-%d-%d"):format((Session.initiatorFqn or "?"):lower(), Session.id, itemSession, awardSeq);
     for _, entry in ipairs(LootCouncil.History) do
         if (entry.id == id) then return; end -- this exact award already recorded
     end
@@ -1002,7 +1019,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
     end);
 
     local awardChannel = Util.GroupChatChannel();
-    if (awardChannel) then
+    if (awardChannel and FL.Settings.GetRaidChatLootCouncilAwardEnabled()) then
         Util.SendChatMessageSafe(("%s was awarded to %s!"):format(item.itemLink, playerName), awardChannel);
     end
 
@@ -1051,7 +1068,7 @@ function LootCouncil.DisenchantItem(itemSession)
     item.awardedAt = GetServerTime();
 
     local awardChannel = Util.GroupChatChannel();
-    if (awardChannel) then
+    if (awardChannel and FL.Settings.GetRaidChatLootCouncilAwardEnabled()) then
         Util.SendChatMessageSafe(("%s will be disenchanted!"):format(item.itemLink), awardChannel);
     end
 

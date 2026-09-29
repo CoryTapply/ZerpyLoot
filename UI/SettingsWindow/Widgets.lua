@@ -201,14 +201,29 @@ local SectionMethods = {};
 SectionMethods.__index = SectionMethods;
 Widgets.SectionMethods = SectionMethods;
 
-local function advanceSection(section, height)
-    section.nextRowY = section.nextRowY - height - ROW_SPACING;
+--- `gap`, when given, overrides the standard ROW_SPACING that follows this
+--- row (e.g. a checkbox that wants its own related sub-row - Announcements
+--- .lua's roll-countdown seconds input - tied visually closer than normal).
+local function advanceSection(section, height, gap)
+    section.nextRowY = section.nextRowY - height - (gap or ROW_SPACING);
     section.frame:SetHeight(math.max(1, -section.nextRowY));
 end
 
 local function registerResettable(section, key, default)
     if (key and default ~= nil) then
         table.insert(section.page.resettableKeys, { key = key, default = default });
+    end
+end
+
+--- Records a {label, frame} entry into this page's searchEntries -
+--- Registry.lua's global search index (built once, across every page, the
+--- first time the sidebar search box is used) reads these back to list
+--- matching settings and scroll/flash to the one the player picks (see
+--- Init.lua's SettingsWindow.ScrollToFrame). A no-op for a label-less entry,
+--- so callers can pass opts.label straight through without their own guard.
+local function addSearchEntry(page, label, frame)
+    if (label) then
+        table.insert(page.searchEntries, { label = label, frame = frame });
     end
 end
 
@@ -232,7 +247,7 @@ function SectionMethods:Reflow()
             item.frame:SetPoint("TOPLEFT", self.frame, "TOPLEFT", item.x, y);
         end
         local height = item.remeasure and item.remeasure() or item.height or item.frame:GetHeight();
-        y = y - height - ROW_SPACING;
+        y = y - height - (item.gap or ROW_SPACING);
     end
     -- Left at the same value advanceSection would have, so a caller that
     -- keeps stacking more (unregistered) content off self.nextRowY after
@@ -244,7 +259,10 @@ function SectionMethods:Reflow()
 end
 
 --- Adds a standard vertical checkbox row to this section.
----@param opts table { key, label, tooltip, desc, parent, onChange, default }
+---@param opts table { key, label, tooltip, desc, parent, onChange, default,
+---                     gapAfter } -- gapAfter overrides the row spacing
+---                     that follows THIS row (see advanceSection's own doc
+---                     comment) - default nil (the normal ROW_SPACING).
 function SectionMethods:Checkbox(opts)
     local indent = opts.parent and CHILD_INDENT or 0;
     local rowWidth = self.width - indent;
@@ -255,11 +273,13 @@ function SectionMethods:Checkbox(opts)
         frame = row.frame,
         x = indent,
         remeasure = function() return row.Remeasure(rowWidth); end,
+        gap = opts.gapAfter,
     });
 
     self.page.checkboxByKey[opts.key] = row;
     table.insert(self.rows, row);
     registerResettable(self, opts.key, opts.default);
+    addSearchEntry(self.page, opts.label, row.frame);
 
     if (opts.parent) then
         local parentRow = self.page.checkboxByKey[opts.parent];
@@ -273,7 +293,7 @@ function SectionMethods:Checkbox(opts)
         if (opts.key) then row.checkbox:SetChecked(FL.Settings.GetPath(opts.key) and true or false); end
     end);
 
-    advanceSection(self, row.frame:GetHeight());
+    advanceSection(self, row.frame:GetHeight(), opts.gapAfter);
     return row;
 end
 
@@ -297,6 +317,7 @@ function SectionMethods:RadioGroup(opts)
         });
 
         table.insert(entries, { value = opt.value, radio = radio });
+        addSearchEntry(self.page, opt.label, radio.frame);
         advanceSection(self, radio.frame:GetHeight());
     end
 
@@ -376,6 +397,7 @@ function SectionMethods:Dropdown(opts)
     dropdown.button:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -6);
 
     registerResettable(self, opts.key, opts.default);
+    addSearchEntry(self.page, opts.label, row);
     table.insert(self.page.refreshers, dropdown.Refresh);
 
     if (opts.advance ~= false) then
@@ -400,6 +422,7 @@ function SectionMethods:Button(opts)
     button:SetScript("OnClick", function() if (opts.onClick) then opts.onClick(); end end);
 
     table.insert(self.items, { frame = button, x = 0, height = BUTTON_ROW_HEIGHT });
+    addSearchEntry(self.page, opts.label, button);
     advanceSection(self, BUTTON_ROW_HEIGHT);
     return button;
 end
@@ -459,6 +482,7 @@ function SectionMethods:Slider(opts)
     slider:SetValue(currentValue());
 
     registerResettable(self, opts.key, opts.default);
+    addSearchEntry(self.page, opts.label, row);
     table.insert(self.page.refreshers, function() slider:SetValue(currentValue()); end);
 
     if (opts.advance ~= false) then

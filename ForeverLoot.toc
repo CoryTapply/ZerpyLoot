@@ -79,6 +79,7 @@ UI\TradeQueueWindow.lua
 UI\StartSessionWindow.lua
 UI\RespondWindow.lua
 UI\AwardWindow.lua
+UI\LootHistoryWindow.lua
 
 # Debug / slash commands
 Debug.lua

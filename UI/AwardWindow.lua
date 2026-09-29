@@ -41,6 +41,9 @@ local CROWN_TEXTURE = "Interface\\GroupFrame\\UI-Group-LeaderIcon";
 -- already use everywhere else a row can be removed - reused as-is, not a new
 -- texture, for the title bar's "End session early" button below.
 local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
+-- No history/clock icon exists in Media/Icons - reuses a stock Blizzard
+-- texture instead, same as CROWN_TEXTURE above, rather than adding new art.
+local HISTORY_ICON_TEXTURE = "Interface\\Icons\\INV_Misc_PocketWatch_01";
 local LEADER_ONLY_TEXT = "Only the loot council session leader can award this item.";
 local DISENCHANT_RECIPIENT = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
 
@@ -53,7 +56,7 @@ local REFRESH_THROTTLE = 0.1;
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition).
 local frame;
-local endEarlyButton;
+local endEarlyButton, historyButton;
 local itemPanel, itemCountText, progressTrack, progressFill, unassignedLabel, assignedLabel;
 local leftScroll, leftScrollChild;
 local gridIcons = {};
@@ -208,6 +211,43 @@ local function createTitleBar()
         ShowEndSessionEarlyPopup();
     end);
     endEarlyButton:Hide(); -- shown per-refresh once a session/leader state actually exists
+
+    -- "Loot History" - opens the standalone history browser (UI/
+    -- LootHistoryWindow.lua). Not session/leader-gated like endEarlyButton
+    -- above (browsing past awards is available to everyone), so it's always
+    -- shown, unlike that button.
+    historyButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
+    historyButton:SetSize(RootSizes.controls.close, RootSizes.controls.close);
+    historyButton:SetPoint("TOPRIGHT", endEarlyButton, "TOPLEFT", -6, 0);
+    historyButton:RegisterForClicks("LeftButtonUp");
+    Theme.Helpers.SetFlatBackdrop(historyButton, Colors.defaultBg, Colors.checkboxBorder, 1);
+
+    local historyIconSize = math.floor(RootSizes.controls.close * 0.7 + 0.5);
+    historyButton.icon = historyButton:CreateTexture(nil, "ARTWORK");
+    historyButton.icon:SetSize(historyIconSize, historyIconSize);
+    historyButton.icon:SetPoint("CENTER");
+    historyButton.icon:SetTexture(HISTORY_ICON_TEXTURE);
+    historyButton.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92);
+    historyButton.icon:SetVertexColor(unpack(Colors.description));
+
+    historyButton:HookScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.gold));
+        self.icon:SetVertexColor(unpack(Colors.gold));
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT");
+        GameTooltip:AddLine("Loot History", 1, 1, 1);
+        GameTooltip:AddLine("Browse past awards.", unpack(Colors.muted));
+        GameTooltip:Show();
+    end);
+    historyButton:HookScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(unpack(Colors.checkboxBorder));
+        self.icon:SetVertexColor(unpack(Colors.description));
+        GameTooltip:Hide();
+    end);
+    historyButton:SetScript("OnClick", function()
+        if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Show) then
+            FL.UI.LootHistoryWindow.Show();
+        end
+    end);
 
     return titleBar;
 end

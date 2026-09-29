@@ -75,6 +75,7 @@ local function resetAllWindowPositions()
     if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.ResetPosition) then FL.UI.StartSessionWindow.ResetPosition(); end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.ResetPosition) then FL.UI.RespondWindow.ResetPosition(); end
     if (FL.UI.AwardWindow and FL.UI.AwardWindow.ResetPosition) then FL.UI.AwardWindow.ResetPosition(); end
+    if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.ResetPosition) then FL.UI.LootHistoryWindow.ResetPosition(); end
     if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.ResetPosition) then FL.UI.SettingsWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
@@ -199,6 +200,10 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Toggle) then
             FL.UI.TradeQueueWindow.Toggle();
         end
+    elseif (msg == "history") then
+        if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Toggle) then
+            FL.UI.LootHistoryWindow.Toggle();
+        end
     elseif (msg == "config" or msg == "c" or msg == "settings") then
         if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.Show) then
             FL.UI.SettingsWindow.Show();
@@ -220,6 +225,7 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("  /fl roll - toggle the roll tracker window");
         print("  /fl softres - open the SoftRes import window");
         print("  /fl tradequeue - open the trade queue window");
+        print("  /fl history - open the loot history window");
         print("  /fl autoroll - open the Automatic Rolls popup for your current raid");
         printLootCouncilHelp();
         print("  /fl config (or /fl c) - open ForeverLoot's settings window");

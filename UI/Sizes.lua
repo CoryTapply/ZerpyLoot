@@ -74,6 +74,15 @@ FL.UI.Sizes = {
         sidebarPadX = 8, sidebarPadTop = 12, sidebarTextInset = 10,
         searchNavGap = 10, navItemGap = 2, navDividerGap = 6,
 
+        -- Sidebar search-results list (Registry.lua's Registry.ApplySearch) -
+        -- replaces the nav button list while a query is active. Each row is
+        -- two lines (the setting's own label, then its page name in muted
+        -- text), and its height is MEASURED per-row from the label's own
+        -- (possibly wrapped) height rather than a fixed guess - a label
+        -- longer than the sidebar is wide wraps to 2-3 lines. These are just
+        -- the padding/gaps around that measured text.
+        searchResultPadY = 4, searchResultLineGap = 2, searchResultGap = 4,
+
         -- The settings window's own slim scrollbar (Init.lua's
         -- createContentArea/Skin.ScrollBar) - scrollbarGutter is the space
         -- reserved for it outside the scrollable content's own width. 12,
@@ -489,6 +498,78 @@ FL.UI.Sizes = {
 
             emptyIconSize = 16,
             emptyIconTextGap = 6,
+        };
+    end)(),
+
+    -- UI/LootHistoryWindow.lua - built the same way as startSession/respond/
+    -- award/tradeQueue above (own top-level table, UI.Colors/UI.SetFont/
+    -- UI.Skin, not FL.Theme). Sizes below come straight from the feature
+    -- spec (already given in UI units); popup.padding/sectionGap use the
+    -- codebase's own established Skin.ConfirmPopup values (14/10) rather than
+    -- the spec's slightly-off 13/9, per "if a size is slightly different from
+    -- the existing code, use the code's value."
+    lootHistory = (function()
+        return {
+            window = { width = 930, height = 533 },
+            titleBarHeight = 32,
+
+            column = {
+                date = 110, players = 150, items = 200,
+                headerHeight = 26,
+                filterTagPadX = 4, filterTagPadY = 1,
+
+                searchHeight = 20, searchMarginX = 6.5, searchMarginTop = 5, searchMarginBottom = 2.5,
+
+                listPad = 4,
+                rowHeight = 21, rowGap = 1, rowPadLeft = 6, rowPadRight = 5,
+                selectedBarWidth = 2,
+
+                itemIconSize = 13, itemIconBorder = 1,
+            },
+
+            filterBar = {
+                padY = 8, padX = 10, gap = 6.5,
+                typeTagPadX = 5, typeTagPadY = 1,
+                itemIconSize = 17, itemIconBorder = 1,
+                addButtonHeight = 22,
+                confirmLinePadX = 10,
+                confirmDuration = 4,
+            },
+
+            resultList = { padTop = 6.5, gap = 1 },
+
+            -- Shared response-pill metrics for the result row's meta line and
+            -- the expanded candidate table - smaller than award.mainPanel's
+            -- 16/8/6/4 pill to fit these tighter rows.
+            pill = { height = 14, padX = 6, dotSize = 5, dotGap = 3 },
+
+            resultRow = {
+                collapsedHeight = 36, pad = 5, gap = 6.5,
+                iconSize = 24, iconBorder = 1,
+                textLineGap = 4, metaGap = 4,
+                chevronSize = 16,
+                manualTagGap = 5, manualTagPadX = 4,
+            },
+
+            expanded = {
+                leftInset = 35, rightMargin = 6.5, bottomMargin = 6.5, topPad = 5,
+                headerRowHeight = 14, rowHeight = 18, rowGap = 1,
+                colCandidate = 104, colResponse = 72, colVotes = 39,
+                crownSize = 9, crownGap = 3,
+            },
+
+            -- Add Entry modal (Skin.ConfirmPopup).
+            popup = {
+                width = 338, padding = 14, sectionGap = 10, titleHeight = 18,
+                buttonHeight = 22, buttonGap = 8, buttonWidth = 90, shadowInset = 8,
+
+                fieldLabelGap = 3, rowGap = 8,
+                inputHeight = 22, dropdownXOffset = -2,
+                classWidth = 97, dateWidth = 84, timeWidth = 71,
+                previewPad = 5, previewIconSize = 15, previewIconBorder = 1,
+                suggestionMaxRows = 6, suggestionRowHeight = 20,
+                noteMaxLetters = 120,
+            },
         };
     end)(),
 

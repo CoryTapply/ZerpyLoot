@@ -24,6 +24,7 @@ local reopenTargets = {
     TradeQueue = { label = "Trade Queue", show = function() FL.UI.TradeQueueWindow.Show(); end },
     SoftResImport = { label = "Import SoftRes", show = function() FL.UI.SoftResImportWindow.Show(); end },
     StartSession = { label = "Start Session", show = function() FL.UI.StartSessionWindow.Show(); end },
+    LootHistory = { label = "Loot History", show = function() FL.UI.LootHistoryWindow.Show(); end },
     Settings = { label = "Settings", show = function() FL.UI.SettingsWindow.Show(); end },
     -- Routed through HandleSlashAutoroll (not AutoRollPopup.Show directly) so
     -- a click still gets the "only applies in raids that use group loot"

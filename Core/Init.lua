@@ -37,6 +37,7 @@ FL.UI.StartSessionWindow = FL.UI.StartSessionWindow or {};
 FL.UI.ResponseRow = FL.UI.ResponseRow or {};
 FL.UI.RespondWindow = FL.UI.RespondWindow or {};
 FL.UI.AwardWindow = FL.UI.AwardWindow or {};
+FL.UI.LootHistoryWindow = FL.UI.LootHistoryWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
 FL.Vendor = FL.Vendor or {};
