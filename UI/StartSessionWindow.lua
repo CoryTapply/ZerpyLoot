@@ -17,6 +17,7 @@ local SetFont = FL.UI.SetFont;
 local Skin = FL.UI.Skin;
 local Widgets = FL.UI.SettingsWidgets;
 local SessionItems = FL.SessionItems;
+local Awards = FL.Awards;
 local Util = FL.Util;
 local StartSessionWindow = FL.UI.StartSessionWindow;
 
@@ -35,6 +36,7 @@ local OLD_POSITION_KEY = "lootCouncilAddItemsWindow";
 
 local frame, listBox, listScroll, listScrollChild, countText, clearButton, startButton;
 local councilButton, councilIcon, councilCountText;
+local header, footer, headerTitle, liveSummary;
 
 -- Fallback matches the pattern used elsewhere in the addon (e.g.
 -- UI/RollWindow.lua's right-click hint icon) for an atlas that may not exist
@@ -120,29 +122,47 @@ end
 -- Returns two alphabetical arrays: council members currently in the raid/
 -- party ({ name, classFile, isLeader }), and the names of council members
 -- who aren't.
+--
+-- With no session currently live, the viewer is about to start one and
+-- always counts toward the council regardless of roster membership (the
+-- old "isMe" shortcut). But once a session IS live (mode == "add" in
+-- Refresh()), membership instead has to follow the same rule
+-- LootCouncil.CanVote uses for that actual running session - a roster
+-- member, or whoever actually started it (Session.initiatorFqn, who may not
+-- be "me" and may not even be on the roster) - otherwise this tooltip could
+-- both wrongly claim the viewer is on a council they have no vote in, and
+-- miss the session's real initiator if they aren't a roster member.
 local function computeCouncilRaidInfo()
     local groupsResult = FL.LootCouncilRoster.BuildGroups();
     local inRaid = {};
     local inRaidNames = {};
 
+    local Session = FL.LootCouncil.CurrentSession;
+    local liveInitiatorFqn = (Session and Session.status == "active") and Session.initiatorFqn or nil;
+
     if (not groupsResult.inRaid and not groupsResult.inParty) then
-        -- Solo/ungrouped: BuildGroups() returns no members at all, but the
-        -- viewer is about to start the session, so they're on the council.
-        local name = Util.stripRealm(Util.UnitName("player"));
-        inRaidNames[name] = true;
-        table.insert(inRaid, {
-            name = name,
-            classFile = select(2, UnitClass("player")),
-            isLeader = UnitIsGroupLeader("player"),
-        });
+        -- Solo/ungrouped: BuildGroups() returns no members at all.
+        local playerName = Util.UnitName("player");
+        local name = Util.stripRealm(playerName);
+        local isCouncil = FL.LootCouncil.IsCouncilMember(playerName);
+        local isLiveInitiator = liveInitiatorFqn ~= nil and Util.iEquals(name, Util.stripRealm(liveInitiatorFqn));
+        if (liveInitiatorFqn == nil or isCouncil or isLiveInitiator) then
+            inRaidNames[name] = true;
+            table.insert(inRaid, {
+                name = name,
+                classFile = select(2, UnitClass("player")),
+                isLeader = UnitIsGroupLeader("player"),
+            });
+        end
     else
         for _, group in pairs(groupsResult.groups) do
             for _, member in ipairs(group.members) do
                 local isMe = UnitIsUnit(member.unit, "player");
-                -- The person looking at this window is about to start the
-                -- session, so they always count toward the council
-                -- regardless of roster membership.
-                if (isMe or FL.LootCouncil.IsCouncilMember(member.name)) then
+                local isCouncil = FL.LootCouncil.IsCouncilMember(member.name);
+                local isLiveInitiator = liveInitiatorFqn ~= nil
+                    and Util.iEquals(Util.stripRealm(member.name), Util.stripRealm(liveInitiatorFqn));
+                local onCouncil = (liveInitiatorFqn == nil) and (isMe or isCouncil) or (isCouncil or isLiveInitiator);
+                if (onCouncil) then
                     local name = Util.stripRealm(member.name);
                     inRaidNames[name] = true;
                     table.insert(inRaid, {
@@ -256,12 +276,12 @@ local function createHeader()
     titleRow:SetPoint("TOPRIGHT", header, "TOPRIGHT", 0, 0);
     titleRow:SetHeight(Sizes.headerAddAllHeight);
 
-    local title = titleRow:CreateFontString(nil, "OVERLAY");
-    SetFont(title, "pageTitle");
-    title:SetTextColor(unpack(Colors.gold));
-    title:SetPoint("LEFT", titleRow, "LEFT", 0, 0);
-    title:SetWordWrap(false);
-    title:SetText("Session Items");
+    headerTitle = titleRow:CreateFontString(nil, "OVERLAY");
+    SetFont(headerTitle, "pageTitle");
+    headerTitle:SetTextColor(unpack(Colors.gold));
+    headerTitle:SetPoint("LEFT", titleRow, "LEFT", 0, 0);
+    headerTitle:SetWordWrap(false);
+    headerTitle:SetText("Session Items");
 
     local subtitle = header:CreateFontString(nil, "OVERLAY");
     SetFont(subtitle, "small");
@@ -357,6 +377,161 @@ local function createHeader()
     end);
 
     return header;
+end
+
+--------------------------------------------------------------------------
+-- Live-session summary - shown only once a session is already active (see
+-- StartSessionWindow.Refresh's mode branch below), between the header and
+-- the item list. Same "<assigned> of <total> assigned" / "<n> never
+-- awarded" counts row + wrapping row of the still-unassigned items' own
+-- icons that UI/AwardWindow.lua's End-Session-Early popup shows, so a
+-- leader adding more loot to a running session gets the same "here's what's
+-- still pending" read before appending to it - built and laid out the same
+-- way (see paintLiveSummary below), just under this window's own header
+-- instead of a popup dialog.
+--------------------------------------------------------------------------
+
+-- Opens AwardWindow (self-gates on LootCouncil.CanAccessReviewWindow, see
+-- its own Show()) - shared by the box's own click and each item icon's
+-- click below, so clicking anywhere in the summary (including on an icon,
+-- which would otherwise just swallow the click for its tooltip) does the
+-- same thing.
+local function openAwardWindow()
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Show) then
+        FL.UI.AwardWindow.Show();
+    end
+end
+
+local function createLiveSummary()
+    local box = CreateFrame("Frame", nil, frame, "BackdropTemplate");
+    Theme.Helpers.SetFlatBackdrop(box, Colors.sessionListBg, Colors.memberBorder, 1);
+    box:Hide();
+
+    -- Clickable through to AwardWindow - same hover-border idiom as
+    -- createRow's own OnEnter/OnLeave above.
+    box:EnableMouse(true);
+    box:HookScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(Colors.checkboxBorder)); end);
+    box:HookScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(Colors.memberBorder)); end);
+    box:SetScript("OnMouseUp", openAwardWindow);
+
+    box.countsText = box:CreateFontString(nil, "OVERLAY");
+    SetFont(box.countsText, "small");
+    box.countsText:SetTextColor(unpack(Colors.description));
+    box.countsText:SetJustifyH("LEFT");
+    box.countsText:SetWordWrap(false);
+
+    box.neverText = box:CreateFontString(nil, "OVERLAY");
+    SetFont(box.neverText, "small");
+    box.neverText:SetTextColor(unpack(Colors.muted));
+    box.neverText:SetJustifyH("RIGHT");
+    box.neverText:SetWordWrap(false);
+
+    box.icons = {};
+    for i = 1, Sizes.summaryMaxIcons do
+        local icon = CreateFrame("Frame", nil, box, "BackdropTemplate");
+        icon:SetSize(Sizes.summaryIconSize, Sizes.summaryIconSize);
+        local bt = Sizes.summaryIconBorderThickness;
+        icon.tex = icon:CreateTexture(nil, "ARTWORK");
+        icon.tex:SetPoint("TOPLEFT", icon, "TOPLEFT", bt, -bt);
+        icon.tex:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -bt, bt);
+        icon.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92);
+        Theme.Helpers.SetFlatBackdrop(icon, nil, Colors.transparent, bt);
+        icon:EnableMouse(true);
+        icon:HookScript("OnEnter", function(self)
+            if (not self.itemLink) then return; end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+            GameTooltip:SetHyperlink(self.itemLink);
+            GameTooltip:Show();
+        end);
+        icon:HookScript("OnLeave", function() GameTooltip:Hide(); end);
+        icon:HookScript("OnMouseUp", openAwardWindow);
+        icon:Hide();
+        box.icons[i] = icon;
+    end
+
+    box.moreText = box:CreateFontString(nil, "OVERLAY");
+    SetFont(box.moreText, "small");
+    box.moreText:SetTextColor(unpack(Colors.muted));
+    box.moreText:Hide();
+
+    return box;
+end
+
+-- Same itemIcon fallback chain as UI/AwardWindow.lua's own local helper -
+-- Session.items entries carry itemIcon once C_Item resolves it, else fall
+-- back to a bag-independent lookup by itemID.
+local function sessionItemIcon(item)
+    return (item and (item.itemIcon or (item.itemID and Util.GetItemIcon(item.itemID)))) or FALLBACK_ICON;
+end
+
+-- Lays out liveSummary's counts row + wrapping icon grid for the active
+-- session's still-unassigned items, then sizes the box to fit - identical
+-- column/row math to AwardWindow.lua's ShowEndSessionEarlyPopup, just
+-- wrapped to this window's own fixed content width instead of a popup's.
+local function paintLiveSummary(unassigned, assignedCount, totalCount)
+    local goldHex = Util.RGBToHex(Colors.gold[1], Colors.gold[2], Colors.gold[3]);
+    liveSummary.countsText:SetText(("|cff%s%d|r of %d items assigned"):format(goldHex, assignedCount, totalCount));
+    liveSummary.countsText:ClearAllPoints();
+    liveSummary.countsText:SetPoint("TOPLEFT", liveSummary, "TOPLEFT", Sizes.summaryPadding, -Sizes.summaryPadding);
+
+    liveSummary.neverText:SetText(("%d never awarded"):format(#unassigned));
+    liveSummary.neverText:ClearAllPoints();
+    liveSummary.neverText:SetPoint("TOPRIGHT", liveSummary, "TOPRIGHT", -Sizes.summaryPadding, -Sizes.summaryPadding);
+
+    local countsHeight = math.max(liveSummary.countsText:GetStringHeight(), liveSummary.neverText:GetStringHeight());
+
+    local showIconRow = #unassigned > 0;
+    local iconRowHeight = 0;
+    if (showIconRow) then
+        local availWidth = WINDOW_WIDTH - Sizes.contentPadX * 2 - Sizes.summaryPadding * 2;
+        local step = Sizes.summaryIconSize + Sizes.summaryIconGap;
+        local columns = math.max(1, math.floor((availWidth + Sizes.summaryIconGap) / step));
+        local shownCount = math.min(#unassigned, Sizes.summaryMaxIcons);
+        local extra = #unassigned - shownCount;
+        local totalSlots = shownCount + (extra > 0 and 1 or 0); -- "+N more" occupies a trailing slot
+        local rows = math.max(1, math.ceil(totalSlots / columns));
+        iconRowHeight = Sizes.summaryRowGap + rows * Sizes.summaryIconSize + (rows - 1) * Sizes.summaryIconGap;
+
+        local rowTop = -(Sizes.summaryPadding + countsHeight + Sizes.summaryRowGap);
+        for i = 1, shownCount do
+            local item = unassigned[i];
+            local icon = liveSummary.icons[i];
+            local col = (i - 1) % columns;
+            local row = math.floor((i - 1) / columns);
+            icon:ClearAllPoints();
+            icon:SetPoint("TOPLEFT", liveSummary, "TOPLEFT",
+                Sizes.summaryPadding + col * step, rowTop - row * (Sizes.summaryIconSize + Sizes.summaryIconGap));
+            icon.tex:SetTexture(sessionItemIcon(item));
+            icon:SetBackdropBorderColor(unpack(Colors.muted));
+            icon.itemLink = item.itemLink;
+            icon:Show();
+        end
+        for i = shownCount + 1, Sizes.summaryMaxIcons do
+            liveSummary.icons[i]:Hide();
+            liveSummary.icons[i].itemLink = nil;
+        end
+
+        if (extra > 0) then
+            local slot = shownCount; -- 0-based - the cell right after the last shown icon
+            local col = slot % columns;
+            local row = math.floor(slot / columns);
+            liveSummary.moreText:SetText(("+%d more"):format(extra));
+            liveSummary.moreText:ClearAllPoints();
+            liveSummary.moreText:SetPoint("LEFT", liveSummary, "TOPLEFT",
+                Sizes.summaryPadding + col * step, rowTop - row * (Sizes.summaryIconSize + Sizes.summaryIconGap) - Sizes.summaryIconSize / 2);
+            liveSummary.moreText:Show();
+        else
+            liveSummary.moreText:Hide();
+        end
+    else
+        for i = 1, Sizes.summaryMaxIcons do
+            liveSummary.icons[i]:Hide();
+            liveSummary.icons[i].itemLink = nil;
+        end
+        liveSummary.moreText:Hide();
+    end
+
+    liveSummary:SetHeight(Sizes.summaryPadding * 2 + countsHeight + iconRowHeight);
 end
 
 local function createFooter()
@@ -706,8 +881,12 @@ local function ensureFrame()
     }, function() Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, Colors.border, 1); end);
 
     createTitleBar();
-    local header = createHeader();
-    local footer = createFooter();
+    header = createHeader();
+    footer = createFooter();
+
+    liveSummary = createLiveSummary();
+    liveSummary:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -Sizes.summaryGap);
+    liveSummary:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -Sizes.summaryGap);
 
     createList();
     listBox:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -Sizes.listGap);
@@ -795,6 +974,28 @@ function StartSessionWindow.Refresh()
         startButton.mode = mode;
         startButton.text:SetText(mode == "add" and "Add to Session" or "Start Session");
         startButton:SetWidth(math.max(Sizes.footerStartWidth, startButton.text:GetStringWidth() + 24));
+    end
+
+    -- Live-session summary (see createLiveSummary/paintLiveSummary above) -
+    -- shown only in "add" mode, between the header and the item list. Text
+    -- and icon repaint every refresh (the active session's own assigned
+    -- count can change while this window stays open), but the listBox
+    -- re-anchor only runs on an actual mode transition, same idiom as
+    -- startButton.mode above.
+    local isAdding = mode == "add";
+    headerTitle:SetText(isAdding and "Add to Live Session" or "Session Items");
+    if (isAdding) then
+        local unassigned, _, assignedCount, totalCount = Awards.PartitionItems(Session);
+        paintLiveSummary(unassigned, assignedCount, totalCount);
+    end
+    if (liveSummary.shown ~= isAdding) then
+        liveSummary.shown = isAdding;
+        liveSummary:SetShown(isAdding);
+        listBox:ClearAllPoints();
+        listBox:SetPoint("TOPLEFT", isAdding and liveSummary or header, "BOTTOMLEFT", 0, -Sizes.listGap);
+        listBox:SetPoint("TOPRIGHT", isAdding and liveSummary or header, "BOTTOMRIGHT", 0, -Sizes.listGap);
+        listBox:SetPoint("BOTTOMLEFT", footer, "TOPLEFT", 0, Sizes.footerScrollGap);
+        listBox:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, Sizes.footerScrollGap);
     end
 
     if (listScroll.ScrollBar and listScroll.ScrollBar.zlUpdateVisibility) then

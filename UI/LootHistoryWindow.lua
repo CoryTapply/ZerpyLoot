@@ -792,7 +792,7 @@ end
 local function buildCandidateList(entry)
     local list = {};
     for name, data in pairs(entry.responses or {}) do
-        table.insert(list, { name = name, response = data.response, note = data.note, votes = data.votes or 0 });
+        table.insert(list, { name = name, response = data.response, note = data.note, votes = data.votes or 0, class = data.class });
     end
     local winnerName = entry.awardedTo;
     table.sort(list, function(a, b)
@@ -861,6 +861,7 @@ local function paintCandidateRow(row, cand, isWinner)
     row.nameText:ClearAllPoints();
     row.nameText:SetPoint("LEFT", row, "LEFT", nameX, 0);
     row.nameText:SetWidth(Sizes.expanded.colCandidate - nameX);
+    row.nameText:SetTextColor(classColorRGB(cand.class));
     setTextEllipsized(row.nameText, cand.name, Sizes.expanded.colCandidate - nameX);
 
     row.pill:ClearAllPoints();
@@ -2263,6 +2264,29 @@ function LootHistoryWindow.Show()
     end
 
     frame:Show();
+end
+
+--- Repaints the window with any new/removed rows in FL.LootCouncil.History -
+--- called by LootCouncil.RecordHistory after an award, a reassignment (which
+--- deletes the old recipient's row before inserting the new one - see
+--- RecordHistory), or a history row applied from another client's "award"
+--- broadcast, so the window never shows a stale snapshot while left open
+--- across any of those. No-op unless the window is already open: nothing to
+--- repaint, and ensureFrame() would build UI for a window nobody asked for.
+function LootHistoryWindow.Refresh()
+    if (not frame or not frame:IsShown()) then return; end
+    rebuildIndexes();
+    dateColumn.refresh();
+    playersColumn.refresh();
+    itemsColumn.refresh();
+
+    if (not filterStillValid(currentFilter)) then
+        applyFilter(nil);
+    else
+        local results = resolveResults(currentFilter);
+        paintFilterBar(currentFilter, results);
+        layoutResultRows(results);
+    end
 end
 
 function LootHistoryWindow.Hide()

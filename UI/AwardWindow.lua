@@ -501,7 +501,6 @@ local function createHeaderRow()
     SetFont(headerTypeText, "small");
     headerTypeText:SetTextColor(unpack(Colors.description));
     headerTypeText:SetPoint("TOPLEFT", headerNameText, "BOTTOMLEFT", 0, -Sizes.mainPanel.headerNameTypeGap);
-    -- headerTypeText:SetPoint("RIGHT", headerNameText, "RIGHT", 0, 0);
     headerTypeText:SetJustifyH("LEFT");
     headerTypeText:SetWordWrap(false);
 
@@ -1562,12 +1561,10 @@ local function paintHeader(item, candidateCount, voteTotal)
         if (fontPath) then headerNameText:SetFont(fontPath, fontSize, ""); end
     end
 
-    local name, _, _, _, _, itemType, itemSubType, _, equipLoc = Util.GetItemInfo(item.itemLink);
+    local name, _, _, _, _, _, itemSubType, _, _ = Util.GetItemInfo(item.itemLink);
     if (name) then
         setTextEllipsized(headerNameText, ("[%s]"):format(name), headerNameText:GetWidth());
-        local slot = (equipLoc and equipLoc ~= "") and _G[equipLoc] or nil;
-        local isEquippable = slot ~= nil and slot ~= "";
-        local typeLine = Util.JoinTypeParts(isEquippable and slot or itemType, itemSubType);
+        local typeLine = Util.JoinTypeParts(itemSubType);
         typeLine = Util.JoinTypeParts(typeLine, ("%d response%s"):format(candidateCount, candidateCount == 1 and "" or "s"));
         typeLine = Util.JoinTypeParts(typeLine, ("%d vote%s"):format(voteTotal, voteTotal == 1 and "" or "s"));
         headerTypeText:SetText(typeLine);

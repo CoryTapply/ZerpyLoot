@@ -960,14 +960,21 @@ LootCouncil.CommActions.vote = applyVote;
 --------------------------------------------------------------------------
 
 --- Appends an award to the persistent history log (FL.DB.lootCouncil.history),
---- deduped by "initiatorFqn-sessionId-itemSession-awardSeq" (one id per award
---- EVENT, not per item - an item can be re-awarded, each award gets its own
---- history row) so processing the same award broadcast twice can't create a
---- duplicate entry. Called by BOTH AwardItem (the leader's own optimistic
---- path) and applyAward (every other client's only path) - see
---- docs/LOOT_COUNCIL_PLAN.md §1: "every client appends to it... not just the
---- leader," so the log survives the leader disconnecting or swapping
---- characters.
+--- keyed by "initiatorFqn-sessionId-itemSession-awardSeq" so processing the
+--- same award broadcast twice can't create a duplicate entry. A re-award
+--- (awardSeq > 1) first deletes any existing row(s) sharing this item's
+--- "initiatorFqn-sessionId-itemSession-" prefix, so reassigning an item
+--- always leaves exactly one history row for it - the current recipient's -
+--- rather than accumulating one stale row per past recipient. Called by BOTH
+--- AwardItem (the leader's own optimistic path) and applyAward (every other
+--- client's only path) - see docs/LOOT_COUNCIL_PLAN.md §1: "every client
+--- appends to it... not just the leader," so the log survives the leader
+--- disconnecting or swapping characters. Also nudges LootHistoryWindow to
+--- repaint if it's currently open, so a new row (or a reassignment's
+--- delete+insert) shows up live instead of only after the window is next
+--- reopened - covers both paths above, so this fires whether the local
+--- player just awarded/reassigned an item or the row just arrived from
+--- another client's broadcast.
 ---
 --- Session.id alone isn't enough: it's just each client's own nextSessionId
 --- counter (see SendToRaid), so two different council leaders' "session 3"
@@ -985,9 +992,26 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     local item = Session.items[itemSession];
     if (not item) then return; end
 
-    local id = ("%s-%d-%d-%d"):format((Session.initiatorFqn or "?"):lower(), Session.id, itemSession, awardSeq);
+    -- A Forever character's full name ("First Last") has a space in it, which
+    -- Util.playerFqn() preserves for display purposes elsewhere - stripped
+    -- here so the id string itself stays space-free.
+    local initiatorKey = (Session.initiatorFqn or "?"):lower():gsub("%s+", "");
+    local id = ("%s-%d-%d-%d"):format(initiatorKey, Session.id, itemSession, awardSeq);
     for _, entry in ipairs(LootCouncil.History) do
         if (entry.id == id) then return; end -- this exact award already recorded
+    end
+
+    -- A re-award (awardSeq > 1) replaces this item's history row rather than
+    -- appending alongside it - without this, reassigning an item left a
+    -- stale row crediting the previous recipient sitting next to the new
+    -- one. Matches on the same idPrefix as the dedupe id above (this
+    -- session's item, scoped to this session's leader) so a different
+    -- leader's unrelated "session 3" can never collide with this one's.
+    local idPrefix = ("%s-%d-%d-"):format(initiatorKey, Session.id, itemSession);
+    for i = #LootCouncil.History, 1, -1 do
+        if (LootCouncil.History[i].id:sub(1, #idPrefix) == idPrefix) then
+            table.remove(LootCouncil.History, i);
+        end
     end
 
     -- Ids aren't stable between sessions (Core/Responses.lua), so history
@@ -999,14 +1023,53 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     -- fallback below only fires for a genuinely unresolvable id (e.g. a
     -- session with no response snapshot at all, from before this feature
     -- existed).
+    -- Only a handful of candidates get saved per item, not every responder:
+    -- whoever chose the top/first response option (Session.responses[1],
+    -- e.g. "Major"), plus enough of the remaining real responders - in the
+    -- same order the Award page shows them (FL.Awards.BuildCandidateList) -
+    -- to reach a floor of 5. Synthetic "hasn't responded yet" placeholder
+    -- rows that BuildCandidateList fabricates for unanswered group members
+    -- are excluded automatically, since they were never inserted into
+    -- item.candidates to begin with. The winner is always included even if
+    -- their own response wasn't the top option and the 5-floor didn't reach
+    -- them, since this entry exists specifically to record their award.
+    local topResponseId = Session.responses and Session.responses[1] and Session.responses[1].id;
+    local ordered = FL.Awards.BuildCandidateList(item);
+    local topChosen, rest = {}, {};
+    for _, entry in ipairs(ordered) do
+        if (item.candidates[entry.name]) then
+            if (topResponseId and entry.candidate.response == topResponseId) then
+                table.insert(topChosen, entry.name);
+            else
+                table.insert(rest, entry.name);
+            end
+        end
+    end
+
+    local selected, selectedSet = {}, {};
+    for _, name in ipairs(topChosen) do
+        table.insert(selected, name);
+        selectedSet[name] = true;
+    end
+    for _, name in ipairs(rest) do
+        if (#selected >= 5) then break; end
+        table.insert(selected, name);
+        selectedSet[name] = true;
+    end
+    if (not selectedSet[playerName] and item.candidates[playerName]) then
+        table.insert(selected, playerName);
+    end
+
     local responses = {};
-    for name, candidate in pairs(item.candidates) do
+    for _, name in ipairs(selected) do
+        local candidate = item.candidates[name];
         local responseCopy = FL.Responses.HistoryCopy(Session.responses, candidate.response)
             or { label = tostring(candidate.response), color = "8a8176", kind = "text" };
         responses[name] = {
             response = responseCopy,
             note = candidate.note,
             votes = Util.tcount(candidate.approvals),
+            class = candidate.class,
         };
     end
 
@@ -1025,6 +1088,10 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         itemSession = itemSession,
         responses = responses,
     });
+
+    if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
+        FL.UI.LootHistoryWindow.Refresh();
+    end
 end
 
 --- Whether the local player may award items in the current session: gated
@@ -1063,6 +1130,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
     local item = Session.items[itemSession];
     if (not item) then return; end
 
+    local previousAwardedTo = item.awardedTo;
     local awardSeq = (item.awardCount or 0) + 1;
     item.awardCount = awardSeq;
     item.awardedTo = playerName;
@@ -1092,7 +1160,11 @@ function LootCouncil.AwardItem(itemSession, playerName)
 
     local awardChannel = Util.GroupChatChannel();
     if (awardChannel and FL.Settings.GetRaidChatLootCouncilAwardEnabled()) then
-        Util.SendChatMessageSafe(("%s was awarded to %s!"):format(item.itemLink, playerName), awardChannel);
+        local message = ("%s was awarded to %s!"):format(item.itemLink, playerName);
+        if (previousAwardedTo and previousAwardedTo ~= playerName) then
+            message = message .. (" (Re-assigned from %s)"):format(previousAwardedTo);
+        end
+        Util.SendChatMessageSafe(message, awardChannel);
     end
 
     LootCouncil.RecordHistory(Session, itemSession, playerName, Util.stripRealm(Util.UnitName("player")), awardSeq);
@@ -1134,6 +1206,7 @@ function LootCouncil.DisenchantItem(itemSession)
     if (not item) then return; end
 
     local recipient = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
+    local previousAwardedTo = item.awardedTo;
     local awardSeq = (item.awardCount or 0) + 1;
     item.awardCount = awardSeq;
     item.awardedTo = recipient;
@@ -1141,7 +1214,11 @@ function LootCouncil.DisenchantItem(itemSession)
 
     local awardChannel = Util.GroupChatChannel();
     if (awardChannel and FL.Settings.GetRaidChatLootCouncilAwardEnabled()) then
-        Util.SendChatMessageSafe(("%s will be disenchanted!"):format(item.itemLink), awardChannel);
+        local message = ("%s will be disenchanted!"):format(item.itemLink);
+        if (previousAwardedTo and previousAwardedTo ~= recipient) then
+            message = message .. (" (Re-assigned from %s)"):format(previousAwardedTo);
+        end
+        Util.SendChatMessageSafe(message, awardChannel);
     end
 
     LootCouncil.RecordHistory(Session, itemSession, recipient, Util.stripRealm(Util.UnitName("player")), awardSeq);
@@ -1236,6 +1313,9 @@ function LootCouncil.EndSession()
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
     end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
+    end
 end
 
 --- Applied by every client (leader included, via the self-looped broadcast)
@@ -1265,6 +1345,9 @@ local function applySessionEnd(Message)
     end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
+    end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
     end
 end
 LootCouncil.CommActions.sessionEnd = applySessionEnd;
@@ -1324,6 +1407,9 @@ function LootCouncil.EndSessionEarly()
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
     end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
+    end
 end
 
 --- Applied by every client (leader included, via the self-looped broadcast)
@@ -1360,6 +1446,9 @@ local function applySessionEndEarly(Message)
     end
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
+    end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
     end
 end
 LootCouncil.CommActions.sessionEndEarly = applySessionEndEarly;

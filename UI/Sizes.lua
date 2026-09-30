@@ -192,6 +192,21 @@ FL.UI.Sizes = {
             dropZoneIconGap = 6, -- icon bottom -> main line top
             dropZoneLineGap = 2, -- main line bottom -> second line top
 
+            -- Live-session summary box (StartSessionWindow.lua's
+            -- createLiveSummary/paintLiveSummary) - shown only once a
+            -- session is already active, between the header and the item
+            -- list. Same "<assigned> of <total> assigned" / "<n> never
+            -- awarded" counts + wrapping unassigned-icon-row layout math as
+            -- UI/AwardWindow.lua's End-Session-Early popup summary box (see
+            -- that window's own Sizes.award.popup.endEarly* fields).
+            summaryGap = 10, -- header bottom -> summary box top
+            summaryPadding = 8,
+            summaryRowGap = 8, -- counts row -> icon row
+            summaryIconSize = 17,
+            summaryIconBorderThickness = 1,
+            summaryIconGap = 2.5,
+            summaryMaxIcons = 12,
+
             listGap = listGap,
             listPadding = listPadding,
             listLabelGap = listLabelGap,
