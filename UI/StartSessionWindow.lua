@@ -385,10 +385,12 @@ local function createFooter()
     countText:SetPoint("LEFT", buttonRow, "LEFT", 0, 0);
 
     startButton = Widgets.CreateFlatButton(buttonRow, "Start Session", "primary");
+    startButton.mode = "start";
     startButton:SetSize(Sizes.footerStartWidth, Sizes.footerRowHeight);
     startButton:SetPoint("RIGHT", buttonRow, "RIGHT", 0, 0);
     startButton:SetScript("OnClick", function()
-        local ok, message = SessionItems.Send();
+        local isAdding = startButton.mode == "add";
+        local ok, message = isAdding and SessionItems.SendToActiveSession() or SessionItems.Send();
         if (ok) then
             FL.NotifyWindowClosed("StartSession");
             frame:Hide();
@@ -402,7 +404,7 @@ local function createFooter()
     startButton:HookScript("OnEnter", function(self)
         if (not SessionItems.CanSend()) then
             GameTooltip:SetOwner(self, "ANCHOR_LEFT");
-            GameTooltip:AddLine("Only the raid leader or an assistant can start a session.", 1, 1, 1, true);
+            GameTooltip:AddLine("Only the raid leader or an assistant can manage loot council sessions.", 1, 1, 1, true);
             GameTooltip:Show();
         end
     end);
@@ -783,6 +785,17 @@ function StartSessionWindow.Refresh()
     local canSend = SessionItems.CanSend();
     clearButton:SetEnabled(count > 0);
     startButton:SetEnabled(canSend);
+
+    -- Once a session is already running, this button appends to it instead
+    -- of starting a new one - only repaint text/width on an actual mode
+    -- transition (mirrors AwardWindow.lua's nextButton.mode idiom).
+    local Session = FL.LootCouncil.CurrentSession;
+    local mode = (Session and Session.status == "active") and "add" or "start";
+    if (startButton.mode ~= mode) then
+        startButton.mode = mode;
+        startButton.text:SetText(mode == "add" and "Add to Session" or "Start Session");
+        startButton:SetWidth(math.max(Sizes.footerStartWidth, startButton.text:GetStringWidth() + 24));
+    end
 
     if (listScroll.ScrollBar and listScroll.ScrollBar.zlUpdateVisibility) then
         listScroll.ScrollBar.zlUpdateVisibility();

@@ -393,6 +393,38 @@ LootCouncil.CommActions.councilSettingsSync = applyCouncilSettingsSync;
 -- Session lifecycle
 --------------------------------------------------------------------------
 
+-- Shared by applySessionStart and applySessionAddItems below, so a session
+-- item's shape (and the late-arriving-item-data fallback) can't drift
+-- between "start a session" and "add items to one already running".
+---@param itemLink string
+---@param sessionIndex number this item's Session.items index (the `session` field itemSession-keyed lookups use everywhere else - AwardItem, ToggleVote, SubmitResponse, etc.)
+local function buildSessionItemEntry(itemLink, sessionIndex)
+    local itemID = Util.itemIDFromLink(itemLink);
+    local itemName, _, itemQuality, _, _, _, _, _, _, itemIcon = Util.GetItemInfo(itemLink);
+
+    -- Not cached client-side yet - explicitly request it rather than
+    -- relying on GetItemInfo's implicit fetch (mirrors
+    -- RollTracker.lua's applyStart). No refresh listener is wired up
+    -- here since no Phase 2 UI needs to redraw when it arrives late -
+    -- Phase 3's response window adds that.
+    if (not itemName and itemID) then
+        C_Item.RequestLoadItemDataByID(itemID);
+    end
+
+    return {
+        session = sessionIndex,
+        itemLink = itemLink,
+        itemID = itemID,
+        itemName = itemName,
+        itemQuality = itemQuality,
+        itemIcon = itemIcon,
+        awardedTo = nil,
+        awardedAt = nil,
+        candidates = {},
+        sendFailed = false,
+    };
+end
+
 -- Applied locally by every client (initiator included, via the self-looped
 -- broadcast) when a sessionStart message is processed - mirrors
 -- RollTracker.lua's applyStart. The sessionId always comes from the message,
@@ -423,30 +455,7 @@ local function applySessionStart(Message)
 
     local items = {};
     for i, itemLink in ipairs(content.items) do
-        local itemID = Util.itemIDFromLink(itemLink);
-        local itemName, _, itemQuality, _, _, _, _, _, _, itemIcon = Util.GetItemInfo(itemLink);
-
-        -- Not cached client-side yet - explicitly request it rather than
-        -- relying on GetItemInfo's implicit fetch (mirrors
-        -- RollTracker.lua's applyStart). No refresh listener is wired up
-        -- here since no Phase 2 UI needs to redraw when it arrives late -
-        -- Phase 3's response window adds that.
-        if (not itemName and itemID) then
-            C_Item.RequestLoadItemDataByID(itemID);
-        end
-
-        items[i] = {
-            session = i,
-            itemLink = itemLink,
-            itemID = itemID,
-            itemName = itemName,
-            itemQuality = itemQuality,
-            itemIcon = itemIcon,
-            awardedTo = nil,
-            awardedAt = nil,
-            candidates = {},
-            sendFailed = false,
-        };
+        items[i] = buildSessionItemEntry(itemLink, i);
     end
 
     FL.DB.lootCouncil.session = {
@@ -482,6 +491,43 @@ local function applySessionStart(Message)
     end
 end
 LootCouncil.CommActions.sessionStart = applySessionStart;
+
+-- Applied locally by every client (sender included) when a sessionAddItems
+-- message is processed - appends to the already-active Session.items instead
+-- of replacing it, mirroring applySessionStart's own per-item construction.
+-- Requires content.sessionId to match the locally-tracked Session.id (and
+-- Session.status to still be "active") so a stale add can't reattach itself
+-- to a session that's since ended or been superseded by a new sessionStart.
+local function applySessionAddItems(Message)
+    local content = Message.content;
+    if (type(content) ~= "table" or type(content.items) ~= "table" or not content.sessionId) then
+        return;
+    end
+
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.id ~= content.sessionId or Session.status ~= "active") then
+        return;
+    end
+
+    local baseIndex = #Session.items;
+    for i, itemLink in ipairs(content.items) do
+        Session.items[baseIndex + i] = buildSessionItemEntry(itemLink, baseIndex + i);
+    end
+
+    lcDebugPrint(("Loot council session %d: %d item(s) added by %s"):format(content.sessionId, #content.items, Message.senderFqn or "?"));
+
+    if (not Message.isSelf) then
+        lcSend("presenceAck", nil, "GROUP");
+    end
+
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
+        FL.UI.RespondWindow.MaybeAutoShow();
+    end
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.MaybeAutoShow) then
+        FL.UI.AwardWindow.MaybeAutoShow();
+    end
+end
+LootCouncil.CommActions.sessionAddItems = applySessionAddItems;
 
 -- Presence is already recorded generically for every inbound message
 -- (onLCMessage above); this handler only exists to repaint the Award window
@@ -525,6 +571,32 @@ function LootCouncil.SendToRaid()
         items = itemLinks,
         names = LootCouncil.RosterNames(),
         responses = FL.Responses.SessionSnapshot(),
+    }, "GROUP");
+
+    return true;
+end
+
+--- Broadcasts the leader's current draft list (owned by Session/SessionItems.lua)
+--- as an ADDITION to the already-active session, instead of starting a new
+--- one - SendToRaid's counterpart for "the session's still running, more
+--- loot just dropped". No permission gate here, same convention as
+--- SendToRaid: Session/SessionItems.lua's SendToActiveSession() is the only
+--- caller and already enforces leader/assistant.
+---@param draftItems table array of {itemLink, itemID, source} (SessionItems' draft shape)
+---@return boolean success
+function LootCouncil.AddItemsToSession(draftItems)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.status ~= "active") then return false; end
+    if (#draftItems == 0) then return false; end
+
+    local itemLinks = {};
+    for i, draftItem in ipairs(draftItems) do
+        itemLinks[i] = draftItem.itemLink;
+    end
+
+    lcSend("sessionAddItems", {
+        sessionId = Session.id,
+        items = itemLinks,
     }, "GROUP");
 
     return true;

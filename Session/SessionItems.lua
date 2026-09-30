@@ -246,7 +246,9 @@ function SessionItems.CanSend()
 end
 
 --- Validates permission and a non-empty list, then broadcasts via
---- LootCouncil.SendToRaid() (which owns the actual comm transport).
+--- LootCouncil.SendToRaid() (which owns the actual comm transport). Clears
+--- the draft on success so a later SendToActiveSession() call doesn't
+--- re-send items that already went out with this session.
 ---@return boolean success, string|nil message
 function SessionItems.Send()
     if (not SessionItems.CanSend()) then
@@ -256,5 +258,32 @@ function SessionItems.Send()
         return false, "Add at least one item to the list first.";
     end
 
-    return FL.LootCouncil.SendToRaid();
+    local ok = FL.LootCouncil.SendToRaid();
+    if (ok) then
+        SessionItems.Clear();
+    end
+    return ok;
+end
+
+--- Same validation as Send(), but appends the draft list to the session
+--- that's already running (via LootCouncil.AddItemsToSession()) instead of
+--- starting a new one. Also clears the draft on success.
+---@return boolean success, string|nil message
+function SessionItems.SendToActiveSession()
+    if (not SessionItems.CanSend()) then
+        return false, "Only the raid leader or an assistant can add items to the session.";
+    end
+    if (#items == 0) then
+        return false, "Add at least one item to the list first.";
+    end
+    local Session = FL.LootCouncil.CurrentSession;
+    if (not Session or Session.status ~= "active") then
+        return false, "There's no active session to add items to.";
+    end
+
+    local ok = FL.LootCouncil.AddItemsToSession(items);
+    if (ok) then
+        SessionItems.Clear();
+    end
+    return ok;
 end
