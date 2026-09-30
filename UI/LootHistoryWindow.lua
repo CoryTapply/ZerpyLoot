@@ -40,8 +40,8 @@ local WINDOW_HEIGHT = Sizes.window.height;
 
 local frame, body;
 local dateColumn, playersColumn, itemsColumn;
-local filterBar, filterTypeTag, filterTypeTagText, filterValueText;
-local filterValueItemIcon, filterValueItemIconBorder;
+local filterBar;
+local filterChips = {}; -- up to 2 simultaneous chips: { tag, tagText, valueText, itemIcon, itemIconBorder }
 local filterCountText, filterClearText, filterClearButton, filterClearUnderline, addEntryButton;
 local confirmationLine;
 local resultsScroll, resultsScrollChild, emptyResultsText;
@@ -55,7 +55,11 @@ local indexByDay, dayKeysSorted = {}, {};
 local indexByPlayer, playerNamesSorted = {}, {};
 local indexByItem, itemIDsSorted = {}, {};
 
-local currentFilter; -- { type = "date"|"player"|"item", key = ... } or nil
+local currentFilter; -- nil, or { date = dayKey|nil, player = playerName|nil, item = itemID|nil }.
+                      -- nil means "All history"; a filter table is never stored with all three
+                      -- fields nil (applyFilter normalizes that back to nil). Invariant: player
+                      -- and item are never both non-nil at once (enforced in
+                      -- toggleFilterDimension, the only place that merges a click into it).
 local currentResults = {};
 local expandedEntryId;
 local hasAppliedFilter = false;
@@ -181,20 +185,74 @@ local function rebuildIndexes()
     end);
 end
 
+--- Intersects two entry arrays by table identity (the same entry table is
+--- shared across whichever of indexByDay/indexByPlayer/indexByItem it
+--- belongs to), preserving `base`'s own ordering.
+local function intersectEntries(base, other)
+    local presentInOther = {};
+    for _, e in ipairs(other) do presentInOther[e] = true; end
+    local out = {};
+    for _, e in ipairs(base) do
+        if (presentInOther[e]) then table.insert(out, e); end
+    end
+    return out;
+end
+
 local function resolveResults(filter)
     if (not filter) then return allEntries; end
-    if (filter.type == "date") then return (indexByDay[filter.key] or { entries = {} }).entries; end
-    if (filter.type == "player") then return (indexByPlayer[filter.key] or { entries = {} }).entries; end
-    if (filter.type == "item") then return (indexByItem[filter.key] or { entries = {} }).entries; end
+
+    local dateBucket = filter.date and indexByDay[filter.date];
+    local otherBucket = filter.player and indexByPlayer[filter.player]
+        or filter.item and indexByItem[filter.item];
+
+    if (filter.date and (filter.player or filter.item)) then
+        if (not dateBucket or not otherBucket) then return {}; end
+        return intersectEntries(dateBucket.entries, otherBucket.entries);
+    elseif (filter.date) then
+        return (dateBucket or { entries = {} }).entries;
+    elseif (filter.player or filter.item) then
+        return (otherBucket or { entries = {} }).entries;
+    end
     return allEntries;
 end
 
 local function filterStillValid(filter)
     if (not filter) then return true; end
-    if (filter.type == "date") then return indexByDay[filter.key] ~= nil; end
-    if (filter.type == "player") then return indexByPlayer[filter.key] ~= nil; end
-    if (filter.type == "item") then return indexByItem[filter.key] ~= nil; end
-    return false;
+    if (filter.date and not indexByDay[filter.date]) then return false; end
+    if (filter.player and not indexByPlayer[filter.player]) then return false; end
+    if (filter.item and not indexByItem[filter.item]) then return false; end
+    return true;
+end
+
+--- The single choke point that merges a sidebar row click into currentFilter.
+--- Handles both the toggle-off-on-reclick gesture and the player/item
+--- mutual-exclusion invariant. In-row "jump to X" click targets bypass this
+--- and call applyFilter directly since they're full-replace, not merges.
+local function toggleFilterDimension(dimType, key)
+    local base = currentFilter or {};
+    local nextFilter = { date = base.date, player = base.player, item = base.item };
+
+    if (dimType == "date") then
+        if (nextFilter.date == key) then
+            nextFilter.date = nil;
+        else
+            nextFilter.date = key;
+        end
+    elseif (dimType == "player") then
+        if (nextFilter.player == key) then
+            nextFilter.player = nil;
+        else
+            nextFilter.player, nextFilter.item = key, nil;
+        end
+    elseif (dimType == "item") then
+        if (nextFilter.item == key) then
+            nextFilter.item = nil;
+        else
+            nextFilter.item, nextFilter.player = key, nil;
+        end
+    end
+
+    applyFilter(nextFilter);
 end
 
 --------------------------------------------------------------------------
@@ -203,6 +261,45 @@ end
 -- count/select/hover states) and differ only in title, search, and how a
 -- row paints. See §2-3 of the design spec.
 --------------------------------------------------------------------------
+
+local function intersectMaybe(a, b)
+    if (not a) then return b; end
+    if (not b) then return a; end
+    return intersectEntries(a, b);
+end
+
+--- The entries a column's row counts should be intersected against, built
+--- from every *other* currently active filter dimension (excluding
+--- `dimType` itself, since that's the one varying per row). Date, Player
+--- and Item are each considered independently here - e.g. while Player is
+--- unset but Item is active, Player rows still cross against that Item, even
+--- though clicking one of them would go on to clear it (mutual exclusion is
+--- an actual-selection rule, not a preview rule). Returns nil when nothing
+--- else is active, so callers can fall back to a row's own unfiltered count.
+local function crossFilterEntries(dimType)
+    if (not currentFilter) then return nil; end
+    local entries;
+    if (dimType ~= "date" and currentFilter.date) then
+        entries = intersectMaybe(entries, (indexByDay[currentFilter.date] or {}).entries);
+    end
+    if (dimType ~= "player" and currentFilter.player) then
+        entries = intersectMaybe(entries, (indexByPlayer[currentFilter.player] or {}).entries);
+    end
+    if (dimType ~= "item" and currentFilter.item) then
+        entries = intersectMaybe(entries, (indexByItem[currentFilter.item] or {}).entries);
+    end
+    return entries;
+end
+
+--- A row's displayed count: how many entries this row's bucket would
+--- contribute if it (or the dimension it already represents) were combined
+--- with whatever else is currently active - i.e. a live preview of what
+--- clicking it would narrow results to.
+local function contextualRowCount(dimType, bucket)
+    local cross = crossFilterEntries(dimType);
+    if (not cross) then return #bucket.entries; end
+    return #intersectEntries(bucket.entries, cross);
+end
 
 local function paintDateRow(row, key, bucket)
     if (not row.countText) then
@@ -221,7 +318,7 @@ local function paintDateRow(row, key, bucket)
 
     row.label:SetTextColor(unpack(Colors.text));
     setTextEllipsized(row.label, bucket.label, row.label:GetWidth());
-    row.countText:SetText(tostring(#bucket.entries));
+    row.countText:SetText(tostring(contextualRowCount("date", bucket)));
 end
 
 local function paintPlayerRow(row, key, bucket)
@@ -242,7 +339,7 @@ local function paintPlayerRow(row, key, bucket)
     local r, g, b = classColorRGB(bucket.class);
     row.nameText:SetTextColor(r, g, b);
     setTextEllipsized(row.nameText, key, row.nameText:GetWidth());
-    row.countText:SetText(tostring(#bucket.entries));
+    row.countText:SetText(tostring(contextualRowCount("player", bucket)));
 end
 
 local function paintItemRow(row, key, bucket)
@@ -276,7 +373,7 @@ local function paintItemRow(row, key, bucket)
     row.iconBorder:SetBackdropBorderColor(0.341, 0.314, 0.290);
     row.nameText:SetTextColor(qr, qg, qb);
     setTextEllipsized(row.nameText, bucket.name, row.nameText:GetWidth());
-    row.countText:SetText(tostring(#bucket.entries));
+    row.countText:SetText(tostring(contextualRowCount("item", bucket)));
 end
 
 local function buildFilterColumn(parent, opts)
@@ -403,8 +500,8 @@ local function buildFilterColumn(parent, opts)
             if (self.key ~= selectedKey) then self:SetBackdropColor(unpack(Colors.transparent)); end
         end);
         row:SetScript("OnClick", function(self)
-            if (self.key == nil or self.key == selectedKey) then return; end
-            applyFilter({ type = opts.filterType, key = self.key });
+            if (self.key == nil) then return; end
+            toggleFilterDimension(opts.filterType, self.key);
         end);
 
         row:Hide();
@@ -538,20 +635,25 @@ local function createFilterBar(parent)
     addEntryButton.text:SetPoint("LEFT", addEntryButton.icon, "RIGHT", iconGap, 0);
     addEntryButton:SetScript("OnClick", function() showAddEntryPopup(); end);
 
-    filterTypeTag = CreateFrame("Frame", nil, filterBar, "BackdropTemplate");
-    filterTypeTag:SetPoint("LEFT", filterBar, "LEFT", Sizes.filterBar.padX, 0);
-    filterTypeTagText = filterTypeTag:CreateFontString(nil, "OVERLAY");
-    SetFont(filterTypeTagText, "tiny");
+    local function createFilterChip()
+        local tag = CreateFrame("Frame", nil, filterBar, "BackdropTemplate");
+        local tagText = tag:CreateFontString(nil, "OVERLAY");
+        SetFont(tagText, "tiny");
 
-    filterValueItemIcon = filterBar:CreateTexture(nil, "ARTWORK");
-    filterValueItemIcon:SetSize(Sizes.filterBar.itemIconSize, Sizes.filterBar.itemIconSize);
-    filterValueItemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92);
-    filterValueItemIconBorder = CreateFrame("Frame", nil, filterBar, "BackdropTemplate");
+        local itemIcon = filterBar:CreateTexture(nil, "ARTWORK");
+        itemIcon:SetSize(Sizes.filterBar.itemIconSize, Sizes.filterBar.itemIconSize);
+        itemIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92);
+        local itemIconBorder = CreateFrame("Frame", nil, filterBar, "BackdropTemplate");
 
-    filterValueText = filterBar:CreateFontString(nil, "OVERLAY");
-    SetFont(filterValueText, "body");
-    filterValueText:SetJustifyH("LEFT");
-    filterValueText:SetWordWrap(false);
+        local valueText = filterBar:CreateFontString(nil, "OVERLAY");
+        SetFont(valueText, "body");
+        valueText:SetJustifyH("LEFT");
+        valueText:SetWordWrap(false);
+
+        return { tag = tag, tagText = tagText, valueText = valueText, itemIcon = itemIcon, itemIconBorder = itemIconBorder };
+    end
+    filterChips[1] = createFilterChip();
+    filterChips[2] = createFilterChip();
 
     filterCountText = filterBar:CreateFontString(nil, "OVERLAY");
     SetFont(filterCountText, "small");
@@ -586,74 +688,82 @@ local function createFilterBar(parent)
     return filterBar;
 end
 
-local function paintFilterBar(filter, results)
-    filterValueItemIcon:Hide();
-    filterValueItemIconBorder:Hide();
+--- Paints one chip (`kind` = "all"|"date"|"player"|"item") and returns its
+--- rightmost widget, for the next element (a separator, the count, or the
+--- next chip) to anchor off of.
+local function paintFilterChip(chip, kind, key)
+    chip.itemIcon:Hide();
+    chip.itemIconBorder:Hide();
+    chip.valueText:Hide();
 
-    if (not filter) then
-        Theme.Helpers.SetFlatBackdrop(filterTypeTag, Colors.disabledBorder, Colors.disabledBorder, 1);
-        filterTypeTagText:SetTextColor(unpack(Colors.description));
-        filterTypeTagText:SetText("ALL");
-        filterValueText:SetTextColor(unpack(Colors.text));
-        filterValueText:SetText("All history");
-        filterClearButton:Hide();
-        filterClearText:Hide();
+    if (kind == "all") then
+        Theme.Helpers.SetFlatBackdrop(chip.tag, Colors.disabledBorder, Colors.disabledBorder, 1);
+        chip.tagText:SetTextColor(unpack(Colors.description));
+        chip.tagText:SetText("ALL");
     else
-        Theme.Helpers.SetFlatBackdrop(filterTypeTag, Colors.gold, Colors.gold, 1);
-        filterTypeTagText:SetTextColor(unpack(Colors.text));
-        filterClearButton:Show();
-        filterClearText:Show();
+        Theme.Helpers.SetFlatBackdrop(chip.tag, Colors.gold, Colors.gold, 1);
+        chip.tagText:SetTextColor(unpack(Colors.text));
 
-        if (filter.type == "date") then
-            filterTypeTagText:SetText("DATE");
-            filterValueText:SetTextColor(unpack(Colors.text));
-            filterValueText:SetText((indexByDay[filter.key] or {}).label or "");
-        elseif (filter.type == "player") then
-            filterTypeTagText:SetText("PLAYER");
-            local r, g, b = classColorRGB((indexByPlayer[filter.key] or {}).class);
-            filterValueText:SetTextColor(r, g, b);
-            filterValueText:SetText(filter.key);
-        elseif (filter.type == "item") then
-            filterTypeTagText:SetText("ITEM");
-            local bucket = indexByItem[filter.key] or {};
-            filterValueItemIcon:SetTexture(bucket.icon or Util.GetItemIcon(filter.key) or FALLBACK_ICON);
-            local qr, qg, qb = Util.GetItemQualityColor(bucket.quality);
-            qr, qg, qb = qr or 0.6, qg or 0.6, qb or 0.6;
-            Theme.Helpers.SetFlatBackdrop(filterValueItemIconBorder, nil, Colors.transparent, Sizes.filterBar.itemIconBorder);
-            filterValueItemIconBorder:SetBackdropBorderColor(qr, qg, qb);
-            filterValueText:SetTextColor(qr, qg, qb);
-            setTextEllipsized(filterValueText, "[" .. (bucket.name or "?") .. "]", 200);
+        if (kind == "date") then
+            chip.tagText:SetText("DATE");
+        elseif (kind == "player") then
+            chip.tagText:SetText("PLAYER");
+        elseif (kind == "item") then
+            chip.tagText:SetText("ITEM");
         end
     end
 
-    filterTypeTagText:ClearAllPoints();
-    filterTypeTagText:SetPoint("CENTER", filterTypeTag, "CENTER", 0, 0);
-    filterTypeTag:SetSize(
-        filterTypeTagText:GetStringWidth() + Sizes.filterBar.typeTagPadX * 2,
-        filterTypeTagText:GetStringHeight() + Sizes.filterBar.typeTagPadY * 2
+    chip.tagText:ClearAllPoints();
+    chip.tagText:SetPoint("CENTER", chip.tag, "CENTER", 0, 0);
+    chip.tag:SetSize(
+        chip.tagText:GetStringWidth() + Sizes.filterBar.typeTagPadX * 2,
+        chip.tagText:GetStringHeight() + Sizes.filterBar.typeTagPadY * 2
     );
+    chip.tag:Show();
 
-    local nextAnchor = filterTypeTag;
-    if (filter and filter.type == "item") then
-        filterValueItemIcon:ClearAllPoints();
-        filterValueItemIcon:SetPoint("LEFT", filterTypeTag, "RIGHT", Sizes.filterBar.gap, 0);
-        filterValueItemIconBorder:ClearAllPoints();
-        filterValueItemIconBorder:SetPoint("TOPLEFT", filterValueItemIcon, "TOPLEFT", -1, 1);
-        filterValueItemIconBorder:SetPoint("BOTTOMRIGHT", filterValueItemIcon, "BOTTOMRIGHT", 1, -1);
-        filterValueItemIcon:Show();
-        filterValueItemIconBorder:Show();
-        nextAnchor = filterValueItemIcon;
-    else
-        setTextEllipsized(filterValueText, filterValueText:GetText() or "", 240);
+    return chip.tag;
+end
+
+local function paintFilterBar(filter, results)
+    for _, chip in ipairs(filterChips) do
+        chip.tag:Hide();
+        chip.valueText:Hide();
+        chip.itemIcon:Hide();
+        chip.itemIconBorder:Hide();
+    end
+    -- Date is independent and always shown first; Player/Item are mutually
+    -- exclusive so at most one of them ever occupies the second chip slot.
+    -- "all" is a synthetic third kind so the no-filter state reuses the same
+    -- single-chip painting path as a single real filter.
+    local dims = {};
+    if (filter and filter.date) then table.insert(dims, { kind = "date", key = filter.date }); end
+    if (filter and filter.player) then
+        table.insert(dims, { kind = "player", key = filter.player });
+    elseif (filter and filter.item) then
+        table.insert(dims, { kind = "item", key = filter.item });
+    end
+    if (#dims == 0) then table.insert(dims, { kind = "all" }); end
+
+    local lastAnchor;
+    for i, dim in ipairs(dims) do
+        local chip = filterChips[i];
+        chip.tag:ClearAllPoints();
+        if (i == 1) then
+            chip.tag:SetPoint("LEFT", filterBar, "LEFT", Sizes.filterBar.padX, 0);
+        else
+            chip.tag:SetPoint("LEFT", lastAnchor, "RIGHT", Sizes.filterBar.gap, 0);
+        end
+        lastAnchor = paintFilterChip(chip, dim.kind, dim.key);
     end
 
-    filterValueText:ClearAllPoints();
-    filterValueText:SetPoint("LEFT", nextAnchor, "RIGHT", Sizes.filterBar.gap, 0);
+    local hasRealFilter = dims[1].kind ~= "all";
+    filterClearButton:SetShown(hasRealFilter);
+    filterClearText:SetShown(hasRealFilter);
 
     local count = #results;
     filterCountText:SetText(count == 1 and "1 award" or (tostring(count) .. " awards"));
     filterCountText:ClearAllPoints();
-    filterCountText:SetPoint("LEFT", filterValueText, "RIGHT", Sizes.filterBar.gap, 0);
+    filterCountText:SetPoint("LEFT", lastAnchor, "RIGHT", Sizes.filterBar.gap, 0);
 
     if (filterClearText:IsShown()) then
         filterClearText:ClearAllPoints();
@@ -1016,19 +1126,19 @@ local function createResultRow()
     row.itemNameButton:SetScript("OnClick", function()
         if (not row.entry) then return; end
         if (Util.HandleItemLinkClick(row.entry.itemLink)) then return; end
-        applyFilter({ type = "item", key = row.entry.itemID });
+        applyFilter({ item = row.entry.itemID });
     end);
 
     row.winnerButton = makeClickTarget(row.winnerName, Colors.text)
     row.winnerButton:SetScript("OnClick", function()
         if (not row.entry) then return; end
-        applyFilter({ type = "player", key = row.entry.awardedTo });
+        applyFilter({ player = row.entry.awardedTo });
     end);
 
     row.dateButton = makeClickTarget(row.dateText, Colors.description);
     row.dateButton:SetScript("OnClick", function()
         if (not row.entry) then return; end
-        applyFilter({ type = "date", key = dayKey(row.entry.awardedAt) });
+        applyFilter({ date = dayKey(row.entry.awardedAt) });
     end);
 
     row:Hide();
@@ -1154,6 +1264,9 @@ end
 --------------------------------------------------------------------------
 
 function applyFilter(newFilter)
+    if (newFilter and newFilter.date == nil and newFilter.player == nil and newFilter.item == nil) then
+        newFilter = nil;
+    end
     currentFilter = newFilter;
     hasAppliedFilter = true;
     local results = resolveResults(newFilter);
@@ -1161,32 +1274,30 @@ function applyFilter(newFilter)
     expandedEntryId = nil;
     resultsScroll:SetVerticalScroll(0);
 
-    dateColumn.setActive(newFilter ~= nil and newFilter.type == "date");
-    playersColumn.setActive(newFilter ~= nil and newFilter.type == "player");
-    itemsColumn.setActive(newFilter ~= nil and newFilter.type == "item");
+    local dateKey = newFilter and newFilter.date or nil;
+    local playerKey = newFilter and newFilter.player or nil;
+    local itemKey = newFilter and newFilter.item or nil;
 
-    dateColumn.setSelectedKey(newFilter and newFilter.type == "date" and newFilter.key or nil);
-    playersColumn.setSelectedKey(newFilter and newFilter.type == "player" and newFilter.key or nil);
-    itemsColumn.setSelectedKey(newFilter and newFilter.type == "item" and newFilter.key or nil);
+    dateColumn.setActive(dateKey ~= nil);
+    playersColumn.setActive(playerKey ~= nil);
+    itemsColumn.setActive(itemKey ~= nil);
 
-    if (newFilter) then
-        local col = ({ date = dateColumn, player = playersColumn, item = itemsColumn })[newFilter.type];
-        if (col) then
-            if (col.isKeyHiddenBySearch(newFilter.key)) then col.clearSearch(); end
-            col.scrollKeyIntoView(newFilter.key);
+    dateColumn.setSelectedKey(dateKey);
+    playersColumn.setSelectedKey(playerKey);
+    itemsColumn.setSelectedKey(itemKey);
+
+    for _, pair in ipairs({
+        { dateColumn, dateKey }, { playersColumn, playerKey }, { itemsColumn, itemKey },
+    }) do
+        local col, key = pair[1], pair[2];
+        if (key ~= nil) then
+            if (col.isKeyHiddenBySearch(key)) then col.clearSearch(); end
+            col.scrollKeyIntoView(key);
         end
     end
 
     paintFilterBar(newFilter, results);
     layoutResultRows(results);
-end
-
-local function applyDefaultFilter()
-    if (#allEntries > 0) then
-        applyFilter({ type = "date", key = dayKeysSorted[1] });
-    else
-        applyFilter(nil);
-    end
 end
 
 --------------------------------------------------------------------------
@@ -1800,7 +1911,7 @@ local function confirmAddEntry()
     playersColumn.refresh();
     itemsColumn.refresh();
 
-    applyFilter({ type = "date", key = dayKey(entry.awardedAt) });
+    applyFilter({ date = dayKey(entry.awardedAt) });
     expandedEntryId = entry.id;
     local expandedRow = layoutResultRows(currentResults);
     if (expandedRow) then
@@ -1834,17 +1945,17 @@ function showAddEntryPopup()
     dialog.errorText:Hide();
     paintItemPreview();
 
-    if (currentFilter and currentFilter.type == "player") then
-        dialog.nameBox:SetText(currentFilter.key);
-        addEntryState.selectedClass = (indexByPlayer[currentFilter.key] or {}).class;
-    elseif (currentFilter and currentFilter.type == "item") then
-        dialog.itemBox:SetText(tostring(currentFilter.key));
-        tryResolveItem(currentFilter.key);
+    if (currentFilter and currentFilter.player) then
+        dialog.nameBox:SetText(currentFilter.player);
+        addEntryState.selectedClass = (indexByPlayer[currentFilter.player] or {}).class;
+    elseif (currentFilter and currentFilter.item) then
+        dialog.itemBox:SetText(tostring(currentFilter.item));
+        tryResolveItem(currentFilter.item);
     end
 
     local defaultTimestamp = GetServerTime();
-    if (currentFilter and currentFilter.type == "date") then
-        local bucket = indexByDay[currentFilter.key];
+    if (currentFilter and currentFilter.date) then
+        local bucket = indexByDay[currentFilter.date];
         if (bucket and bucket.entries[1]) then defaultTimestamp = bucket.entries[1].awardedAt; end
     end
     dialog.dateBox:SetText(date("%m/%d/%Y", defaultTimestamp));
@@ -2018,7 +2129,7 @@ function LootHistoryWindow.Show()
     itemsColumn.refresh();
 
     if (not hasAppliedFilter or not filterStillValid(currentFilter)) then
-        applyDefaultFilter();
+        applyFilter(nil);
     else
         local results = resolveResults(currentFilter);
         paintFilterBar(currentFilter, results);
