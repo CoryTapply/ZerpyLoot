@@ -29,6 +29,8 @@ local CROWN_TEXTURE = "Interface\\GroupFrame\\UI-Group-LeaderIcon";
 local DOT_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Respond\\Dot";
 local ARROW_ATLAS = "glues-characterSelect-icon-arrowDown";
 local PLUS_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Award\\Plus";
+local TRASH_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
+local LOCK_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\Lock.tga";
 
 local POSITION_KEY = "lootHistoryWindow";
 local WINDOW_WIDTH = Sizes.window.width;
@@ -64,7 +66,16 @@ local currentResults = {};
 local expandedEntryId;
 local hasAppliedFilter = false;
 
-local applyFilter, toggleExpand, layoutResultRows, ensureFrame, showAddEntryPopup;
+-- Delete mode: toggled by the titlebar lock button. While active, every
+-- result row's chevron is swapped for a trash icon that removes that row's
+-- entry from FL.LootCouncil.History (see setDeleteMode/deleteEntry below).
+-- lockButton is created once by createTitleBar; paintLockButton needs it as
+-- a module-level upvalue so setDeleteMode can repaint it without threading
+-- it through every caller.
+local deleteModeActive = false;
+local lockButton;
+
+local applyFilter, toggleExpand, layoutResultRows, ensureFrame, showAddEntryPopup, deleteEntry;
 
 --------------------------------------------------------------------------
 -- Small local helpers
@@ -1045,6 +1056,31 @@ local function createResultRow()
     row.chevron:SetAtlas(ARROW_ATLAS);
     row.chevron:SetVertexColor(unpack(Colors.controlHover));
 
+    -- Delete-mode overlay: a real Button sitting above row's own click area
+    -- (same technique as the itemName/winner/date carve-outs below), sized
+    -- and positioned exactly over row.chevron so the trash icon replaces the
+    -- arrow in place. Hidden outside delete mode, so the row's own OnClick
+    -- (toggleExpand) still fires everywhere else. See setDeleteMode.
+    row.deleteButton = CreateFrame("Button", nil, row);
+    row.deleteButton:SetFrameLevel(row:GetFrameLevel() + 1);
+    row.deleteButton:SetAllPoints(row.chevron);
+    row.deleteButton:Hide();
+
+    row.trashIcon = row.deleteButton:CreateTexture(nil, "OVERLAY");
+    row.trashIcon:SetAllPoints(row.deleteButton);
+    row.trashIcon:SetTexture(TRASH_ICON_TEXTURE);
+    row.trashIcon:SetVertexColor(unpack(Colors.muted));
+
+    row.deleteButton:HookScript("OnEnter", function()
+        row.trashIcon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
+    end);
+    row.deleteButton:HookScript("OnLeave", function()
+        row.trashIcon:SetVertexColor(unpack(Colors.muted));
+    end);
+    row.deleteButton:SetScript("OnClick", function()
+        if (row.entry) then deleteEntry(row.entry); end
+    end);
+
     row.dateText = row:CreateFontString(nil, "OVERLAY");
     SetFont(row.dateText, "smaller");
     row.dateText:SetTextColor(unpack(Colors.description));
@@ -1197,7 +1233,14 @@ local function measureAndPaintResultRow(row, entry)
     row.dateText:SetText(dayLabel(entry.awardedAt));
     row.byText:SetText(timeLabel(entry.awardedAt) .. " \194\183 by " .. (entry.awardedBy or "?"));
 
-    row.chevron:SetRotation(isExpanded and math.pi or 0);
+    if (deleteModeActive) then
+        row.chevron:Hide();
+        row.deleteButton:Show();
+    else
+        row.deleteButton:Hide();
+        row.chevron:Show();
+        row.chevron:SetRotation(isExpanded and math.pi or 0);
+    end
 
     if (isExpanded) then
         return layoutExpandedBlock(row, entry);
@@ -1298,6 +1341,61 @@ function applyFilter(newFilter)
 
     paintFilterBar(newFilter, results);
     layoutResultRows(results);
+end
+
+--------------------------------------------------------------------------
+-- Delete mode - the titlebar lock button and per-row deletion. Deleting is
+-- local-only (LootCouncil.History is per-client saved data, never synced),
+-- same as the manual "Add Entry" writer above.
+--------------------------------------------------------------------------
+
+local function paintLockButton()
+    if (not lockButton) then return; end
+    if (deleteModeActive) then
+        Theme.Helpers.SetFlatBackdrop(lockButton, Colors.sessionDeleteHoverBg, Colors.skinCloseBorder, 1);
+        lockButton.icon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
+    else
+        Theme.Helpers.SetFlatBackdrop(lockButton, Colors.transparent, Colors.transparent, 1);
+        lockButton.icon:SetVertexColor(unpack(Colors.muted));
+    end
+end
+
+--- Toggled by lockButton's OnClick, and forced back to false whenever the
+--- window is (re)shown (see LootHistoryWindow.Show) so leaving it unlocked
+--- once never carries into a later session.
+local function setDeleteMode(active)
+    deleteModeActive = active;
+    paintLockButton();
+    layoutResultRows(currentResults);
+end
+
+--- Removes `entry` from FL.LootCouncil.History and repaints. Only ever
+--- reachable through a result row's trash button (deleteModeActive gates
+--- that button's visibility), so no separate confirmation here - unlocking
+--- delete mode via the lock button already is the confirmation step.
+function deleteEntry(entry)
+    if (not entry or not LootCouncil.History) then return; end
+    for i, e in ipairs(LootCouncil.History) do
+        if (e.id == entry.id) then
+            table.remove(LootCouncil.History, i);
+            break;
+        end
+    end
+
+    if (expandedEntryId == entry.id) then expandedEntryId = nil; end
+
+    rebuildIndexes();
+    dateColumn.refresh();
+    playersColumn.refresh();
+    itemsColumn.refresh();
+
+    if (not filterStillValid(currentFilter)) then
+        applyFilter(nil);
+    else
+        local results = resolveResults(currentFilter);
+        paintFilterBar(currentFilter, results);
+        layoutResultRows(results);
+    end
 end
 
 --------------------------------------------------------------------------
@@ -2007,6 +2105,32 @@ local function createTitleBar()
         frame:Hide();
     end);
 
+    lockButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
+    lockButton:SetSize(RootSizes.controls.close, RootSizes.controls.close);
+    lockButton:SetPoint("RIGHT", closeButton, "LEFT", -6, 0);
+
+    lockButton.icon = lockButton:CreateTexture(nil, "ARTWORK");
+    lockButton.icon:SetSize(RootSizes.controls.closeIcon, RootSizes.controls.closeIcon);
+    lockButton.icon:SetPoint("CENTER");
+    lockButton.icon:SetTexture(LOCK_ICON_TEXTURE);
+
+    lockButton:HookScript("OnEnter", function()
+        if (not deleteModeActive) then
+            Theme.Helpers.SetFlatBackdrop(lockButton, Colors.hoverBg, Colors.controlHover, 1);
+            lockButton.icon:SetVertexColor(unpack(Colors.controlHover));
+        end
+        GameTooltip:SetOwner(lockButton, "ANCHOR_LEFT");
+        GameTooltip:AddLine(deleteModeActive and "Lock: stop deleting history rows" or "Unlock to delete history rows");
+        GameTooltip:Show();
+    end);
+    lockButton:HookScript("OnLeave", function()
+        paintLockButton();
+        GameTooltip:Hide();
+    end);
+    lockButton:SetScript("OnClick", function() setDeleteMode(not deleteModeActive); end);
+
+    paintLockButton();
+
     return titleBar;
 end
 
@@ -2123,6 +2247,8 @@ end
 
 function LootHistoryWindow.Show()
     ensureFrame();
+    deleteModeActive = false;
+    paintLockButton();
     rebuildIndexes();
     dateColumn.refresh();
     playersColumn.refresh();
