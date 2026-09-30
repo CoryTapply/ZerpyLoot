@@ -40,6 +40,15 @@ LootCouncil.debugEnabled = false;
 -- ack (applySessionStart) so a non-responder can be proven present too.
 LootCouncil.Presence = {};
 
+-- In-memory indexes over the persisted LootCouncil.History array (rebuilt
+-- from it at Init, never themselves persisted) - let RecordHistory do its
+-- dedupe/replace checks in O(1) instead of scanning the whole (unboundedly
+-- growing) history on every single award. Every writer of LootCouncil.History
+-- must go through AddHistoryEntry/RemoveHistoryEntry below so these can never
+-- drift out of sync with the array.
+LootCouncil.HistoryIndex = {};     -- id -> array index into LootCouncil.History
+LootCouncil.HistoryItemIndex = {}; -- itemKey -> id of that item's current history entry
+
 --- Whether `name` has proven (via LC_PREFIX comm traffic this session) that
 --- they're running ForeverLoot. Used by Session/Awards.lua to tell a
 --- non-responder who simply hasn't answered yet from one who doesn't have
@@ -112,6 +121,7 @@ function LootCouncil.Init()
     LootCouncil.Roster = db.roster;
     LootCouncil.History = db.history;
     LootCouncil.CurrentSession = db.session;
+    LootCouncil.RebuildHistoryIndex();
 
     AceComm = LibStub("AceComm-3.0");
     LibDeflate = LibStub("LibDeflate");
@@ -169,7 +179,7 @@ onLCMessage = function(prefix, encoded, distribution, senderName)
     end
 
     -- Anti-spoofing: claimed sender must start with the real (server-supplied) sender name
-    if (payload.c and senderName) then
+    if (type(payload.c) == "string" and senderName) then
         local claimed = string.lower(strtrim(payload.c));
         local real = string.lower(strtrim(senderName));
         if (string.sub(claimed, 1, #real) ~= real) then return; end
@@ -959,6 +969,62 @@ LootCouncil.CommActions.vote = applyVote;
 -- Award + history (Phase 6)
 --------------------------------------------------------------------------
 
+--- Rebuilds HistoryIndex/HistoryItemIndex from scratch off LootCouncil.History
+--- (an O(n) pass, but only ever run once per login/reload from Init - see
+--- there). Also the correct thing to call after any bulk mutation of
+--- LootCouncil.History that doesn't go through AddHistoryEntry/
+--- RemoveHistoryEntry below (e.g. a future prune/archival pass that trims old
+--- rows directly) so the indexes can't silently drift out of sync with it.
+function LootCouncil.RebuildHistoryIndex()
+    local history = LootCouncil.History or {};
+    wipe(LootCouncil.HistoryIndex);
+    wipe(LootCouncil.HistoryItemIndex);
+    for i, entry in ipairs(history) do
+        LootCouncil.HistoryIndex[entry.id] = i;
+        if (entry.itemKey) then
+            LootCouncil.HistoryItemIndex[entry.itemKey] = entry.id;
+        end
+    end
+end
+
+--- Appends `entry` to LootCouncil.History and keeps HistoryIndex/
+--- HistoryItemIndex in sync. The only correct way to add a row - a raw
+--- table.insert would leave the indexes pointing at stale/missing positions.
+function LootCouncil.AddHistoryEntry(entry)
+    local history = LootCouncil.History;
+    table.insert(history, entry);
+    LootCouncil.HistoryIndex[entry.id] = #history;
+    if (entry.itemKey) then
+        LootCouncil.HistoryItemIndex[entry.itemKey] = entry.id;
+    end
+end
+
+--- Removes the entry with the given `id` from LootCouncil.History, if
+--- present, and returns it. Swap-remove (move the last element into the
+--- removed slot) rather than table.remove's shift-down: LootCouncil.History's
+--- own array order was never meaningful (LootHistoryWindow always re-sorts
+--- its own copy by awardedAt before displaying it), so there's nothing to
+--- preserve by paying O(n) to keep it - this makes removal O(1) instead.
+function LootCouncil.RemoveHistoryEntry(id)
+    local history = LootCouncil.History;
+    local index = LootCouncil.HistoryIndex[id];
+    if (not index) then return nil; end
+
+    local removed = history[index];
+    local lastIndex = #history;
+    if (index ~= lastIndex) then
+        local moved = history[lastIndex];
+        history[index] = moved;
+        LootCouncil.HistoryIndex[moved.id] = index;
+    end
+    history[lastIndex] = nil;
+    LootCouncil.HistoryIndex[id] = nil;
+    if (removed.itemKey and LootCouncil.HistoryItemIndex[removed.itemKey] == id) then
+        LootCouncil.HistoryItemIndex[removed.itemKey] = nil;
+    end
+    return removed;
+end
+
 --- Appends an award to the persistent history log (FL.DB.lootCouncil.history),
 --- keyed by "initiatorFqn-sessionId-itemSession-awardSeq" so processing the
 --- same award broadcast twice can't create a duplicate entry. A re-award
@@ -997,21 +1063,20 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     -- here so the id string itself stays space-free.
     local initiatorKey = (Session.initiatorFqn or "?"):lower():gsub("%s+", "");
     local id = ("%s-%d-%d-%d"):format(initiatorKey, Session.id, itemSession, awardSeq);
-    for _, entry in ipairs(LootCouncil.History) do
-        if (entry.id == id) then return; end -- this exact award already recorded
-    end
+    if (LootCouncil.HistoryIndex[id]) then return; end -- this exact award already recorded
 
     -- A re-award (awardSeq > 1) replaces this item's history row rather than
     -- appending alongside it - without this, reassigning an item left a
     -- stale row crediting the previous recipient sitting next to the new
-    -- one. Matches on the same idPrefix as the dedupe id above (this
-    -- session's item, scoped to this session's leader) so a different
-    -- leader's unrelated "session 3" can never collide with this one's.
-    local idPrefix = ("%s-%d-%d-"):format(initiatorKey, Session.id, itemSession);
-    for i = #LootCouncil.History, 1, -1 do
-        if (LootCouncil.History[i].id:sub(1, #idPrefix) == idPrefix) then
-            table.remove(LootCouncil.History, i);
-        end
+    -- one. itemKey identifies this item within this session's leader's log
+    -- (everything about `id` except awardSeq) - at most one history row ever
+    -- exists per itemKey, so HistoryItemIndex points straight at the exact
+    -- row to replace instead of scanning for an id-prefix match.
+    local itemKey = ("%s-%d-%d"):format(initiatorKey, Session.id, itemSession);
+    local oldId = LootCouncil.HistoryItemIndex[itemKey];
+    local oldEntry;
+    if (oldId) then
+        oldEntry = LootCouncil.RemoveHistoryEntry(oldId);
     end
 
     -- Ids aren't stable between sessions (Core/Responses.lua), so history
@@ -1075,8 +1140,9 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
 
     local winnerCandidate = item.candidates[playerName];
 
-    table.insert(LootCouncil.History, {
+    local newEntry = {
         id = id,
+        itemKey = itemKey,
         itemLink = item.itemLink,
         itemID = item.itemID,
         itemIcon = item.itemIcon,
@@ -1087,10 +1153,14 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         sessionId = Session.id,
         itemSession = itemSession,
         responses = responses,
-    });
+    };
+    LootCouncil.AddHistoryEntry(newEntry);
 
-    if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
-        FL.UI.LootHistoryWindow.Refresh();
+    -- Incremental repaint (just this one entry) when the window's open, not a
+    -- full rebuild-and-resort of the whole history - see
+    -- LootHistoryWindow.OnEntryUpserted's own comment for why that matters.
+    if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.OnEntryUpserted) then
+        FL.UI.LootHistoryWindow.OnEntryUpserted(newEntry, oldEntry);
     end
 end
 

@@ -209,6 +209,134 @@ local function intersectEntries(base, other)
     return out;
 end
 
+--------------------------------------------------------------------------
+-- Incremental index maintenance - lets OnEntryUpserted (below) add/replace a
+-- single history row without rebuildIndexes' full O(n log n) re-sort and
+-- three full bucket rebuilds, which otherwise ran on every single award (not
+-- just manual adds) while this window happened to be open. `allEntries` and
+-- every bucket's `.entries` share the same "sorted by awardedAt descending"
+-- invariant rebuildIndexes establishes - insertSorted keeps a list in that
+-- order via one binary-search insertion instead of a full re-sort.
+--------------------------------------------------------------------------
+
+local function bsearchInsertPos(list, awardedAt)
+    local lo, hi = 1, #list + 1;
+    while (lo < hi) do
+        local mid = math.floor((lo + hi) / 2);
+        if ((list[mid].awardedAt or 0) > (awardedAt or 0)) then
+            lo = mid + 1;
+        else
+            hi = mid;
+        end
+    end
+    return lo;
+end
+
+local function insertSorted(list, entry)
+    table.insert(list, bsearchInsertPos(list, entry.awardedAt), entry);
+end
+
+--- Linear removal by id - fine for a bucket (bounded by that day/player/item's
+--- own award count, not total history) and for allEntries (only hit on the
+--- much rarer reassign-replace path, never on a plain new award).
+local function removeFromList(list, id)
+    for i, e in ipairs(list) do
+        if (e.id == id) then
+            table.remove(list, i);
+            return true;
+        end
+    end
+    return false;
+end
+
+local function removeSortedKey(sortedKeys, key)
+    for i, k in ipairs(sortedKeys) do
+        if (k == key) then
+            table.remove(sortedKeys, i);
+            return;
+        end
+    end
+end
+
+--- Inserts `entry` into allEntries and its day/player/item buckets, creating
+--- a bucket (and re-sorting that one small key array - O(distinct keys), not
+--- O(history)) only when this is the first entry for that day/player/item.
+local function insertEntryIntoIndexes(entry)
+    insertSorted(allEntries, entry);
+
+    local dKey = dayKey(entry.awardedAt);
+    local dayBucket = indexByDay[dKey];
+    if (not dayBucket) then
+        dayBucket = { label = dayLabel(entry.awardedAt), entries = {} };
+        indexByDay[dKey] = dayBucket;
+        table.insert(dayKeysSorted, dKey);
+        table.sort(dayKeysSorted, function(a, b) return a > b; end);
+    end
+    insertSorted(dayBucket.entries, entry);
+
+    local playerBucket = indexByPlayer[entry.awardedTo];
+    if (not playerBucket) then
+        playerBucket = { class = entry.awardedToClass, entries = {} };
+        indexByPlayer[entry.awardedTo] = playerBucket;
+        table.insert(playerNamesSorted, entry.awardedTo);
+        table.sort(playerNamesSorted, function(a, b) return a:lower() < b:lower(); end);
+    elseif (not playerBucket.class and entry.awardedToClass) then
+        playerBucket.class = entry.awardedToClass;
+    end
+    insertSorted(playerBucket.entries, entry);
+
+    local itemBucket = indexByItem[entry.itemID];
+    if (not itemBucket) then
+        itemBucket = {
+            link = entry.itemLink, icon = entry.itemIcon, entries = {},
+            name = Util.GetItemInfo(entry.itemLink or entry.itemID) or ("Item " .. tostring(entry.itemID)),
+            quality = Util.GetItemQuality(entry.itemLink or entry.itemID),
+        };
+        indexByItem[entry.itemID] = itemBucket;
+        table.insert(itemIDsSorted, entry.itemID);
+        table.sort(itemIDsSorted, function(a, b)
+            return (indexByItem[a].name or ""):lower() < (indexByItem[b].name or ""):lower();
+        end);
+    end
+    insertSorted(itemBucket.entries, entry);
+end
+
+--- Removes `entry` from allEntries and its day/player/item buckets, dropping
+--- a bucket (and its key) entirely once it's left empty - mirrors
+--- insertEntryIntoIndexes above. Used for the reassign-replace path (the old
+--- recipient's row) - see OnEntryUpserted.
+local function removeEntryFromIndexes(entry)
+    removeFromList(allEntries, entry.id);
+
+    local dKey = dayKey(entry.awardedAt);
+    local dayBucket = indexByDay[dKey];
+    if (dayBucket) then
+        removeFromList(dayBucket.entries, entry.id);
+        if (#dayBucket.entries == 0) then
+            indexByDay[dKey] = nil;
+            removeSortedKey(dayKeysSorted, dKey);
+        end
+    end
+
+    local playerBucket = indexByPlayer[entry.awardedTo];
+    if (playerBucket) then
+        removeFromList(playerBucket.entries, entry.id);
+        if (#playerBucket.entries == 0) then
+            indexByPlayer[entry.awardedTo] = nil;
+            removeSortedKey(playerNamesSorted, entry.awardedTo);
+        end
+    end
+
+    local itemBucket = indexByItem[entry.itemID];
+    if (itemBucket) then
+        removeFromList(itemBucket.entries, entry.id);
+        if (#itemBucket.entries == 0) then
+            indexByItem[entry.itemID] = nil;
+            removeSortedKey(itemIDsSorted, entry.itemID);
+        end
+    end
+end
+
 local function resolveResults(filter)
     if (not filter) then return allEntries; end
 
@@ -1374,14 +1502,14 @@ end
 --- reachable through a result row's trash button (deleteModeActive gates
 --- that button's visibility), so no separate confirmation here - unlocking
 --- delete mode via the lock button already is the confirmation step.
+--- Goes through LootCouncil.RemoveHistoryEntry, not a raw table.remove -
+--- LootCouncil keeps its own id -> array-index map (HistoryIndex) alongside
+--- this array (see LootCouncil.lua), and a manual removal that bypasses it
+--- would leave that map pointing at stale positions for every entry after
+--- the removed one.
 function deleteEntry(entry)
     if (not entry or not LootCouncil.History) then return; end
-    for i, e in ipairs(LootCouncil.History) do
-        if (e.id == entry.id) then
-            table.remove(LootCouncil.History, i);
-            break;
-        end
-    end
+    LootCouncil.RemoveHistoryEntry(entry.id);
 
     if (expandedEntryId == entry.id) then expandedEntryId = nil; end
 
@@ -1976,13 +2104,7 @@ local function confirmAddEntry()
     if (LootCouncil.History) then
         local suffix = 2;
         local baseId = id;
-        local function idExists(candidate)
-            for _, e in ipairs(LootCouncil.History) do
-                if (e.id == candidate) then return true; end
-            end
-            return false;
-        end
-        while (idExists(id)) do
+        while (LootCouncil.HistoryIndex[id]) do
             id = baseId .. "-" .. suffix;
             suffix = suffix + 1;
         end
@@ -2002,7 +2124,7 @@ local function confirmAddEntry()
         sessionId = 0, itemSession = 0, responses = {},
         manual = true, response = response, note = note,
     };
-    table.insert(LootCouncil.History, entry);
+    LootCouncil.AddHistoryEntry(entry);
 
     addEntryPopup:Hide();
     rebuildIndexes();
@@ -2266,16 +2388,51 @@ function LootHistoryWindow.Show()
     frame:Show();
 end
 
---- Repaints the window with any new/removed rows in FL.LootCouncil.History -
---- called by LootCouncil.RecordHistory after an award, a reassignment (which
---- deletes the old recipient's row before inserting the new one - see
---- RecordHistory), or a history row applied from another client's "award"
---- broadcast, so the window never shows a stale snapshot while left open
---- across any of those. No-op unless the window is already open: nothing to
---- repaint, and ensureFrame() would build UI for a window nobody asked for.
+--- Full rebuild-and-repaint: rebuildIndexes() plus the sidebar/results
+--- repaint. Correct for any change to LootCouncil.History, but O(n log n) in
+--- total history size - reserved for window-open and the rare manual
+--- add/delete paths (deleteEntry, the Add Entry popup). The frequent
+--- per-award path goes through OnEntryUpserted below instead, which is what
+--- this function used to be called for too - see its own comment for why
+--- that mattered.
 function LootHistoryWindow.Refresh()
     if (not frame or not frame:IsShown()) then return; end
     rebuildIndexes();
+    dateColumn.refresh();
+    playersColumn.refresh();
+    itemsColumn.refresh();
+
+    if (not filterStillValid(currentFilter)) then
+        applyFilter(nil);
+    else
+        local results = resolveResults(currentFilter);
+        paintFilterBar(currentFilter, results);
+        layoutResultRows(results);
+    end
+end
+
+--- Incremental counterpart to Refresh(), called by LootCouncil.RecordHistory
+--- after every single award (including one arriving from another client's
+--- broadcast) - `entry` is the new/updated row, `oldEntry` is the previous
+--- row it replaced (a reassignment) or nil (a fresh award). Updates
+--- allEntries/indexByDay/indexByPlayer/indexByItem in O(log n) (insertion
+--- into a handful of already-sorted lists) instead of Refresh's O(n log n)
+--- full rebuild-and-resort of the entire history - the difference that
+--- matters once a guild's history has grown into the hundreds/thousands of
+--- rows and an officer keeps this window open through a raid night. Still
+--- ends in the same sidebar-refresh + layoutResultRows repaint as Refresh -
+--- that part still repaints every currently-displayed row and isn't sped up
+--- here (would need the result row list to be virtualized, a separate,
+--- larger change). No-op unless the window is already open, same as Refresh.
+function LootHistoryWindow.OnEntryUpserted(entry, oldEntry)
+    -- Show() always calls rebuildIndexes() unconditionally on open, so
+    -- there's nothing to gain from maintaining these indexes while the
+    -- window is closed - skip it, same as Refresh() always has.
+    if (not frame or not frame:IsShown()) then return; end
+
+    if (oldEntry) then removeEntryFromIndexes(oldEntry); end
+    insertEntryIntoIndexes(entry);
+
     dateColumn.refresh();
     playersColumn.refresh();
     itemsColumn.refresh();

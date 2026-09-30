@@ -89,7 +89,7 @@ local function onMessage(prefix, encoded, distribution, senderName)
     end
 
     -- Anti-spoofing: claimed sender must start with the real (server-supplied) sender name
-    if (payload.c and senderName) then
+    if (type(payload.c) == "string" and senderName) then
         local claimed = string.lower(strtrim(payload.c));
         local real = string.lower(strtrim(senderName));
         if (string.sub(claimed, 1, #real) ~= real) then

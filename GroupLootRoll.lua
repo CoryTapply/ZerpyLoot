@@ -58,6 +58,11 @@ local earlyCancelledRolls = {};
 -- updates to the same drop keep landing on the same roll.
 local dropKeyToRollID = {};
 
+-- Most recent encounterID seen via LOOT_HISTORY_UPDATE_DROP - lets
+-- SyncFromHistory re-check just the one encounter a race could plausibly
+-- involve (see its own comment) instead of every encounter this lockout.
+local lastSeenEncounterID;
+
 -- EncounterLootDropRollState -> RollOnLoot roll type. NoRoll (4, "hasn't
 -- chosen yet") is deliberately absent: it's not a vote.
 local DROP_STATE_TO_ROLL_TYPE = {
@@ -334,16 +339,39 @@ end
 
 local function onLootHistoryUpdateDrop(encounterID, lootListKey)
     if (not encounterID or not lootListKey) then return; end
+    lastSeenEncounterID = encounterID;
     applyDropInfo(encounterID, C_LootHistory.GetSortedInfoForDrop(encounterID, lootListKey));
 end
 
---- Re-reads every drop in the loot history and applies it to the matching
+--- Re-reads the current encounter's drops and applies them to the matching
 --- active roll. Used when a roll starts (its drop may have been reported
---- before START_LOOT_ROLL). pcall-wrapped: it's a best-effort catch-up, and a
+--- before START_LOOT_ROLL, via onLootHistoryUpdateDrop above, at a time when
+--- no active roll existed yet to match it to - see findRollForDrop's early
+--- return). That race can only involve the encounter the raced drop actually
+--- belongs to (lastSeenEncounterID), not encounters killed earlier tonight -
+--- those are long since fully resolved and already reflected in ActiveRolls.
+--- Scoping to just that one encounter keeps this O(dropsInOneEncounter)
+--- instead of O(everyDropThisLockout), which otherwise grows with every boss
+--- already killed tonight. pcall-wrapped: it's a best-effort catch-up, and a
 --- failure here must never stop the roll's bar from appearing.
+---
+--- Falls back to a one-time full scan (setting lastSeenEncounterID as it
+--- goes) when nothing's been seen yet this session - e.g. right after
+--- /reload, when restoreActiveRolls needs to catch up rolls whose drops
+--- were already recorded before this client ever saw a
+--- LOOT_HISTORY_UPDATE_DROP event. Every SyncFromHistory call after that
+--- first one takes the cheap scoped path above.
 function GroupLootRoll.SyncFromHistory()
     pcall(function()
+        if (lastSeenEncounterID) then
+            for _, dropInfo in ipairs(C_LootHistory.GetSortedDropsForEncounter(lastSeenEncounterID) or {}) do
+                applyDropInfo(lastSeenEncounterID, dropInfo);
+            end
+            return;
+        end
+
         for _, encounter in ipairs(C_LootHistory.GetAllEncounterInfos() or {}) do
+            lastSeenEncounterID = encounter.encounterID;
             for _, dropInfo in ipairs(C_LootHistory.GetSortedDropsForEncounter(encounter.encounterID) or {}) do
                 applyDropInfo(encounter.encounterID, dropInfo);
             end

@@ -1326,6 +1326,15 @@ function ShowEndSessionEarlyPopup()
     local p = Sizes.popup;
     local popupDialog = popup.dialog;
     local unassigned, _, assignedCount, totalCount = Awards.PartitionItems(Session);
+
+    -- Everything's already assigned, so ending now isn't "early" - fall back
+    -- to the normal End Session popup instead of the early-specific one
+    -- (with its unassigned-items summary/icon grid that'd otherwise show 0).
+    if (#unassigned == 0) then
+        ShowEndSessionPopup();
+        return;
+    end
+
     popupState = { mode = "endSessionEarly" };
 
     popupDialog.title:SetText("End this session early?");
