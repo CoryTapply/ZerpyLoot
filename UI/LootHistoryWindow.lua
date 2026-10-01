@@ -75,6 +75,13 @@ local hasAppliedFilter = false;
 local deleteModeActive = false;
 local lockButton;
 
+-- Debounces GET_ITEM_INFO_RECEIVED-triggered refreshes (see ensureFrame) -
+-- a cold cache on first open can answer dozens of items in a burst, and
+-- each one firing its own full Refresh() would re-run rebuildIndexes() that
+-- many times. Mirrors StartSessionWindow.lua's scheduleCouncilButtonUpdate.
+local itemInfoRefreshPending = false;
+local ITEM_INFO_REFRESH_DEBOUNCE = 0.5;
+
 local applyFilter, toggleExpand, layoutResultRows, ensureFrame, showAddEntryPopup, deleteEntry;
 
 --------------------------------------------------------------------------
@@ -2268,6 +2275,25 @@ function ensureFrame()
     frame:SetFrameStrata("DIALOG");
     Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, Colors.border, 1);
 
+    -- Item names/icons/quality for the sidebar and result rows are read
+    -- straight from the client cache at rebuildIndexes() time - if an item
+    -- isn't cached yet (e.g. right after login, before the server's async
+    -- answer lands), that read falls back to "Item <id>" and nothing
+    -- repaints it once the real data arrives. Mirrors TradeQueueWindow.lua's
+    -- GET_ITEM_INFO_RECEIVED handling: only listen while actually open.
+    -- Debounced (see itemInfoRefreshPending above) since a cold cache can
+    -- answer many items in a single burst right after opening.
+    frame:SetScript("OnEvent", function()
+        if (itemInfoRefreshPending) then return; end
+        itemInfoRefreshPending = true;
+        C_Timer.After(ITEM_INFO_REFRESH_DEBOUNCE, function()
+            itemInfoRefreshPending = false;
+            LootHistoryWindow.Refresh();
+        end);
+    end);
+    frame:SetScript("OnShow", function() frame:RegisterEvent("GET_ITEM_INFO_RECEIVED"); end);
+    frame:SetScript("OnHide", function() frame:UnregisterEvent("GET_ITEM_INFO_RECEIVED"); end);
+
     Pixel.RegisterWindow(frame, {
         width = WINDOW_WIDTH, height = WINDOW_HEIGHT,
         x = savedPosition and savedPosition.x or 0, y = savedPosition and savedPosition.y or 0,
@@ -2283,9 +2309,15 @@ function ensureFrame()
 
     createTitleBar();
 
+    -- Inset 1px (the window border's own thickness) on left/bottom so the
+    -- filter columns' solid sidebarBg fill doesn't paint over frame's border
+    -- there - same borderInset convention AwardWindow's itemPanel uses.
+    -- Right/top are untouched: nothing paints solid all the way to those
+    -- edges (titleBar has no fill, resultsColumn has no fill), so the
+    -- window's own border already shows through there.
     body = CreateFrame("Frame", nil, frame);
-    body:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -Sizes.titleBarHeight);
-    body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0);
+    body:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -Sizes.titleBarHeight);
+    body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 1);
 
     dateColumn = buildFilterColumn(body, {
         title = "Date", filterType = "date", hasSearch = false,

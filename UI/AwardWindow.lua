@@ -44,6 +44,9 @@ local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash
 -- No history/clock icon exists in Media/Icons - reuses a stock Blizzard
 -- texture instead, same as CROWN_TEXTURE above, rather than adding new art.
 local HISTORY_ICON_TEXTURE = "Interface\\Icons\\INV_Misc_PocketWatch_01";
+local CHEVRON_LEFT_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\ChevronLeft";
+local CHEVRON_RIGHT_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\ChevronRight";
+local NEXT_UNASSIGNED_LABEL = "Next unassigned";
 local LEADER_ONLY_TEXT = "Only the loot council session leader can award this item.";
 local DISENCHANT_RECIPIENT = FL.Constants.LOOT_COUNCIL_DISENCHANT_RECIPIENT;
 
@@ -56,7 +59,7 @@ local REFRESH_THROTTLE = 0.1;
 -- Key this window's saved position is stored under (see
 -- Settings.GetWindowPosition/SetWindowPosition).
 local frame;
-local endEarlyButton, historyButton;
+local closeButton, endEarlyButton, historyButton;
 local itemPanel, itemCountText, progressTrack, progressFill, unassignedLabel, assignedLabel;
 local leftScroll, leftScrollChild;
 local gridIcons = {};
@@ -159,7 +162,7 @@ local function createTitleBar()
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
     divider:SetHeight(Pixel.PixelSize(1));
 
-    local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
+    closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
     Skin.CloseButton(closeButton);
     closeButton:SetScript("OnClick", function()
@@ -405,6 +408,22 @@ end
 -- Main panel header (Step 5)
 --------------------------------------------------------------------------
 
+-- Skin.Button dead-centers button.text and hardcodes it back to
+-- SetPoint("CENTER", 0, <0|-1>) on every OnLeave/OnMouseDown/OnMouseUp (its
+-- press-bounce effect) - so nextButton's label can't just sit at true center
+-- once the chevron sits to its right, or the pair reads lopsided instead of
+-- centered as a unit. This re-applies the same hardcoded y-offsets with an
+-- x-nudge of half the chevron+gap width, called after each of those resets
+-- (and right after a mode switch) so the correction always wins. No nudge in
+-- "endSession" mode, which has no chevron.
+local function repositionNextLabel(yOffset)
+    local offsetX = 0;
+    if (nextButton.mode ~= "endSession") then
+        offsetX = -(Sizes.mainPanel.navChevronSize + Sizes.mainPanel.navChevronGap) / 2;
+    end
+    nextButton.text:SetPoint("CENTER", offsetX, yOffset or 0);
+end
+
 local function createHeaderRow()
     local header = CreateFrame("Frame", nil, mainPanel);
     header:SetPoint("TOPLEFT", mainPanel, "TOPLEFT", Sizes.mainPanel.padX, -Sizes.mainPanel.padTop);
@@ -421,11 +440,11 @@ local function createHeaderRow()
     headerIconBorder:SetPoint("BOTTOMRIGHT", headerIcon, "BOTTOMRIGHT", 1, -1);
     Theme.Helpers.SetFlatBackdrop(headerIconBorder, nil, Colors.transparent, 1);
 
-    nextButton = Widgets.CreateFlatButton(header, "Next unassigned \226\128\186", "primary");
+    nextButton = Widgets.CreateFlatButton(header, NEXT_UNASSIGNED_LABEL, "primary");
     nextButton.mode = "next";
     nextButton:SetHeight(Sizes.mainPanel.navButtonHeight);
     nextButton:SetPoint("RIGHT", header, "RIGHT", 0, 0);
-    nextButton:SetWidth(nextButton.text:GetStringWidth() + 24);
+    nextButton:SetWidth(nextButton.text:GetStringWidth() + 24 + Sizes.mainPanel.navChevronSize + Sizes.mainPanel.navChevronGap);
     nextButton:SetScript("OnClick", function()
         if (nextButton.mode == "endSession") then
             ShowEndSessionPopup();
@@ -436,8 +455,27 @@ local function createHeaderRow()
         local nextSession = Awards.NextUnassignedItem(Session, selectedItemSession, 1);
         if (nextSession) then selectItem(nextSession); end
     end);
+    repositionNextLabel(0);
+    nextButton:HookScript("OnLeave", function(self) if (self:IsEnabled()) then repositionNextLabel(0); end end);
+    nextButton:HookScript("OnMouseDown", function(self) if (self:IsEnabled()) then repositionNextLabel(-1); end end);
+    nextButton:HookScript("OnMouseUp", function(self) if (self:IsEnabled()) then repositionNextLabel(0); end end);
 
-    prevButton = Widgets.CreateFlatButton(header, "\226\128\185", "default");
+    -- Gold button - its label is always gold (see Skin.Button's "primary"
+    -- variant), so the chevron matches at full alpha whenever enabled and
+    -- only dims with it on disable; no separate hover color.
+    nextButton.chevron = nextButton:CreateTexture(nil, "ARTWORK");
+    nextButton.chevron:SetSize(Sizes.mainPanel.navChevronSize, Sizes.mainPanel.navChevronSize);
+    nextButton.chevron:SetPoint("LEFT", nextButton.text, "RIGHT", Sizes.mainPanel.navChevronGap, 0);
+    nextButton.chevron:SetTexture(CHEVRON_RIGHT_TEXTURE);
+    nextButton.chevron:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 1);
+    nextButton:HookScript("OnEnable", function(self)
+        self.chevron:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 1);
+    end);
+    nextButton:HookScript("OnDisable", function(self)
+        self.chevron:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 0.4);
+    end);
+
+    prevButton = Widgets.CreateFlatButton(header, "", "default");
     prevButton:SetSize(Sizes.mainPanel.navButtonSize, Sizes.mainPanel.navButtonHeight);
     prevButton:SetPoint("RIGHT", nextButton, "LEFT", -Sizes.mainPanel.navButtonGap, 0);
     prevButton:SetScript("OnClick", function()
@@ -445,6 +483,34 @@ local function createHeaderRow()
         if (not Session or not selectedItemSession) then return; end
         local prevSession = Awards.NextUnassignedItem(Session, selectedItemSession, -1);
         if (prevSession) then selectItem(prevSession); end
+    end);
+
+    -- Icon-only (see disenchantButton below for the same pattern): the
+    -- FontString stays, hidden, so GetText() keeps working, while the
+    -- chevron carries the meaning and mirrors the default variant's own
+    -- text colors (Skin.Button's computeButtonVariant) - normal/hover/
+    -- disabled - since Skin.Button itself never recolors text on hover.
+    prevButton.text:Hide();
+    prevButton.icon = prevButton:CreateTexture(nil, "ARTWORK");
+    prevButton.icon:SetSize(Sizes.mainPanel.navChevronSize, Sizes.mainPanel.navChevronSize);
+    prevButton.icon:SetPoint("CENTER", 0, 0);
+    prevButton.icon:SetTexture(CHEVRON_LEFT_TEXTURE);
+    prevButton.icon:SetVertexColor(Colors.textBright[1], Colors.textBright[2], Colors.textBright[3], 1);
+    prevButton:HookScript("OnEnter", function(self)
+        if (self:IsEnabled()) then
+            self.icon:SetVertexColor(Colors.gold[1], Colors.gold[2], Colors.gold[3], 1);
+        end
+    end);
+    prevButton:HookScript("OnLeave", function(self)
+        if (self:IsEnabled()) then
+            self.icon:SetVertexColor(Colors.textBright[1], Colors.textBright[2], Colors.textBright[3], 1);
+        end
+    end);
+    prevButton:HookScript("OnEnable", function(self)
+        self.icon:SetVertexColor(Colors.textBright[1], Colors.textBright[2], Colors.textBright[3], 1);
+    end);
+    prevButton:HookScript("OnDisable", function(self)
+        self.icon:SetVertexColor(Colors.textBright[1], Colors.textBright[2], Colors.textBright[3], 0.4);
     end);
 
     -- Icon-only. Built with the shared flat-button vocabulary (fill/pressed/
@@ -1539,8 +1605,14 @@ local function paintHeader(item, candidateCount, voteTotal)
     local nextMode = canEndSession and "endSession" or "next";
     if (nextButton.mode ~= nextMode) then
         nextButton.mode = nextMode;
-        nextButton.text:SetText(canEndSession and "End Session" or "Next unassigned \226\128\186");
-        nextButton:SetWidth(nextButton.text:GetStringWidth() + 24);
+        nextButton.text:SetText(canEndSession and "End Session" or NEXT_UNASSIGNED_LABEL);
+        nextButton.chevron:SetShown(not canEndSession);
+        local width = nextButton.text:GetStringWidth() + 24;
+        if (not canEndSession) then
+            width = width + Sizes.mainPanel.navChevronSize + Sizes.mainPanel.navChevronGap;
+        end
+        nextButton:SetWidth(width);
+        repositionNextLabel(0);
     end
 
     if (not item) then
@@ -1622,6 +1694,13 @@ local function paintFooterPermissions()
     footerMiddleHintText:SetText("Middle-click to quick assign");
     jumpCheckboxRow.frame:SetShown(canAward);
     endEarlyButton:SetShown(canAward);
+
+    -- historyButton sits left of endEarlyButton when that button is showing
+    -- (initiator), but endEarlyButton being hidden doesn't collapse the gap
+    -- it reserved - re-anchor straight off closeButton for non-initiators so
+    -- the two visible buttons sit flush together.
+    historyButton:ClearAllPoints();
+    historyButton:SetPoint("TOPRIGHT", canAward and endEarlyButton or closeButton, "TOPLEFT", -6, 0);
 end
 
 doRefresh = function()

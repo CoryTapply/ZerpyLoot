@@ -111,7 +111,7 @@ FL.UI.Sizes = {
         warningPadding = 8, warningGap = 8, noteGap = 10,
         rowIconSize = 15, -- mockup 24px/1.6 - overrides itemListEditor's default for this list
         dropdownWidth = 70, dropdownHeight = 16, dropdownGap = 6, -- mockup 96/25.6/6.4
-        overrideFlashDuration = 1.4,
+        overrideFlashDuration = 3,
     },
 
     -- UI/AutoRollPopup.lua - the raid-entry popup. Own top-level table (like
@@ -388,9 +388,11 @@ FL.UI.Sizes = {
                 headerNameTypeGap = 2,
                 badgeHeight = 16,
                 badgePadX = 8,
-                navButtonSize = 22, -- "‹" prev button (square)
-                navButtonHeight = 22, -- "Next unassigned ›" (width auto per label)
+                navButtonSize = 22, -- prev button, chevron icon-only (square)
+                navButtonHeight = 22, -- "Next unassigned" + chevron (width auto per label)
                 navButtonGap = 6,
+                navChevronSize = 9, -- ChevronLeft/ChevronRight.tga
+                navChevronGap = 4, -- gap between "Next unassigned" label and its chevron
                 headerDividerGap = 10,
 
                 columnHeaderHeight = 20,
