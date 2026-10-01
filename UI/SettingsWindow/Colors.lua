@@ -1,8 +1,6 @@
 --[[
-Fixed hex palette for the settings window (UI/SettingsWindow). Unlike the
-rest of the addon's UI, this window deliberately ignores the active skin
-(Theme.colors) - it always looks the same regardless of which theme is
-selected - so its colors live here instead of in a skin file.
+Fixed hex palette for the addon's UI (FL.UI.Colors) - every window uses
+this same flat palette, never anything skin-driven.
 ]]
 
 local FL = ForeverLoot;

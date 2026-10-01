@@ -1,11 +1,7 @@
 --[[
 Reusable control-styling helpers for UI/SettingsWindow - the search box,
 checkboxes, dropdowns, buttons and close button used across every settings
-page. Like UI/SettingsWindow/Colors.lua and Init.lua, this deliberately
-ignores FL.Theme's skin dispatch (Theme.SkinButton/SkinCloseButton/etc.):
-every control here always looks the same regardless of the active theme, so
-it's built with Theme.Helpers (skin-agnostic) and FL.UI.Colors, never
-Theme.colors or Theme.GetSkin().
+page. Built with Theme.Helpers and FL.UI.Colors, same as every other window.
 
 Each Skin.* function strips whatever template art its target control shipped
 with (Blizzard's Left/Right/Middle pieces, Normal/Pushed/Highlight textures)
@@ -32,9 +28,8 @@ local DASH_V_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\DashV";
 --- Clears a texture region left over from a Blizzard template. On this
 --- client, Texture:SetTexture(nil) works but the owning widget's own
 --- SetNormalTexture(nil)-style setters throw ("Usage: self:SetNormalTexture
---- (asset)") - see UI/Theme/Skins/Default.lua's identical hideTexture, which
---- hit the same issue first - so the Texture object is always cleared
---- directly, never through the widget setter.
+--- (asset)") - so the Texture object is always cleared directly, never
+--- through the widget setter.
 local function hideTexture(tex)
     if (tex and tex.SetTexture) then
         tex:SetTexture(nil);
@@ -990,14 +985,13 @@ end
 
 --------------------------------------------------------------------------
 -- Skin.ScrollBar - the settings window's own slim, arrowless scrollbar for
--- its main content ScrollFrame (UIPanelScrollFrameTemplate). Mirrors
--- Theme.SkinScrollBar's auto-hide technique (UI/Theme/Theme.lua: hook
--- OnScrollRangeChanged, stash bar.zlUpdateVisibility so a caller can
--- re-trigger it manually after a layout change the event might not have
--- fired for yet - Registry.lua does this on page switch/search filtering,
--- LootCouncil.lua's page on roster updates) but with this window's own
--- fixed palette/sizing instead of following the active skin, same as every
--- other Skin.* function in this file. Positioning is left to the caller
+-- its main content ScrollFrame (UIPanelScrollFrameTemplate). Uses an
+-- auto-hide technique (hook OnScrollRangeChanged, stash
+-- bar.zlUpdateVisibility so a caller can re-trigger it manually after a
+-- layout change the event might not have fired for yet - Registry.lua does
+-- this on page switch/search filtering, LootCouncil.lua's page on roster
+-- updates) with this window's own fixed palette/sizing, same as every other
+-- Skin.* function in this file. Positioning is left to the caller
 -- (Init.lua), same as Skin.Dropdown leaves its button's anchor to callers.
 --------------------------------------------------------------------------
 

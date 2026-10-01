@@ -92,51 +92,6 @@ local notePopover, isNotePopoverOpen, dismissPopoverSilently, CloseNote, OpenNot
 -- Reset to false every Show() (not persisted) - see RespondWindow.Show().
 local toggleExpanded = false;
 
--- Session -> true for every item that was in `pending` as of the previous
--- Refresh() call. Diffed against the current pending set each Refresh to
--- detect a genuine pending -> sent transition (a raider's own click)
--- without caring which caller triggered the Refresh - see the
--- "justAnsweredSessions" block in Refresh().
-local prevPendingSessionSet = {};
-
--- Session -> the `top` offset (the value placeNext() returned) each
--- pending card was last anchored at. Lets a card that moves up on the
--- next Refresh know its old Y for the slide, and lets a just-answered
--- card know its old Y to fade out at. A missing entry means "never
--- displayed as pending before" - such a card never fake-slides in.
-local lastPendingTop = {};
-
--- Same idea as lastPendingTop, but for cards currently visible in the
--- EXPANDED sent list (toggleExpanded == true) - lets those slide up too
--- when a pending item above the toggle bar is answered. Cleared for a
--- session whenever it's not currently a visible expanded-sent card (see
--- the sent/toggle-bar block in Refresh()), so a stale value never gets
--- reused as a bogus slide origin.
-local lastSentTop = {};
-
--- Same idea again, but for the toggle bar itself (a single frame, so no
--- per-session table needed). nil whenever the toggle bar is hidden.
-local lastToggleBarTop = nil;
-
--- One-shot guard: set true by Show() immediately before it calls
--- Refresh(), so the window's first paint after opening never animates.
--- Consumed (reset to false) by the very next Refresh().
-local suppressReflowAnim = true;
-
--- The `contentHeight` actually used (post-clamp) by the last Refresh() -
--- see reflowAnimActiveUntil below.
-local lastContentHeight = 0;
-
--- GetTime() the current fade/slide reflow is expected to finish by. While
--- GetTime() is under this, Refresh() clamps the scrollFrame/window to the
--- larger of the old and new content height instead of shrinking instantly -
--- ScrollFrame hard-clips anything outside its rect, and a card animating
--- from its old (pre-removal) position would otherwise be clipped invisible
--- the instant the frame shrinks out from under it. Refresh() re-runs itself
--- once the reflow's duration elapses (scheduled where this is set) so the
--- shrink still lands once the animation is actually done.
-local reflowAnimActiveUntil = 0;
-
 --------------------------------------------------------------------------
 -- Shared card/shadow helper. No such helper exists elsewhere in the addon -
 -- every other "new style" window (StartSessionWindow) paints flat 1px-bordered
@@ -543,31 +498,6 @@ onResponseButtonClick = function(card, responseId)
     RespondWindow.RefreshTimerState();
 end
 
--- Shared per-frame reflow-slide tween, used by item cards (pending and,
--- when the sent list is expanded, sent) and the toggle bar, so all of them
--- can ease upward together when a pending item is answered and the space
--- above them closes up. See RespondWindow.PlayReflowSlide, which arms a
--- frame for this by setting reflowSlideFrom/To/Elapsed, and each frame's
--- own OnUpdate script, which calls this every tick. A plain elapsed-time
--- ease over the frame's real TOPLEFT anchor - not a native Translation
--- AnimationGroup, whose offset-stacks-on-current-position semantics
--- produced a glitchy, shrink-looking result instead of a clean slide here.
-local function applyReflowSlideTween(self, elapsed)
-    if (not self.reflowSlideTo) then return; end
-    self.reflowSlideElapsed = self.reflowSlideElapsed + elapsed;
-    local t = self.reflowSlideElapsed / Sizes.pendingSlideDuration;
-    local top;
-    if (t >= 1) then
-        top = self.reflowSlideTo;
-        self.reflowSlideTo = nil;
-    else
-        local eased = 1 - (1 - t) * (1 - t); -- ease-out
-        top = self.reflowSlideFrom + (self.reflowSlideTo - self.reflowSlideFrom) * eased;
-    end
-    self:ClearAllPoints();
-    self:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -top);
-end
-
 --------------------------------------------------------------------------
 -- Item card construction/pooling
 --------------------------------------------------------------------------
@@ -621,8 +551,6 @@ local function createCard(parent)
     -- check, so this polls Util.IsMouseOverVisible the same way
     -- StartSessionWindow's rows do.
     card:SetScript("OnUpdate", function(self, elapsed)
-        applyReflowSlideTween(self, elapsed);
-
         if (self.entry and Util.IsMouseOverVisible(self.icon, scrollFrame)) then
             GameTooltip:SetOwner(self.icon, "ANCHOR_RIGHT");
             GameTooltip:SetHyperlink(self.entry.itemLink);
@@ -669,32 +597,6 @@ local function createCard(parent)
     flashFade:SetToAlpha(0);
     flashFade:SetDuration(Sizes.borderFlashDuration);
 
-    -- Answer fade-out - plays instead of an instant Hide()/reposition when
-    -- Refresh() detects this exact card just moved from pending to sent
-    -- because of the raider's own click. See PlayAnsweredCardFade() and
-    -- the "justAnsweredSessions" pass in Refresh().
-    card.answerFadeAnim = card:CreateAnimationGroup();
-    local answerFade = card.answerFadeAnim:CreateAnimation("Alpha");
-    answerFade:SetFromAlpha(1);
-    answerFade:SetToAlpha(0);
-    answerFade:SetDuration(Sizes.answeredCardFadeDuration);
-    card.answerFadeAnim:SetScript("OnFinished", function()
-        card:SetAlpha(1);
-        if (card.pendingFinalShown) then
-            card:ClearAllPoints();
-            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, card.pendingFinalOffsetY);
-        else
-            card:Hide();
-        end
-    end);
-
-    -- Reflow slide-up state - see the OnUpdate script above and
-    -- PlayReflowSlide below. reflowSlideTo doubles as "is a slide
-    -- currently in flight" (nil = idle).
-    card.reflowSlideFrom = nil;
-    card.reflowSlideTo = nil;
-    card.reflowSlideElapsed = nil;
-
     return card;
 end
 
@@ -703,25 +605,6 @@ function RespondWindow.PlaySendSweep(card)
     card.sweepAnim:Play();
     card.flashAnim:Stop();
     card.flashAnim:Play();
-end
-
--- Plays the quick fade-out for a card that was just answered from pending
--- (see the "justAnsweredSessions" pass in Refresh()).
-function RespondWindow.PlayAnsweredCardFade(card)
-    card.answerFadeAnim:Stop();
-    card.answerFadeAnim:Play();
-end
-
--- Plays the quick slide-up for a card/toggle-bar frame whose Y shifted
--- because a pending item above it was just answered and is fading out.
--- `fromTop`/`toTop` are `top` offsets (the value placeNext() returns, not
--- raw SetPoint offsets) - the frame's own OnUpdate script (applyReflowSlideTween,
--- wired up in createCard/createToggleBar) eases its real anchor from
--- `fromTop` to `toTop` over Sizes.respond.pendingSlideDuration.
-function RespondWindow.PlayReflowSlide(frame, fromTop, toTop)
-    frame.reflowSlideFrom = fromTop;
-    frame.reflowSlideTo = toTop;
-    frame.reflowSlideElapsed = 0;
 end
 
 local function ensureCard(sessionIndex)
@@ -859,14 +742,6 @@ local function createToggleBar(parent)
         toggleExpanded = not toggleExpanded;
         RespondWindow.Refresh();
     end);
-
-    -- Reflow slide-up state/tween - see applyReflowSlideTween and
-    -- RespondWindow.PlayReflowSlide. Lets the toggle bar slide up along
-    -- with the pending cards above it when one of them is answered.
-    bar.reflowSlideFrom = nil;
-    bar.reflowSlideTo = nil;
-    bar.reflowSlideElapsed = nil;
-    bar:SetScript("OnUpdate", applyReflowSlideTween);
 
     return bar;
 end
@@ -1224,39 +1099,6 @@ function RespondWindow.Refresh()
         return ca.respondedAt < cb.respondedAt;
     end);
 
-    -- Diff against last Refresh's pending set to find sessions that just
-    -- moved pending -> sent (a raider's own click), so only that
-    -- transition gets the fade/slide treatment below - not window-open,
-    -- toggle-bar expand/collapse, or the async confirmation Refresh that
-    -- follows a click's own optimistic one (see suppressReflowAnim and
-    -- prevPendingSessionSet declarations above). Left empty whenever the
-    -- "Enable Loot Council Response animation" setting is off, which
-    -- collapses every fade/slide branch below to its plain instant-snap
-    -- else-branch - the same behavior this window had before the
-    -- animation existed - without duplicating that snap logic anywhere.
-    local newPendingSet, newSentSet = {}, {};
-    for _, item in ipairs(pending) do newPendingSet[item.session] = true; end
-    for _, item in ipairs(sent) do newSentSet[item.session] = true; end
-
-    local justAnsweredSessions = {};
-    if (not suppressReflowAnim and FL.Settings.GetRespondAnimationEnabled()) then
-        for sessionIndex in pairs(prevPendingSessionSet) do
-            if (not newPendingSet[sessionIndex] and newSentSet[sessionIndex]) then
-                table.insert(justAnsweredSessions, sessionIndex);
-            end
-        end
-    end
-    suppressReflowAnim = false;
-    prevPendingSessionSet = newPendingSet;
-
-    if (#justAnsweredSessions > 0) then
-        local reflowDuration = math.max(Sizes.answeredCardFadeDuration, Sizes.pendingSlideDuration);
-        reflowAnimActiveUntil = GetTime() + reflowDuration;
-        C_Timer.After(reflowDuration + 0.02, function()
-            if (frame and frame:IsShown()) then RespondWindow.Refresh(); end
-        end);
-    end
-
     headerCountNumber:SetText(tostring(#pending));
 
     -- Paint every card's content up front (regardless of visibility), then
@@ -1271,8 +1113,6 @@ function RespondWindow.Refresh()
         if (not usedSessions[sessionIndex]) then
             card.entry = nil;
             card:Hide();
-            lastPendingTop[sessionIndex] = nil;
-            lastSentTop[sessionIndex] = nil;
             noteDrafts[sessionIndex] = nil;
             if (notePopover.card == card) then dismissPopoverSilently(); end
         end
@@ -1296,110 +1136,36 @@ function RespondWindow.Refresh()
     for _, item in ipairs(pending) do
         local card = cards[item.session];
         local newTop = placeNext(CARD_HEIGHT);
-        local oldTop = lastPendingTop[item.session];
-
-        if (#justAnsweredSessions > 0 and oldTop and oldTop ~= newTop) then
-            -- Leave the real anchor at the OLD position - the card's
-            -- OnUpdate tween (see createCard/PlayReflowSlide) eases
-            -- it to newTop itself, driving SetPoint directly every tick.
-            card:ClearAllPoints();
-            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -oldTop);
-            card:Show();
-            RespondWindow.PlayReflowSlide(card, oldTop, newTop);
-        else
-            card:ClearAllPoints();
-            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -newTop);
-            card:Show();
-        end
-        lastPendingTop[item.session] = newTop;
+        card:ClearAllPoints();
+        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -newTop);
+        card:Show();
     end
 
     if (#sent > 0) then
-        -- The toggle bar (and, if expanded, every already-visible sent
-        -- card below it) sits right after the pending block, so it needs
-        -- the exact same slide-up treatment as the pending cards above
-        -- whenever answering an item shortens that block.
         local toggleNewTop = placeNext(Sizes.toggleBarHeight);
-        local toggleOldTop = lastToggleBarTop;
-        if (#justAnsweredSessions > 0 and toggleOldTop and toggleOldTop ~= toggleNewTop) then
-            toggleBar:ClearAllPoints();
-            toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -toggleOldTop);
-            toggleBar:Show();
-            RespondWindow.PlayReflowSlide(toggleBar, toggleOldTop, toggleNewTop);
-        else
-            toggleBar:ClearAllPoints();
-            toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -toggleNewTop);
-            toggleBar:Show();
-        end
-        lastToggleBarTop = toggleNewTop;
+        toggleBar:ClearAllPoints();
+        toggleBar:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -toggleNewTop);
+        toggleBar:Show();
         layoutToggleBar(#sent);
 
         if (toggleExpanded) then
             for _, item in ipairs(sent) do
                 local card = cards[item.session];
-                -- A card mid fade-out is left alone here - its own
-                -- OnFinished is the single source of truth for landing it,
-                -- so a Refresh landing mid-fade (e.g. the async comm-echo
-                -- confirmation right after SubmitResponse) can't chop the
-                -- animation off early.
-                if (not card.answerFadeAnim:IsPlaying()) then
-                    local sentNewTop = placeNext(CARD_HEIGHT);
-                    local sentOldTop = lastSentTop[item.session];
-                    if (#justAnsweredSessions > 0 and sentOldTop and sentOldTop ~= sentNewTop) then
-                        card:ClearAllPoints();
-                        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -sentOldTop);
-                        card:Show();
-                        RespondWindow.PlayReflowSlide(card, sentOldTop, sentNewTop);
-                    else
-                        card:ClearAllPoints();
-                        card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -sentNewTop);
-                        card:Show();
-                    end
-                    lastSentTop[item.session] = sentNewTop;
-                end
+                local sentNewTop = placeNext(CARD_HEIGHT);
+                card:ClearAllPoints();
+                card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -sentNewTop);
+                card:Show();
             end
         else
             for _, item in ipairs(sent) do
-                local card = cards[item.session];
-                if (not card.answerFadeAnim:IsPlaying()) then card:Hide(); end
-                lastSentTop[item.session] = nil;
+                cards[item.session]:Hide();
             end
         end
     else
         toggleBar:Hide();
-        lastToggleBarTop = nil;
-    end
-
-    -- Start the fade for any card that just moved pending -> sent this
-    -- pass. Runs after the sent/toggle-bar block above so it can read back
-    -- that block's already-computed final state (Shown/Hidden, and its
-    -- final anchor if shown) rather than re-deriving it by hand.
-    for _, sessionIndex in ipairs(justAnsweredSessions) do
-        local card = cards[sessionIndex];
-        local oldTop = lastPendingTop[sessionIndex];
-        lastPendingTop[sessionIndex] = nil;
-
-        if (card and oldTop) then
-            card.pendingFinalShown = card:IsShown();
-            card.pendingFinalOffsetY = nil;
-            if (card.pendingFinalShown) then
-                local _, _, _, _, offsetY = card:GetPoint(1);
-                card.pendingFinalOffsetY = offsetY;
-            end
-
-            card:Show();
-            card:SetAlpha(1);
-            card:ClearAllPoints();
-            card:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -oldTop);
-            RespondWindow.PlayAnsweredCardFade(card);
-        end
     end
 
     local contentHeight = y;
-    if (GetTime() < reflowAnimActiveUntil) then
-        contentHeight = math.max(contentHeight, lastContentHeight);
-    end
-    lastContentHeight = contentHeight;
     scrollChild:SetHeight(math.max(contentHeight, 1));
 
     allSentCard:SetShown(#pending == 0);
@@ -1463,7 +1229,6 @@ end
 function RespondWindow.Show()
     ensureFrame();
     toggleExpanded = false;
-    suppressReflowAnim = true;
     frame:Show();
     RespondWindow.Refresh();
 end

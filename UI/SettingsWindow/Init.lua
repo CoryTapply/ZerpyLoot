@@ -1,12 +1,9 @@
 --[[
 Settings window chrome: frame, draggable title bar, close button, sidebar
-shell + search box, scrollable content area. Deliberately bypasses FL.Theme's
-skin dispatch entirely (Theme.CreateWindow/SkinButton/etc.) - this window
-always looks the same regardless of the active theme, unlike every other
-ForeverLoot window - so it's built directly with CreateFrame +
-Theme.Helpers.SetFlatBackdrop (skin-agnostic) and FL.Pixel (no skin
-knowledge either). Registry.lua builds the nav buttons/pages into the frame
-this file creates; page content itself lives in UI/SettingsWindow/Pages/*.lua.
+shell + search box, scrollable content area. Built directly with CreateFrame
++ Theme.Helpers.SetFlatBackdrop and FL.Pixel. Registry.lua builds the nav
+buttons/pages into the frame this file creates; page content itself lives in
+UI/SettingsWindow/Pages/*.lua.
 ]]
 
 local FL = ForeverLoot;

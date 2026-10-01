@@ -37,9 +37,9 @@ local DISENCHANT_ICON_ATLAS = "lootroll-toast-icon-disenchant-up";
 local DISENCHANT_TOOLTIP_TEXT = "Disenchant";
 local MOUSE_MIDDLE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\MouseMiddleClick";
 local CROWN_TEXTURE = "Interface\\GroupFrame\\UI-Group-LeaderIcon";
--- Same trash icon TradeQueueWindow.lua/Theme/Helpers.lua's CreateDeleteButton
--- already use everywhere else a row can be removed - reused as-is, not a new
--- texture, for the title bar's "End session early" button below.
+-- Same trash icon TradeQueueWindow.lua/ItemListEditor.lua already use
+-- everywhere else a row can be removed - reused as-is, not a new texture,
+-- for the title bar's "End session early" button below.
 local DELETE_ICON_TEXTURE = "Interface\\AddOns\\ForeverLoot\\Media\\Icons\\trash.tga";
 -- No history/clock icon exists in Media/Icons - reuses a stock Blizzard
 -- texture instead, same as CROWN_TEXTURE above, rather than adding new art.

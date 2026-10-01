@@ -206,8 +206,8 @@ end
 -- sub-pixel position again.
 --
 -- Also updates the registered window's layout.x/y (converted into the same
--- CENTER-relative convention Pixel.ApplyLayout/Theme.CreateWindow use for
--- x/y) so a later UI_SCALE_CHANGED rescale re-applies the dragged position
+-- CENTER-relative convention Pixel.ApplyLayout uses for x/y) so a later
+-- UI_SCALE_CHANGED rescale re-applies the dragged position
 -- instead of reverting to the window's create-time default. `onSnapped(x, y)`
 -- - if given - fires with those same CENTER-relative coordinates, letting
 -- callers persist the dragged position (e.g. to a saved-variable setting).

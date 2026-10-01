@@ -1,8 +1,6 @@
 --[[
 Named font objects every ForeverLoot FontString uses, plus the SharedMedia
-font-face and statusbar-texture swapping. Skins don't touch this file: the
-only per-skin input is the title color (colors.title, falling back to
-colors.accent), applied by Theme.ApplyFontColors at Theme.Init.
+font-face and statusbar-texture swapping.
 ]]
 
 local FL = ForeverLoot;
@@ -38,13 +36,6 @@ Theme.fonts = {
     highlightSmall = "ForeverLootFontHighlightSmall",
     disableSmall = "ForeverLootFontDisableSmall",
 
-    -- Window/panel titles (skin accent color) and button labels (white) - see
-    -- DefineFont calls below for why these get their own dedicated colors.
-    title = "ForeverLootFontTitle",
-    titleLarge = "ForeverLootFontTitleLarge",
-    -- The big centered addon-name display on the Blizzard-side options panel
-    -- (OptionsPanel.lua) - not used anywhere text needs to fit tightly.
-    hero = "ForeverLootFontHero",
     button = "ForeverLootFontButton",
     buttonDisabled = "ForeverLootFontButtonDisabled",
     input = "ForeverLootFontInput",
@@ -91,13 +82,6 @@ DefineFont(Theme.fonts.highlightMedium, Sizes.highlightMedium, COLOR_WHITE);
 DefineFont(Theme.fonts.highlightSmall, Sizes.highlightSmall, COLOR_WHITE);
 DefineFont(Theme.fonts.disableSmall, Sizes.disableSmall, COLOR_GREY);
 
--- Window/panel titles. The color here is only a placeholder: no skin is
--- registered yet when this file loads, so Theme.ApplyFontColors sets the real
--- one (the skin's colors.title, or its accent) at Theme.Init.
-DefineFont(Theme.fonts.title, Sizes.title, COLOR_GOLD);
-DefineFont(Theme.fonts.titleLarge, Sizes.titleLarge, COLOR_GOLD);
-DefineFont(Theme.fonts.hero, Sizes.hero, COLOR_GOLD);
-
 -- Button labels: plain white, applied to every flat-skinned button instead of
 -- whatever font object the button's template shipped with.
 DefineFont(Theme.fonts.button, Sizes.button, COLOR_WHITE);
@@ -107,16 +91,6 @@ DefineFont(Theme.fonts.buttonDisabled, Sizes.buttonDisabled, COLOR_GREY);
 -- font size (this used to inherit ChatFontNormal, which tracks that
 -- setting).
 DefineFont(Theme.fonts.input, Sizes.input, COLOR_WHITE);
-
--- Titles follow the active skin (purple accent by default, Blizzard gold in
--- the Blizzard skins); every FontString using these named fonts follows
--- automatically since they're font objects.
-function Theme.ApplyFontColors()
-    local color = Theme.colors.title or Theme.colors.accent;
-    _G[Theme.fonts.title]:SetTextColor(unpack(color));
-    _G[Theme.fonts.titleLarge]:SetTextColor(unpack(color));
-    _G[Theme.fonts.hero]:SetTextColor(unpack(color));
-end
 
 -- FontStrings styled via FL.UI.SetFont below don't inherit a shared font
 -- object (unlike everything using a Theme.fonts.* name), so Theme.ApplyFont

@@ -1,18 +1,12 @@
 --[[
-Persisted appearance settings (font, statusbar texture) backed by
-LibSharedMedia-3.0. Values are stored by SharedMedia key (a name, not a
-file path) so they keep resolving correctly even if another addon changes
-what that key points to.
+Persisted appearance settings (font) backed by LibSharedMedia-3.0. Values
+are stored by SharedMedia key (a name, not a file path) so they keep
+resolving correctly even if another addon changes what that key points to.
 ]]
 
 local FL = ForeverLoot;
 local Settings = FL.Settings;
 local LSM = LibStub("LibSharedMedia-3.0");
-
--- TEMPORARY: forces this theme regardless of the saved setting (the saved
--- value isn't touched, so it comes back once this is set to nil). Set to nil
--- to revert to the normal saved/default theme behaviour.
-local FORCED_THEME = "default";
 
 function Settings.Init()
     -- Forward-looking safety net for future saved-variable migrations - no
@@ -23,8 +17,6 @@ function Settings.Init()
     local s = FL.DB.settings;
 
     s.font = s.font or FL.Theme.DEFAULT_FONT_KEY;
-    s.statusbar = s.statusbar or LSM:GetDefault("statusbar");
-    s.theme = FL.Theme.THEMES[s.theme] and s.theme or FL.Theme.DEFAULT_THEME;
     s.windowScale = s.windowScale or 1.0;
 
     s.lootCouncil = s.lootCouncil or {};
@@ -77,12 +69,7 @@ function Settings.Init()
     snd.raidWarningSound = snd.raidWarningSound or FL.Constants.SOUND_RAID_WARNING_KEY;
     snd.selfSRSound = snd.selfSRSound or FL.Constants.SOUND_SONIC_RING_KEY;
 
-    -- The theme is what this session's windows get skinned with, so it's
-    -- locked in here once (before any window exists) rather than re-read -
-    -- changing the setting mid-session only takes effect after a /reload.
-    FL.Theme.Init(FORCED_THEME or s.theme);
     FL.Theme.ApplyFont(s.font);
-    FL.Theme.RefreshStatusBars(s.statusbar);
     FL.Pixel.SetGlobalScale(Settings.GetWindowScale());
 end
 
@@ -99,44 +86,6 @@ function Settings.SetFont(key)
     FL.Theme.ApplyFont(key);
 end
 
--- UI theme key (see Theme.THEMES). Unlike font/statusbar this can't be
--- applied live - the default skin strips Blizzard's own button/frame art and
--- has no way to put it back - so the value saved here is picked up at the
--- next /reload (the options panel prompts for one).
-function Settings.GetTheme()
-    if (FORCED_THEME) then return FORCED_THEME; end
-
-    local theme = FL.DB and FL.DB.settings and FL.DB.settings.theme;
-    return (theme and FL.Theme.THEMES[theme]) and theme or FL.Theme.DEFAULT_THEME;
-end
-
-function Settings.SetTheme(key)
-    FL.DB.settings.theme = key;
-end
-
-function Settings.GetStatusBarTexture()
-    return FL.DB and FL.DB.settings and FL.DB.settings.statusbar;
-end
-
-function Settings.SetStatusBarTexture(key)
-    FL.DB.settings.statusbar = key;
-    FL.Theme.RefreshStatusBars(key);
-end
-
--- Whether the Loot Council Respond window animates a card fading out and
--- the rest sliding up when a raider answers a pending item, vs. an instant
--- snap. Read live by RespondWindow.Refresh (like GroupLootRollLocked
--- above), not cached at login.
-function Settings.GetRespondAnimationEnabled()
-    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.respondAnimationEnabled;
-    if (enabled == nil) then return true; end
-    return enabled;
-end
-
-function Settings.SetRespondAnimationEnabled(enabled)
-    FL.DB.settings.respondAnimationEnabled = enabled and true or false;
-end
-
 -- Last roll-off duration (seconds) entered in the roll window's start
 -- prompt, re-used as the default the next time it's opened.
 function Settings.GetRollOffSeconds()
@@ -147,8 +96,7 @@ function Settings.SetRollOffSeconds(seconds)
     FL.DB.settings.rollOffSeconds = seconds;
 end
 
--- Window positions (x/y, the same CENTER-relative convention
--- Theme.CreateWindow's own x/y parameters use), set by dragging - re-used as
+-- Window positions (x/y, CENTER-relative), set by dragging - re-used as
 -- that window's position the next time it's created. Keyed by a short
 -- per-window identifier (e.g. "rollWindow") rather than one field per window,
 -- so resetting every window's position at once (see the /zl resetpositions
@@ -537,11 +485,8 @@ end
 --------------------------------------------------------------------------
 
 local PATHS = {
-    ["appearance.theme"] = { get = Settings.GetTheme, set = Settings.SetTheme },
     ["appearance.font"] = { get = Settings.GetFont, set = Settings.SetFont },
-    ["appearance.statusbar"] = { get = Settings.GetStatusBarTexture, set = Settings.SetStatusBarTexture },
     ["appearance.windowScale"] = { get = Settings.GetWindowScale, set = Settings.SetWindowScale },
-    ["appearance.enableRespondAnimation"] = { get = Settings.GetRespondAnimationEnabled, set = Settings.SetRespondAnimationEnabled },
     ["loot.replacePopup"] = { get = Settings.GetGroupLootRollEnabled, set = Settings.SetGroupLootRollEnabled },
     ["loot.lockRolls"] = { get = Settings.GetGroupLootRollLocked, set = Settings.SetGroupLootRollLocked },
     ["loot.rollOff.showForOthers"] = { get = Settings.GetRollOffShowForOthers, set = Settings.SetRollOffShowForOthers },

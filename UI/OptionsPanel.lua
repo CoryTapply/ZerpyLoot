@@ -1,15 +1,13 @@
 --[[
 Thin Blizzard-side entry point (Escape menu > Options > AddOns), registered
 as a canvas category through the Settings API. A big centered wordmark/
-description/version/button splash - the actual settings (Theme, Font, Status
-Bar Texture, Group Loot options) live in ForeverLoot's own window, see
-UI/SettingsWindow/, opened here or via /fl config (/fl c).
+description/version/button splash - the actual settings (Font, Group Loot
+options) live in ForeverLoot's own window, see UI/SettingsWindow/, opened
+here or via /fl config (/fl c).
 
-Like UI/SettingsWindow/*, this deliberately ignores FL.Theme's skin dispatch -
-this panel always looks the same regardless of the active theme - so it's
-built with FL.UI.Colors/Sizes/SetFont/Skin, never Theme.colors or
-Theme.fonts. Everything hangs off one centered anchor frame (`container`) so
-the block re-centers if the Settings canvas is ever resized.
+Built with FL.UI.Colors/Sizes/SetFont/Skin. Everything hangs off one
+centered anchor frame (`container`) so the block re-centers if the Settings
+canvas is ever resized.
 ]]
 
 local FL = ForeverLoot;

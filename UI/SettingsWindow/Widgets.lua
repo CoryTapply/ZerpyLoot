@@ -44,9 +44,7 @@ local BUTTON_ROW_HEIGHT = Sizes.controls.button;
 -- Low-level primitives
 --------------------------------------------------------------------------
 
---- Flat-backdrop push button. Every button in this window uses this rather
---- than Theme.CreateButton/SkinButton - those follow the active skin, and
---- this window deliberately ignores it (see Colors.lua). `variant` is
+--- Flat-backdrop push button. `variant` is
 --- "default" or "primary" - see Skin.Button. "Sync to Raid" starts
 --- "default" and switches to "primary" at runtime via Skin.SetButtonVariant
 --- while a roster change is pending (see UI/SettingsWindow/Pages/LootCouncil.lua).

@@ -1,32 +1,10 @@
 --[[
-Appearance settings page: Theme, Font, and Status Bar Texture dropdowns,
-moved here unchanged from the old ConfigWindow (same saved keys, same
-live-apply/reload-required behavior).
+Appearance settings page: Font dropdown, moved here unchanged from the old
+ConfigWindow (same saved key, same live-apply behavior).
 ]]
 
 local FL = ForeverLoot;
 local LSM = LibStub("LibSharedMedia-3.0");
-
--- The theme is locked in at login (see Theme.Init), so picking a different
--- one only takes effect after a /reload.
-StaticPopupDialogs["FOREVERLOOT_RELOAD_THEME"] = {
-    text = "ForeverLoot's theme changes take effect after reloading your UI. Reload now?",
-    button1 = "Reload UI",
-    button2 = "Later",
-    OnAccept = function() ReloadUI(); end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-    preferredIndex = 3,
-};
-
-local function themeOptions()
-    local options = {};
-    for _, key in ipairs(FL.Theme.THEME_ORDER) do
-        table.insert(options, { value = key, label = FL.Theme.THEMES[key] });
-    end
-    return options;
-end
 
 local function mediaOptions(mediaType)
     local options = {};
@@ -36,64 +14,46 @@ local function mediaOptions(mediaType)
     return options;
 end
 
--- Theme/Font/Status Bar Texture sit in one 3-column row (218 wide each, 16
--- between) rather than stacked - Window Scale then reuses the same column
--- width one row down, left column. 3*218 + 2*16 = 686px, wider than the
--- 680px this page had to work with - Sizes.layout.settingsWindow.width was
--- widened by 20px (see Sizes.lua) so the row (plus its 14px right margin)
--- actually fits instead of clipping against the scroll frame's edge.
 local COLUMN_WIDTH = 218;
-local COLUMN_GAP = 16;
 
 FL.UI.SettingsWindow.RegisterPage("appearance", "Appearance", function(page)
     page:Header("Appearance");
 
     local section = page:Section("Display", 1);
 
-    local themeDropdown = section:Dropdown{
-        key = "appearance.theme",
-        label = "Theme",
-        options = themeOptions(),
-        default = FL.Theme.DEFAULT_THEME,
-        width = COLUMN_WIDTH,
-        x = 0,
-        advance = false,
-        rowHeight = 20,
-        maxVisibleRows = 12,
-        onChange = function(key)
-            if (key ~= FL.Theme.current) then
-                StaticPopup_Show("FOREVERLOOT_RELOAD_THEME");
-            end
-        end,
-    };
-
-    section:Dropdown{
+    local fontDropdown = section:Dropdown{
         key = "appearance.font",
         label = "Font",
         options = mediaOptions("font"),
         default = FL.Theme.DEFAULT_FONT_KEY,
         width = COLUMN_WIDTH,
-        x = COLUMN_WIDTH + COLUMN_GAP,
+        x = 0,
         advance = false,
         rowHeight = 20,
         maxVisibleRows = 12,
         previewFont = function(key) return LSM:Fetch("font", key); end,
     };
 
+    -- Status Bar Texture dropdown - not wired to anything right now (nothing
+    -- in the addon consumes the saved value), kept here unregistered for
+    -- reuse once something does. Needs a "key" (a PATHS entry + Settings
+    -- getter/setter, see Core/Settings.lua) reconnected before use.
+    --[[
     section:Dropdown{
         key = "appearance.statusbar",
         label = "Status Bar Texture",
         options = mediaOptions("statusbar"),
         default = LSM:GetDefault("statusbar"),
         width = COLUMN_WIDTH,
-        x = (COLUMN_WIDTH + COLUMN_GAP) * 2,
+        x = COLUMN_WIDTH + 16,
         advance = false,
         rowHeight = 20,
         maxVisibleRows = 12,
         previewTexture = function(key) return LSM:Fetch("statusbar", key); end,
     };
+    ]]
 
-    section:AdvanceRow(themeDropdown.frame:GetHeight());
+    section:AdvanceRow(fontDropdown.frame:GetHeight());
 
     -- Whole-window zoom (Pixel.SetGlobalScale, per-character) - a coarse
     -- escape hatch layered on top of the corrected base sizes in
@@ -107,12 +67,5 @@ FL.UI.SettingsWindow.RegisterPage("appearance", "Appearance", function(page)
         default = 1.0,
         width = COLUMN_WIDTH,
         x = 0,
-    };
-
-    section:Checkbox{
-        key = "appearance.enableRespondAnimation",
-        label = "Enable Loot Council Response animation",
-        desc = "Fades out and slides the Respond window's item list when you answer a pending item. Disable for an instant snap instead.",
-        default = true,
     };
 end, 20);

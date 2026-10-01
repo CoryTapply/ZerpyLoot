@@ -33,7 +33,7 @@ FL.UI.Sizes = {
         -- just moved out of UI/Theme/Fonts.lua's old inline DefineFont calls).
         normal = 12, normalMedium = 14, normalLarge = 16, normalSmall = 10,
         highlight = 12, highlightLarge = 14, highlightMedium = 12, highlightSmall = 10,
-        disableSmall = 10, title = 12, titleLarge = 16, hero = 40,
+        disableSmall = 10, hero = 40,
         button = 12, buttonDisabled = 12, input = 14,
 
         -- Blizzard-panel "Open Settings" button label (UI/OptionsPanel.lua) -
@@ -306,13 +306,6 @@ FL.UI.Sizes = {
 
         autoCloseSeconds = 15,
         fadeOutDuration = 0.3,
-
-        -- Pending-card reflow: the just-answered card fades out while the
-        -- remaining pending cards simultaneously slide up - deliberately
-        -- much snappier than fadeOutDuration above, which is a
-        -- whole-window close-out fade, not a per-card micro-transition.
-        answeredCardFadeDuration = 0.12,
-        pendingSlideDuration = 0.24,
 
         sweepWidthPct = 0.60,
         sweepDuration = 0.75,
