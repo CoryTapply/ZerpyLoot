@@ -441,10 +441,30 @@ end
 --- contribute if it (or the dimension it already represents) were combined
 --- with whatever else is currently active - i.e. a live preview of what
 --- clicking it would narrow results to.
+-- Per-refresh cache of each dimension's cross-filter as a lookup set, so a
+-- column repaint builds it once instead of once per sidebar row (that was
+-- hundreds of full-history tables of garbage per filter click). Cleared at
+-- the start of every column refreshRows.
+local crossSetCache = {};
+
 local function contextualRowCount(dimType, bucket)
-    local cross = crossFilterEntries(dimType);
-    if (not cross) then return #bucket.entries; end
-    return #intersectEntries(bucket.entries, cross);
+    local set = crossSetCache[dimType];
+    if (set == nil) then
+        local cross = crossFilterEntries(dimType);
+        if (cross) then
+            set = {};
+            for _, e in ipairs(cross) do set[e] = true; end
+        else
+            set = false;
+        end
+        crossSetCache[dimType] = set;
+    end
+    if (not set) then return #bucket.entries; end
+    local count = 0;
+    for _, e in ipairs(bucket.entries) do
+        if (set[e]) then count = count + 1; end
+    end
+    return count;
 end
 
 local function paintDateRow(row, key, bucket)
@@ -661,6 +681,7 @@ local function buildFilterColumn(parent, opts)
     local function refreshRows()
         ensureRowCount(#shownKeys);
         scrollChild:SetHeight(math.max(#shownKeys * (Sizes.column.rowHeight + Sizes.column.rowGap), 1));
+        wipe(crossSetCache);
         for i, row in ipairs(rows) do
             local key = shownKeys[i];
             if (key ~= nil) then
@@ -668,10 +689,14 @@ local function buildFilterColumn(parent, opts)
                 opts.paintRow(row, key, opts.getBucket(key));
                 local isSelected = (key == selectedKey);
                 row.selectedBar:SetShown(isSelected);
-                if (isSelected) then
-                    Theme.Helpers.SetFlatBackdrop(row, Colors.selectedFill, Colors.selectedBorder, 1);
-                else
-                    Theme.Helpers.SetFlatBackdrop(row, Colors.transparent, Colors.transparent, 1);
+                -- SetBackdrop allocates; only re-apply when the state flips.
+                if (row.backdropSelected ~= isSelected) then
+                    if (isSelected) then
+                        Theme.Helpers.SetFlatBackdrop(row, Colors.selectedFill, Colors.selectedBorder, 1);
+                    else
+                        Theme.Helpers.SetFlatBackdrop(row, Colors.transparent, Colors.transparent, 1);
+                    end
+                    row.backdropSelected = isSelected;
                 end
                 if (row.countText) then
                     row.countText:SetTextColor(unpack(isSelected and Colors.gold or Colors.controlHover));
@@ -1351,11 +1376,20 @@ local function measureAndPaintResultRow(row, entry)
     local isExpanded = (entry.id == expandedEntryId);
     row.expanded = isExpanded;
 
+    -- Rows are recycled constantly now, so only re-apply the backdrop when
+    -- the expanded state actually changes (new rows are created transparent).
+    -- SetBackdrop resolves the row's size, which is unreliable mid-layout.
     if (isExpanded) then
-        Theme.Helpers.SetFlatBackdrop(row, Colors.lhExpandedBg, Colors.disabledBorder, 1);
+        if (not row.backdropExpanded) then
+            Theme.Helpers.SetFlatBackdrop(row, Colors.lhExpandedBg, Colors.disabledBorder, 1);
+            row.backdropExpanded = true;
+        end
         row.divider:Hide();
     else
-        Theme.Helpers.SetFlatBackdrop(row, Colors.transparent, Colors.transparent, 1);
+        if (row.backdropExpanded) then
+            Theme.Helpers.SetFlatBackdrop(row, Colors.transparent, Colors.transparent, 1);
+            row.backdropExpanded = false;
+        end
         row.divider:Show();
     end
 
@@ -1425,40 +1459,139 @@ local function measureAndPaintResultRow(row, entry)
     return Sizes.resultRow.collapsedHeight;
 end
 
-function layoutResultRows(results)
-    currentResults = results;
-    for i = #resultRows + 1, #results do
-        resultRows[i] = createResultRow();
+-- Result list virtualization. Only the rows overlapping the scroll viewport
+-- (plus a little overscan) exist as bound frames; the scroll child's height
+-- and every row's Y position are derived from the entry count, so a 1500+
+-- row history costs the same handful of frames as a 20-row one. At most one
+-- entry is expanded (taller), tracked as expandedIndex/expandedHeight.
+local RESULT_OVERSCAN_ROWS = 2;
+local MIN_VIEW_HEIGHT = 400;
+local expandedIndex, expandedHeight, expandedExtra = nil, nil, 0;
+
+local function resultStride()
+    return Sizes.resultRow.collapsedHeight + Sizes.resultList.gap;
+end
+
+local function resultTop(i)
+    local top = (i - 1) * resultStride();
+    if (expandedIndex and i > expandedIndex) then top = top + expandedExtra; end
+    return top;
+end
+
+local function resultHeight(i)
+    if (i == expandedIndex) then return expandedHeight; end
+    return Sizes.resultRow.collapsedHeight;
+end
+
+local function freeResultRow(row)
+    if (expandedBlock and expandedBlock:GetParent() == row) then
+        expandedBlock:Hide();
+        expandedBlock:SetParent(resultsScrollChild);
+    end
+    row.entry = nil;
+    row.index = nil;
+    row:Hide();
+end
+
+local function bindResultRow(row, i)
+    row.index = i;
+    row:ClearAllPoints();
+    row:SetPoint("TOPLEFT", resultsScrollChild, "TOPLEFT", 0, -resultTop(i));
+    row:SetPoint("RIGHT", resultsScrollChild, "RIGHT", 0, 0);
+    row:SetHeight(Sizes.resultRow.collapsedHeight);
+    row:SetHeight(measureAndPaintResultRow(row, currentResults[i]));
+    row:Show();
+end
+
+--- Binds the rows overlapping the viewport. `force` repaints every visible
+--- row (data, delete mode, expansion or layout changed); without it, rows
+--- already bound to a still-visible entry are left alone (plain scrolling).
+local isRenderingRows = false;
+local function renderVisibleRows(force)
+    -- GetHeight below can resolve layout and fire resultsScroll's
+    -- OnSizeChanged, which calls back in here mid-render; ignore that.
+    if (isRenderingRows) then return; end
+    isRenderingRows = true;
+    local n = #currentResults;
+    if (n == 0) then
+        for _, row in ipairs(resultRows) do freeResultRow(row); end
+        isRenderingRows = false;
+        return;
     end
 
-    local y = 0;
-    local expandedRowRef;
-    for i, row in ipairs(resultRows) do
-        local entry = results[i];
-        if (entry) then
-            row:ClearAllPoints();
-            row:SetPoint("TOPLEFT", resultsScrollChild, "TOPLEFT", 0, -y);
-            row:SetPoint("RIGHT", resultsScrollChild, "RIGHT", 0, 0);
-            row.topY = y;
-            local h = measureAndPaintResultRow(row, entry);
-            row.bottomY = y + h;
-            row:SetHeight(h);
-            row:Show();
-            if (entry.id == expandedEntryId) then expandedRowRef = row; end
-            y = y + h + Sizes.resultList.gap;
+    local overscan = RESULT_OVERSCAN_ROWS * resultStride();
+    local viewTop = resultsScroll:GetVerticalScroll();
+    local viewHeight = math.max(resultsScroll:GetHeight(), MIN_VIEW_HEIGHT);
+    local topLimit, bottomLimit = viewTop - overscan, viewTop + viewHeight + overscan;
+
+    local lo, hi = 1, n;
+    while (lo < hi) do
+        local mid = math.floor((lo + hi) / 2);
+        if (resultTop(mid) + resultHeight(mid) > topLimit) then hi = mid; else lo = mid + 1; end
+    end
+    local first, last = lo, lo;
+    while (last < n and resultTop(last + 1) < bottomLimit) do last = last + 1; end
+
+    local kept, free = {}, {};
+    for _, row in ipairs(resultRows) do
+        local idx = row.index;
+        if (not force and idx and idx >= first and idx <= last and currentResults[idx] == row.entry) then
+            kept[idx] = row;
         else
-            row.entry = nil;
-            row:Hide();
+            freeResultRow(row);
+            free[#free + 1] = row;
         end
     end
+    for i = first, last do
+        if (not kept[i]) then
+            local row = table.remove(free);
+            if (not row) then
+                row = createResultRow();
+                resultRows[#resultRows + 1] = row;
+            end
+            bindResultRow(row, i);
+        end
+    end
+    isRenderingRows = false;
+end
 
-    if (not expandedRowRef and expandedBlock) then expandedBlock:Hide(); end
+function layoutResultRows(results)
+    currentResults = results;
 
-    resultsScrollChild:SetHeight(math.max(y, 1));
+    expandedIndex, expandedHeight, expandedExtra = nil, nil, 0;
+    if (expandedEntryId) then
+        for i, entry in ipairs(results) do
+            if (entry.id == expandedEntryId) then expandedIndex = i; break; end
+        end
+    end
+    if (expandedIndex) then
+        -- The expanded height depends on its content, so measure it on a pool
+        -- row first (renderVisibleRows below frees and rebinds every row).
+        local row = resultRows[1];
+        if (not row) then
+            row = createResultRow();
+            resultRows[1] = row;
+        end
+        row:ClearAllPoints();
+        row:SetPoint("TOPLEFT", resultsScrollChild, "TOPLEFT", 0, 0);
+        row:SetPoint("RIGHT", resultsScrollChild, "RIGHT", 0, 0);
+        row:SetHeight(Sizes.resultRow.collapsedHeight);
+        expandedHeight = measureAndPaintResultRow(row, results[expandedIndex]);
+        expandedExtra = expandedHeight - Sizes.resultRow.collapsedHeight;
+    elseif (expandedBlock) then
+        expandedBlock:Hide();
+    end
+
+    resultsScrollChild:SetHeight(math.max(#results * resultStride() + expandedExtra, 1));
+    renderVisibleRows(true);
+
     emptyResultsText:SetShown(#results == 0);
     if (resultsScroll.ScrollBar and resultsScroll.ScrollBar.zlUpdateVisibility) then resultsScroll.ScrollBar.zlUpdateVisibility(); end
 
-    return expandedRowRef;
+    if (expandedIndex) then
+        local top = resultTop(expandedIndex);
+        return { topY = top, bottomY = top + expandedHeight };
+    end
 end
 
 function toggleExpand(entryId)
@@ -2445,7 +2578,11 @@ function ensureFrame()
     resultsScrollChild = CreateFrame("Frame", nil, resultsScroll);
     resultsScrollChild:SetPoint("TOPLEFT", resultsScroll, "TOPLEFT", 0, 0);
     resultsScroll:SetScrollChild(resultsScrollChild);
-    resultsScroll:SetScript("OnSizeChanged", function(self, width) resultsScrollChild:SetWidth(width); end);
+    resultsScroll:SetScript("OnSizeChanged", function(self, width)
+        resultsScrollChild:SetWidth(width);
+        if (#currentResults > 0) then renderVisibleRows(false); end
+    end);
+    resultsScroll:HookScript("OnVerticalScroll", function() renderVisibleRows(false); end);
 
     local resultsScrollBar = Skin.ScrollBar(resultsScroll);
     if (resultsScrollBar) then
@@ -2518,9 +2655,8 @@ end
 --- of the entire history - the difference that matters once a guild's history
 --- has grown into the hundreds/thousands of rows and an officer keeps this
 --- window open through a raid night. Still ends in the same sidebar-refresh +
---- layoutResultRows repaint as Refresh - that part still repaints every
---- currently-displayed row and isn't sped up here (would need the result row
---- list to be virtualized, a separate, larger change). No-op unless the
+--- layoutResultRows repaint as Refresh - which now only repaints the rows
+--- inside the scroll viewport (the result list is virtualized). No-op unless the
 --- window is already open, same as Refresh.
 ---@param appliedEntry table the entry Store:Apply was given - { kind, id, row, replacedRow } for "R", { kind, id, removedRow } for "D"
 ---@param source string "local" | "live" | "sync" | "test" (unused here, kept for parity with Debug's apply logging)
