@@ -1,4 +1,4 @@
-## Interface: 120100
+## Interface: 16001
 ## Title: ForeverLoot
 ## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
 ## Author: Zerpy
@@ -24,6 +24,28 @@ Core\Responses.lua
 Core\WindowReopenLinks.lua
 Core\PixelPerfect.lua
 Core\Settings.lua
+
+# Sync (new history-sync system - see docs/ForeverLoot History Sync — Spec.md;
+# load order follows that doc's section 12.1, placed after Core instead of
+# right after Libs/ because these files need FL.Sync.* pre-declared by
+# Core/Init.lua first - see docs/sync-deviations.md)
+Sync\Constants.lua
+Sync\Scheduler.lua
+Sync\Gate.lua
+Data\Store.lua
+Data\Digest.lua
+Data\Retention.lua
+Data\ItemLinks.lua
+Net\Codec.lua
+Net\Transport.lua
+Sync\Permissions.lua
+Sync\Live.lua
+Sync\Domains.lua
+Data\HistoryDomain.lua
+Sync\Peers.lua
+Sync\Session.lua
+Sync\Coordinator.lua
+Sync\Debug.lua
 
 # Vendor: small, fresh, decode-only implementations
 Vendor\Json.lua
@@ -73,6 +95,8 @@ UI\StartSessionWindow.lua
 UI\RespondWindow.lua
 UI\AwardWindow.lua
 UI\LootHistoryWindow.lua
+UI\DebugLogWindow.lua
+UI\SyncStatusWindow.lua
 
 # Debug / slash commands
 Debug.lua

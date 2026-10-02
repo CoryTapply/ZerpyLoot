@@ -1054,7 +1054,8 @@ end
 ---@param playerName string the award winner
 ---@param awardedBy string realm-stripped name of the session leader
 ---@param awardSeq number this item's per-award sequence number (see item.awardCount)
-function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, awardSeq)
+---@param source string "local" (this client is the one awarding) or "live" (arrived via applyAward's broadcast) - passed through to Data/Store.lua's apply-outcome logging
+function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, awardSeq, source)
     local item = Session.items[itemSession];
     if (not item) then return; end
 
@@ -1073,10 +1074,17 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     -- exists per itemKey, so HistoryItemIndex points straight at the exact
     -- row to replace instead of scanning for an id-prefix match.
     local itemKey = ("%s-%d-%d"):format(initiatorKey, Session.id, itemSession);
+    -- Session-internal reassignment, not a user-facing delete: every client
+    -- derives the exact same replacement deterministically from its own copy
+    -- of the session state, so this stays a direct local removal rather than
+    -- a tombstoned Store delete (which is reserved for the officer-gated
+    -- History UI action - see Sync/Live.lua). The removed row is still
+    -- threaded through to Live.Award below purely so the history UI can
+    -- incrementally drop it from its own indexes, same as before.
     local oldId = LootCouncil.HistoryItemIndex[itemKey];
-    local oldEntry;
+    local replacedEntry;
     if (oldId) then
-        oldEntry = LootCouncil.RemoveHistoryEntry(oldId);
+        replacedEntry = LootCouncil.RemoveHistoryEntry(oldId);
     end
 
     -- Ids aren't stable between sessions (Core/Responses.lua), so history
@@ -1154,14 +1162,21 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         itemSession = itemSession,
         responses = responses,
     };
-    LootCouncil.AddHistoryEntry(newEntry);
-
-    -- Incremental repaint (just this one entry) when the window's open, not a
-    -- full rebuild-and-resort of the whole history - see
-    -- LootHistoryWindow.OnEntryUpserted's own comment for why that matters.
-    if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.OnEntryUpserted) then
-        FL.UI.LootHistoryWindow.OnEntryUpserted(newEntry, oldEntry);
-    end
+    -- Routed through Store so every write - a local award, a received award,
+    -- the manual "Add Entry" row, and later phases' synced rows - shares one
+    -- apply path (test-data guarding, itemString population, and the
+    -- EntryApplied callback the history UI now refreshes from instead of the
+    -- direct OnEntryUpserted call this replaces). This "award" broadcast
+    -- (right above/below this call, in AwardItem/DisenchantItem/applyAward)
+    -- stays exactly as it is - it drives Session.items state for the raid's
+    -- council UI, not history. Live.Award (Phase 2) separately broadcasts
+    -- this row as LIVE_ROW to the whole guild, but only when source=="local"
+    -- - i.e. only on the one client that actually originated it, not on
+    -- every raid member applying the "live"-sourced copy below - see
+    -- Sync/Live.lua's header comment. replacedEntry rides along purely so
+    -- the UI's EntryApplied handler can incrementally drop the superseded
+    -- row too, on a reassignment.
+    FL.Sync.Live.Award(newEntry, source, replacedEntry);
 end
 
 --- Whether the local player may award items in the current session: gated
@@ -1237,7 +1252,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
         Util.SendChatMessageSafe(message, awardChannel);
     end
 
-    LootCouncil.RecordHistory(Session, itemSession, playerName, Util.stripRealm(Util.UnitName("player")), awardSeq);
+    LootCouncil.RecordHistory(Session, itemSession, playerName, Util.stripRealm(Util.UnitName("player")), awardSeq, "local");
 
     local ok = pcall(lcSend, "award", { sessionId = Session.id, itemSession = itemSession, winner = playerName, awardSeq = awardSeq }, "GROUP");
     if (not ok) then
@@ -1291,7 +1306,7 @@ function LootCouncil.DisenchantItem(itemSession)
         Util.SendChatMessageSafe(message, awardChannel);
     end
 
-    LootCouncil.RecordHistory(Session, itemSession, recipient, Util.stripRealm(Util.UnitName("player")), awardSeq);
+    LootCouncil.RecordHistory(Session, itemSession, recipient, Util.stripRealm(Util.UnitName("player")), awardSeq, "local");
 
     local ok = pcall(lcSend, "award", { sessionId = Session.id, itemSession = itemSession, winner = recipient, awardSeq = awardSeq }, "GROUP");
     if (not ok) then
@@ -1337,7 +1352,7 @@ local function applyAward(Message)
     item.awardedTo = content.winner;
     item.awardedAt = GetServerTime();
 
-    LootCouncil.RecordHistory(Session, content.itemSession, content.winner, Message.senderName, content.awardSeq);
+    LootCouncil.RecordHistory(Session, content.itemSession, content.winner, Message.senderName, content.awardSeq, "live");
 
     lcDebugPrint(("%s awarded item %d to %s"):format(Message.senderName, content.itemSession, content.winner));
 

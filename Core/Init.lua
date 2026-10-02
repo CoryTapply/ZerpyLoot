@@ -40,7 +40,31 @@ FL.UI.AwardWindow = FL.UI.AwardWindow or {};
 FL.UI.LootHistoryWindow = FL.UI.LootHistoryWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
+FL.UI.DebugLogWindow = FL.UI.DebugLogWindow or {};
+FL.UI.SyncStatusWindow = FL.UI.SyncStatusWindow or {};
 FL.Vendor = FL.Vendor or {};
+
+-- History-sync system (docs/ForeverLoot History Sync — Spec.md). The spec
+-- assumes a file-local `ns` namespace; this addon uses the global FL table
+-- instead, so every `ns.X` becomes `FL.Sync.X` - see docs/sync-deviations.md.
+FL.Sync = FL.Sync or {};
+FL.Sync.Constants = FL.Sync.Constants or {};
+FL.Sync.Debug = FL.Sync.Debug or {};
+FL.Sync.Scheduler = FL.Sync.Scheduler or {};
+FL.Sync.Gate = FL.Sync.Gate or {};
+FL.Sync.Store = FL.Sync.Store or {};
+FL.Sync.Digest = FL.Sync.Digest or {};
+FL.Sync.Retention = FL.Sync.Retention or {};
+FL.Sync.Permissions = FL.Sync.Permissions or {};
+FL.Sync.Live = FL.Sync.Live or {};
+FL.Sync.ItemLinks = FL.Sync.ItemLinks or {};
+FL.Sync.Codec = FL.Sync.Codec or {};
+FL.Sync.Transport = FL.Sync.Transport or {};
+FL.Sync.Domains = FL.Sync.Domains or {};
+FL.Sync.HistoryDomain = FL.Sync.HistoryDomain or {};
+FL.Sync.Peers = FL.Sync.Peers or {};
+FL.Sync.Session = FL.Sync.Session or {};
+FL.Sync.Coordinator = FL.Sync.Coordinator or {};
 
 local bootstrapFrame = CreateFrame("Frame");
 bootstrapFrame:RegisterEvent("ADDON_LOADED");
@@ -54,6 +78,13 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
         -- (e.g. registering an event this client doesn't have) can't stop
         -- every module after it from loading.
         local modules = {
+            { "Debug", FL.Sync.Debug },
+            { "Scheduler", FL.Sync.Scheduler },
+            { "Gate", FL.Sync.Gate },
+            { "Digest", FL.Sync.Digest }, -- self-test only here; no LootCouncil dependency (Rebuild() isn't called until Retention.Init())
+            { "Permissions", FL.Sync.Permissions }, -- no dependency on LootCouncil; grouped with the other foundational Sync modules
+            { "ItemLinks", FL.Sync.ItemLinks }, -- same: no LootCouncil dependency (just creates its own driver frame)
+            { "Transport", FL.Sync.Transport }, -- same: registers AceComm prefixes, no LootCouncil dependency
             { "Settings", FL.Settings },
             { "Responses", FL.Responses },
             { "Comm", FL.Comm },
@@ -63,6 +94,34 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "Tooltip", FL.Tooltip },
             { "Trade", FL.Trade },
             { "LootCouncil", FL.LootCouncil },
+            -- Store/Live must init after LootCouncil (they read/write
+            -- FL.LootCouncil.History/HistoryIndex). Live.Init() itself only
+            -- registers into FL.Sync.Transport now (Phase 2) - it no longer
+            -- needs LootCouncil.CommActions (that was Phase 1's
+            -- historyDelete/historyPin, since removed) - but still needs
+            -- Store's schema migration to have already run first.
+            { "Store", FL.Sync.Store },
+            -- Retention.Init() prunes/pins/rebuilds the digest off
+            -- FL.LootCouncil.History and FL.DB.lootCouncil.pins/tombstones,
+            -- so it must run after Store's schema migration too, same as Live.
+            { "Retention", FL.Sync.Retention },
+            { "Live", FL.Sync.Live },
+            -- HistoryDomain.Init() registers itself with Domains (Sync/Domains.lua),
+            -- and its Summary()/Compare() read Digest/Retention, both already
+            -- initialised above. Peers/Coordinator only schedule timers and
+            -- register Transport handlers at Init() time - the first real
+            -- HELLO doesn't fire until LOGIN_DELAY (~20s) later, well after
+            -- every module here has finished initialising.
+            { "HistoryDomain", FL.Sync.HistoryDomain },
+            { "Peers", FL.Sync.Peers },
+            -- Session.Init() just registers Transport handlers and a
+            -- Gate.OnChange callback - no dependency on Peers/Coordinator,
+            -- but loaded in the spec's own file order (12.1): after Peers,
+            -- before Coordinator (which is the only thing that calls
+            -- Session.Open, and only ~LOGIN_DELAY seconds after every
+            -- module here has already finished initialising).
+            { "Session", FL.Sync.Session },
+            { "Coordinator", FL.Sync.Coordinator },
             { "SessionItems", FL.SessionItems },
             { "LootChat", FL.LootChat },
             { "AutoRoll", FL.AutoRoll },

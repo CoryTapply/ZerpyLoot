@@ -11,6 +11,7 @@ local function resetAllWindowPositions()
     if (FL.UI.AwardWindow and FL.UI.AwardWindow.ResetPosition) then FL.UI.AwardWindow.ResetPosition(); end
     if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.ResetPosition) then FL.UI.LootHistoryWindow.ResetPosition(); end
     if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.ResetPosition) then FL.UI.SettingsWindow.ResetPosition(); end
+    if (FL.UI.DebugLogWindow and FL.UI.DebugLogWindow.ResetPosition) then FL.UI.DebugLogWindow.ResetPosition(); end
 end
 FL.ResetAllWindowPositions = resetAllWindowPositions;
 
@@ -111,8 +112,12 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
 end;
 
 SLASH_FOREVERLOOT1 = "/fl";
-SlashCmdList["FOREVERLOOT"] = function(msg)
-    msg = string.lower(strtrim(msg or ""));
+SlashCmdList["FOREVERLOOT"] = function(rawMsg)
+    -- `original` keeps its case for "/fl sync dump <id>" below, since ids are
+    -- case-sensitive - every other branch still matches on the lowercased
+    -- `msg`, unchanged from before.
+    local original = strtrim(rawMsg or "");
+    local msg = string.lower(original);
 
     if (msg == "") then
         if (FL.UI.SettingsWindow and FL.UI.SettingsWindow.Show) then
@@ -151,6 +156,20 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("|cff8865ffForeverLoot|r window positions reset to default.");
     elseif (msg == "autoroll") then
         FL.AutoRoll.HandleSlashAutoroll();
+    -- Unrelated to "commdebug" above (which toggles raw comm-traffic
+    -- printing): this is the history-sync system's own logging/status tools
+    -- (Sync/Debug.lua), gated separately via ForeverLootDB.debug.
+    elseif (string.match(msg, "^debug%s") or msg == "debug") then
+        local rest = string.match(msg, "^debug%s*(.-)$") or "";
+        if (FL.Sync.Debug and FL.Sync.Debug.HandleSlash) then
+            FL.Sync.Debug.HandleSlash(rest);
+        end
+    elseif (string.match(msg, "^sync%s") or msg == "sync") then
+        local prefix = string.match(msg, "^sync%s*") or "sync";
+        local rest = original:sub(#prefix + 1); -- case-preserved, for "dump <id>"
+        if (FL.Sync.Debug and FL.Sync.Debug.HandleSyncSlash) then
+            FL.Sync.Debug.HandleSyncSlash(rest);
+        end
     else
         print("|cff8865ffForeverLoot|r commands:");
         print("  /fl commdebug - toggle printing of decoded comm traffic");
@@ -163,5 +182,7 @@ SlashCmdList["FOREVERLOOT"] = function(msg)
         print("  /fl config (or /fl c) - open ForeverLoot's settings window");
         print("  /fl options - open the Blizzard-side options panel (Escape menu)");
         print("  /fl resetpositions - reset all window positions to their defaults");
+        print("  /fl debug ... - history-sync debug/logging tools (type /fl debug for the list)");
+        print("  /fl sync status|dump <id>|digest [months|days <monthKey>]|domains|peers - history-sync status, dump, digest, domains, or peers");
     end
 end;

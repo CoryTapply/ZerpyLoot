@@ -82,7 +82,7 @@ local lockButton;
 local itemInfoRefreshPending = false;
 local ITEM_INFO_REFRESH_DEBOUNCE = 0.5;
 
-local applyFilter, toggleExpand, layoutResultRows, ensureFrame, showAddEntryPopup, deleteEntry;
+local applyFilter, toggleExpand, layoutResultRows, ensureFrame, showAddEntryPopup, deleteEntry, pinEntry;
 
 --------------------------------------------------------------------------
 -- Small local helpers
@@ -1266,6 +1266,35 @@ local function createResultRow()
     row.votesText:SetJustifyH("LEFT");
     row.votesText:SetPoint("LEFT", row.pill, "RIGHT", Sizes.resultRow.metaGap, 0);
 
+    -- Manual pin action (spec 10.5) - "Pin"/"Pinned" text, same small-link
+    -- styling as the filter bar's "Clear filter" (filterClearText/Button).
+    -- Shown only for officers (FL.Sync.Permissions.CanPin), hidden in delete
+    -- mode so the two row-level actions never compete for attention. Width
+    -- and left anchor are set per-row in measureAndPaintResultRow since they
+    -- depend on whether votesText is shown.
+    row.pinButton = CreateFrame("Button", nil, row);
+    row.pinButton:SetFrameLevel(row:GetFrameLevel() + 1);
+    row.pinButton:SetHeight(Sizes.resultRow.collapsedHeight);
+    row.pinButton:Hide();
+    row.pinText = row.pinButton:CreateFontString(nil, "OVERLAY");
+    SetFont(row.pinText, "smaller");
+    row.pinText:SetPoint("LEFT", row.pinButton, "LEFT", 0, 0);
+    row.pinButton:HookScript("OnEnter", function()
+        if (row.entry and not FL.DB.lootCouncil.pins[row.entry.id]) then
+            row.pinText:SetTextColor(unpack(Colors.text));
+        end
+    end);
+    row.pinButton:HookScript("OnLeave", function()
+        if (row.entry and not FL.DB.lootCouncil.pins[row.entry.id]) then
+            row.pinText:SetTextColor(unpack(Colors.muted));
+        end
+    end);
+    row.pinButton:SetScript("OnClick", function()
+        if (row.entry and not FL.DB.lootCouncil.pins[row.entry.id]) then
+            pinEntry(row.entry);
+        end
+    end);
+
     -- Click-target carve-outs (item name / winner name / date), each a real
     -- Button sitting above the row's own click area - same technique
     -- TradeQueueWindow.createRow uses for its trash button vs. main button,
@@ -1364,6 +1393,18 @@ local function measureAndPaintResultRow(row, entry)
         row.votesText:SetPoint("LEFT", row.pill, "RIGHT", Sizes.resultRow.metaGap, 0);
     else
         row.votesText:Hide();
+    end
+
+    if (deleteModeActive or not FL.Sync.Permissions.CanPin(Util.UnitName("player"))) then
+        row.pinButton:Hide();
+    else
+        local isPinned = FL.DB.lootCouncil.pins[entry.id] ~= nil;
+        row.pinText:SetText(isPinned and "Pinned" or "Pin");
+        row.pinText:SetTextColor(unpack(isPinned and Colors.gold or Colors.muted));
+        row.pinButton:SetWidth(row.pinText:GetStringWidth() + 4);
+        row.pinButton:ClearAllPoints();
+        row.pinButton:SetPoint("LEFT", row.votesText:IsShown() and row.votesText or row.pill, "RIGHT", Sizes.resultRow.metaGap, 0);
+        row.pinButton:Show();
     end
 
     row.dateText:SetText(dayLabel(entry.awardedAt));
@@ -1480,13 +1521,17 @@ function applyFilter(newFilter)
 end
 
 --------------------------------------------------------------------------
--- Delete mode - the titlebar lock button and per-row deletion. Deleting is
--- local-only (LootCouncil.History is per-client saved data, never synced),
--- same as the manual "Add Entry" writer above.
+-- Delete mode - the titlebar lock button and per-row deletion. Deletes now
+-- go through FL.Sync.Live.Delete (Data/Store.lua's tombstones, officer-only
+-- per FL.Sync.Permissions.CanDelete), which also broadcasts them - no longer
+-- the purely local-only action the header comment above used to describe.
 --------------------------------------------------------------------------
 
 local function paintLockButton()
     if (not lockButton) then return; end
+    -- Re-checked on every repaint (window show, hover-leave, creation) since
+    -- guild rank can change while the window stays open across logins.
+    lockButton:SetShown(FL.Sync.Permissions.CanDelete(Util.UnitName("player")));
     if (deleteModeActive) then
         Theme.Helpers.SetFlatBackdrop(lockButton, Colors.sessionDeleteHoverBg, Colors.skinCloseBorder, 1);
         lockButton.icon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
@@ -1505,18 +1550,18 @@ local function setDeleteMode(active)
     layoutResultRows(currentResults);
 end
 
---- Removes `entry` from FL.LootCouncil.History and repaints. Only ever
---- reachable through a result row's trash button (deleteModeActive gates
---- that button's visibility), so no separate confirmation here - unlocking
---- delete mode via the lock button already is the confirmation step.
---- Goes through LootCouncil.RemoveHistoryEntry, not a raw table.remove -
---- LootCouncil keeps its own id -> array-index map (HistoryIndex) alongside
---- this array (see LootCouncil.lua), and a manual removal that bypasses it
---- would leave that map pointing at stale positions for every entry after
---- the removed one.
+--- Deletes `entry` via FL.Sync.Live.Delete (tombstones it in Data/Store.lua
+--- and broadcasts the delete) and repaints. Only ever reachable through a
+--- result row's trash button (deleteModeActive gates that button's
+--- visibility, and the lock button itself is hidden for non-officers - see
+--- paintLockButton), so no separate confirmation here - unlocking delete
+--- mode via the lock button already is the confirmation step. Live.Delete
+--- re-checks CanDelete itself regardless (rank could have changed since the
+--- button was last painted), so this still no-ops safely if permission was
+--- lost in between.
 function deleteEntry(entry)
     if (not entry or not LootCouncil.History) then return; end
-    LootCouncil.RemoveHistoryEntry(entry.id);
+    if (not FL.Sync.Live.Delete(entry.id)) then return; end
 
     if (expandedEntryId == entry.id) then expandedEntryId = nil; end
 
@@ -1532,6 +1577,20 @@ function deleteEntry(entry)
         paintFilterBar(currentFilter, results);
         layoutResultRows(results);
     end
+end
+
+--- Manual "Pin" action (spec 10.5): officers get the same policy as delete
+--- (FL.Sync.Permissions.CanPin). Unlike deleteEntry, a pin never adds,
+--- removes or moves a row - it's a separate stored entry alongside the row
+--- (section 3.3) - so no rebuildIndexes()/sidebar refresh is needed, only a
+--- repaint of the already-visible rows (the "EntryApplied" P-kind branch
+--- below does the same repaint for every OTHER client that receives the
+--- pin; this call site repaints eagerly too so the row updates instantly
+--- rather than waiting on the callback round-trip).
+function pinEntry(entry)
+    if (not entry) then return; end
+    if (not FL.Sync.Live.Pin(entry.id)) then return; end
+    layoutResultRows(currentResults);
 end
 
 --------------------------------------------------------------------------
@@ -2131,7 +2190,12 @@ local function confirmAddEntry()
         sessionId = 0, itemSession = 0, responses = {},
         manual = true, response = response, note = note,
     };
-    LootCouncil.AddHistoryEntry(entry);
+    -- Routed through Store like every other write (see LootCouncil.RecordHistory's
+    -- own comment). Unlike Phase 1, this now DOES broadcast (LIVE_ROW, to
+    -- the whole guild) since source is "local" here - this row only exists
+    -- on this client, so Live.Award is the only thing that will ever tell
+    -- anyone else about it.
+    FL.Sync.Live.Award(entry, "local");
 
     addEntryPopup:Hide();
     rebuildIndexes();
@@ -2443,27 +2507,44 @@ function LootHistoryWindow.Refresh()
     end
 end
 
---- Incremental counterpart to Refresh(), called by LootCouncil.RecordHistory
---- after every single award (including one arriving from another client's
---- broadcast) - `entry` is the new/updated row, `oldEntry` is the previous
---- row it replaced (a reassignment) or nil (a fresh award). Updates
---- allEntries/indexByDay/indexByPlayer/indexByItem in O(log n) (insertion
---- into a handful of already-sorted lists) instead of Refresh's O(n log n)
---- full rebuild-and-resort of the entire history - the difference that
---- matters once a guild's history has grown into the hundreds/thousands of
---- rows and an officer keeps this window open through a raid night. Still
---- ends in the same sidebar-refresh + layoutResultRows repaint as Refresh -
---- that part still repaints every currently-displayed row and isn't sped up
---- here (would need the result row list to be virtualized, a separate,
---- larger change). No-op unless the window is already open, same as Refresh.
-function LootHistoryWindow.OnEntryUpserted(entry, oldEntry)
-    -- Show() always calls rebuildIndexes() unconditionally on open, so
-    -- there's nothing to gain from maintaining these indexes while the
-    -- window is closed - skip it, same as Refresh() always has.
+--- Incremental counterpart to Refresh(), registered below on
+--- FL.Sync.Store's "EntryApplied" callback (Data/Store.lua) instead of being
+--- called directly from LootCouncil.RecordHistory - every write (a local
+--- award, one arriving from another client's broadcast, a manual Add Entry,
+--- or an officer's delete) now funnels through Store:Apply, which fires this
+--- exactly once per actual change. Updates allEntries/indexByDay/
+--- indexByPlayer/indexByItem in O(log n) (insertion/removal in a handful of
+--- already-sorted lists) instead of Refresh's O(n log n) full rebuild-and-resort
+--- of the entire history - the difference that matters once a guild's history
+--- has grown into the hundreds/thousands of rows and an officer keeps this
+--- window open through a raid night. Still ends in the same sidebar-refresh +
+--- layoutResultRows repaint as Refresh - that part still repaints every
+--- currently-displayed row and isn't sped up here (would need the result row
+--- list to be virtualized, a separate, larger change). No-op unless the
+--- window is already open, same as Refresh.
+---@param appliedEntry table the entry Store:Apply was given - { kind, id, row, replacedRow } for "R", { kind, id, removedRow } for "D"
+---@param source string "local" | "live" | "sync" | "test" (unused here, kept for parity with Debug's apply logging)
+---@param result string the fixed outcome word Store:Apply returned (see Data/Store.lua)
+local function onEntryApplied(_event, appliedEntry, source, result)
     if (not frame or not frame:IsShown()) then return; end
 
-    if (oldEntry) then removeEntryFromIndexes(oldEntry); end
-    insertEntryIntoIndexes(entry);
+    if (appliedEntry.kind == "R" and result == "added") then
+        if (appliedEntry.replacedRow) then removeEntryFromIndexes(appliedEntry.replacedRow); end
+        insertEntryIntoIndexes(appliedEntry.row);
+    elseif (appliedEntry.kind == "D" and result == "tombstoned" and appliedEntry.removedRow) then
+        if (expandedEntryId == appliedEntry.id) then expandedEntryId = nil; end
+        removeEntryFromIndexes(appliedEntry.removedRow);
+    elseif (appliedEntry.kind == "P" and result == "added") then
+        -- A pin doesn't add/remove/move a row (no index change needed) - just
+        -- repaint the currently-visible rows so row.pinButton reflects it,
+        -- whether this was our own manual pin, a received LIVE_PIN, or an
+        -- autopin. Skips the sidebar refresh below (date/player/item bucket
+        -- counts never depend on pin status).
+        layoutResultRows(currentResults);
+        return;
+    else
+        return; -- an outcome that changed nothing visible (dup/rejected/expired/...)
+    end
 
     dateColumn.refresh();
     playersColumn.refresh();
@@ -2477,6 +2558,7 @@ function LootHistoryWindow.OnEntryUpserted(entry, oldEntry)
         layoutResultRows(results);
     end
 end
+FL.Sync.Store.RegisterCallback(LootHistoryWindow, "EntryApplied", onEntryApplied);
 
 function LootHistoryWindow.Hide()
     if (frame) then frame:Hide(); end

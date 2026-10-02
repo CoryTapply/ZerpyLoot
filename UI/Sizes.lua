@@ -931,4 +931,29 @@ FL.UI.Sizes = {
         buttonWidth    = 180,
         buttonHeight   = 26,
     },
+
+    -- The debug-log copy window (UI/DebugLogWindow.lua, /fl debug log) - a
+    -- title bar over a single scrollable read-only text area, no other
+    -- chrome.
+    debugLog = {
+        window = { width = 520, height = 380 },
+        titleBarHeight = 32,
+        contentPadX = 16,
+        contentPadTop = 14,
+        contentPadBottom = 14,
+        textInset = 6,
+    },
+
+    -- The live sync-status window (UI/SyncStatusWindow.lua, /fl sync
+    -- window) - same single-scrollable-text-area chrome as debugLog above,
+    -- just wider/taller since it shows several sections of columned text at
+    -- once rather than a plain scrolling log.
+    syncStatus = {
+        window = { width = 680, height = 520 },
+        titleBarHeight = 32,
+        contentPadX = 16,
+        contentPadTop = 14,
+        contentPadBottom = 14,
+        textInset = 6,
+    },
 };
