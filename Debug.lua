@@ -74,24 +74,29 @@ SlashCmdList["FOREVERLOOTLC"] = function(msg)
         if (subCmd == "add") then
             if (name == "") then name = UnitName("player"); end
             if (FL.LootCouncil.RosterAdd(name)) then
-                print(("|cff8865ffForeverLoot|r Added %s to the loot council roster."):format(name));
+                print(("|cff8865ffForeverLoot|r Added %s to the saved loot council roster."):format(name));
             else
-                print(("|cff8865ffForeverLoot|r %s is already on the loot council roster."):format(name));
+                print(("|cff8865ffForeverLoot|r %s is already on the saved loot council roster."):format(name));
             end
         elseif (subCmd == "remove") then
             if (name == "") then
                 print("|cff8865ffForeverLoot|r Usage: /flc council remove <name>");
             elseif (FL.LootCouncil.RosterRemove(name)) then
-                print(("|cff8865ffForeverLoot|r Removed %s from the loot council roster."):format(name));
+                print(("|cff8865ffForeverLoot|r Removed %s from the saved loot council roster."):format(name));
             else
-                print(("|cff8865ffForeverLoot|r %s is not on the loot council roster."):format(name));
+                print(("|cff8865ffForeverLoot|r %s is not on the saved loot council roster."):format(name));
             end
         elseif (subCmd == "list") then
             local names = FL.LootCouncil.RosterNames();
             if (#names == 0) then
-                print("|cff8865ffForeverLoot|r Loot council roster is empty.");
+                print("|cff8865ffForeverLoot|r Saved loot council roster is empty.");
             else
-                print(("|cff8865ffForeverLoot|r Loot council roster: %s"):format(table.concat(names, ", ")));
+                print(("|cff8865ffForeverLoot|r Saved loot council roster: %s"):format(table.concat(names, ", ")));
+            end
+            if (FL.LootCouncil.CurrentSession) then
+                local council = FL.LootCouncil.SessionCouncilNames();
+                print(("|cff8865ffForeverLoot|r Session #%s council: %s"):format(tostring(FL.LootCouncil.CurrentSession.id),
+                    (#council > 0) and table.concat(council, ", ") or "(none)"));
             end
         else
             print("|cff8865ffForeverLoot|r Usage: /flc council add|remove|list [name]");
@@ -124,9 +129,8 @@ SlashCmdList["FOREVERLOOT"] = function(rawMsg)
             FL.UI.SettingsWindow.Show();
         end
     elseif (msg == "commdebug") then
-        FL.Comm.debugEnabled = not FL.Comm.debugEnabled;
-        FL.LootCouncil.debugEnabled = FL.Comm.debugEnabled;
-        print(("|cff8865ffForeverLoot|r comm debug: %s"):format(FL.Comm.debugEnabled and "ON" or "OFF"));
+        -- Retired: these lines now go to the main debug log.
+        print("|cff8865ffForeverLoot|r Council, roll and softres debug lines are now part of /fl debug (categories COUNCIL, ROLL, SOFTRES; Gargul-channel traffic is COMM at level 2).");
     elseif (msg == "roll" or msg == "rollwindow") then
         if (FL.UI.RollWindow and FL.UI.RollWindow.Toggle) then
             FL.UI.RollWindow.Toggle();
@@ -139,7 +143,7 @@ SlashCmdList["FOREVERLOOT"] = function(rawMsg)
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Toggle) then
             FL.UI.TradeQueueWindow.Toggle();
         end
-    elseif (msg == "history") then
+    elseif (msg == "history" or msg == "h") then
         if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Toggle) then
             FL.UI.LootHistoryWindow.Toggle();
         end
@@ -156,6 +160,9 @@ SlashCmdList["FOREVERLOOT"] = function(rawMsg)
         print("|cff8865ffForeverLoot|r window positions reset to default.");
     elseif (msg == "autoroll") then
         FL.AutoRoll.HandleSlashAutoroll();
+    elseif (msg == "minimap") then
+        local shown = FL.UI.MinimapButton.ToggleShown();
+        print(("|cff8865ffForeverLoot|r minimap button: %s"):format(shown and "shown" or "hidden"));
     -- Unrelated to "commdebug" above (which toggles raw comm-traffic
     -- printing): this is the history-sync system's own logging/status tools
     -- (Sync/Debug.lua), gated separately via ForeverLootDB.debug.
@@ -172,17 +179,17 @@ SlashCmdList["FOREVERLOOT"] = function(rawMsg)
         end
     else
         print("|cff8865ffForeverLoot|r commands:");
-        print("  /fl commdebug - toggle printing of decoded comm traffic");
         print("  /fl roll - toggle the roll tracker window");
         print("  /fl softres - open the SoftRes import window");
         print("  /fl tradequeue - open the trade queue window");
-        print("  /fl history - open the loot history window");
-        print("  /fl autoroll - open the Automatic Rolls popup for your current raid");
+        print("  /fl history (or /fl h) - open the loot history window");
+        print("  /fl autoroll - open the Automatic Rolls popup for your current raid or dungeon");
         printLootCouncilHelp();
         print("  /fl config (or /fl c) - open ForeverLoot's settings window");
         print("  /fl options - open the Blizzard-side options panel (Escape menu)");
+        print("  /fl minimap - show/hide the minimap button");
         print("  /fl resetpositions - reset all window positions to their defaults");
-        print("  /fl debug ... - history-sync debug/logging tools (type /fl debug for the list)");
+        print("  /fl debug - open the Debug Log window (/fl debug help lists the debug commands)");
         print("  /fl sync status|dump <id>|digest [months|days <monthKey>]|domains|peers - history-sync status, dump, digest, domains, or peers");
     end
 end;

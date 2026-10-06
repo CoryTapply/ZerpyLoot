@@ -51,6 +51,7 @@ local resultRows = {};
 local expandedBlock;
 local candidateRows = {};
 local addEntryPopup, addEntryState;
+local pinPopup, pinPopupEntry;
 
 local allEntries = {};
 local indexByDay, dayKeysSorted = {}, {};
@@ -1293,8 +1294,9 @@ local function createResultRow()
 
     -- Manual pin action (spec 10.5) - "Pin"/"Pinned" text, same small-link
     -- styling as the filter bar's "Clear filter" (filterClearText/Button).
-    -- Shown only for officers (FL.Sync.Permissions.CanPin), hidden in delete
-    -- mode so the two row-level actions never compete for attention. Width
+    -- Shown only for officers (FL.Sync.Permissions.CanPin), and only while the
+    -- lock button has unlocked delete mode - the same "edit history" state as
+    -- the trash icon, so neither permanent action shows by default. Width
     -- and left anchor are set per-row in measureAndPaintResultRow since they
     -- depend on whether votesText is shown.
     row.pinButton = CreateFrame("Button", nil, row);
@@ -1429,7 +1431,7 @@ local function measureAndPaintResultRow(row, entry)
         row.votesText:Hide();
     end
 
-    if (deleteModeActive or not FL.Sync.Permissions.CanPin(Util.UnitName("player"))) then
+    if (not deleteModeActive or not FL.Sync.Permissions.CanPin(Util.UnitName("player"))) then
         row.pinButton:Hide();
     else
         local isPinned = FL.DB.lootCouncil.pins[entry.id] ~= nil;
@@ -1720,10 +1722,119 @@ end
 --- below does the same repaint for every OTHER client that receives the
 --- pin; this call site repaints eagerly too so the row updates instantly
 --- rather than waiting on the callback round-trip).
-function pinEntry(entry)
-    if (not entry) then return; end
+local function doPin(entry)
     if (not FL.Sync.Live.Pin(entry.id)) then return; end
     layoutResultRows(currentResults);
+end
+
+--------------------------------------------------------------------------
+-- Pin confirmation popup. A pin is permanent (there is no unpin - the sync
+-- system would just send a dropped pin back), so the manual Pin action asks
+-- first. Built from the same pieces and metrics as the Award window's
+-- assign popup (UI/AwardWindow.lua's ensurePopup): an item summary box
+-- (icon, quality-colored name, "to <winner> · <date>") and the shared
+-- warning box.
+--------------------------------------------------------------------------
+
+local function ensurePinPopup()
+    if (pinPopup) then return; end
+
+    local p = RootSizes.award.popup;
+    pinPopup = Skin.ConfirmPopup(frame, {
+        width = p.width, padding = p.padding, titleHeight = p.titleHeight, sectionGap = p.sectionGap,
+        buttonHeight = p.buttonHeight, buttonGap = p.buttonGap, buttonWidth = p.buttonWidth,
+        shadowInset = p.shadowInset, scrimTopInset = Sizes.titleBarHeight,
+    });
+    local dialog = pinPopup.dialog;
+    dialog.title:SetText("Pin this row?");
+
+    dialog.summary = CreateFrame("Frame", nil, dialog, "BackdropTemplate");
+    Skin.Backdrop(dialog.summary, Colors.sessionListBg, Colors.memberBorder);
+    dialog.summary:SetHeight(p.summaryIconSize + p.summaryPadding * 2);
+
+    dialog.summaryIcon = dialog.summary:CreateTexture(nil, "ARTWORK");
+    dialog.summaryIcon:SetSize(p.summaryIconSize, p.summaryIconSize);
+    dialog.summaryIcon:SetPoint("LEFT", dialog.summary, "LEFT", p.summaryPadding, 0);
+    dialog.summaryIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92);
+    dialog.summaryIconBorder = CreateFrame("Frame", nil, dialog.summary, "BackdropTemplate");
+    dialog.summaryIconBorder:SetPoint("TOPLEFT", dialog.summaryIcon, "TOPLEFT", -1, 1);
+    dialog.summaryIconBorder:SetPoint("BOTTOMRIGHT", dialog.summaryIcon, "BOTTOMRIGHT", 1, -1);
+    Theme.Helpers.SetFlatBackdrop(dialog.summaryIconBorder, nil, Colors.transparent, 1);
+
+    local textWidth = p.width - p.padding * 2 - p.summaryPadding * 2 - p.summaryIconSize - p.summaryIconGap;
+    dialog.summaryItemName = dialog.summary:CreateFontString(nil, "OVERLAY");
+    SetFont(dialog.summaryItemName, "body");
+    dialog.summaryItemName:SetPoint("TOPLEFT", dialog.summaryIcon, "TOPRIGHT", p.summaryIconGap, 0);
+    dialog.summaryItemName:SetWidth(textWidth);
+    dialog.summaryItemName:SetJustifyH("LEFT");
+    dialog.summaryItemName:SetWordWrap(false);
+
+    dialog.summaryToLine = dialog.summary:CreateFontString(nil, "OVERLAY");
+    SetFont(dialog.summaryToLine, "small");
+    dialog.summaryToLine:SetPoint("TOPLEFT", dialog.summaryItemName, "BOTTOMLEFT", 0, -p.summaryLineGap);
+    dialog.summaryToLine:SetWidth(textWidth);
+    dialog.summaryToLine:SetJustifyH("LEFT");
+    dialog.summaryToLine:SetWordWrap(false);
+
+    dialog.warningBox = CreateFrame("Frame", nil, dialog, "BackdropTemplate");
+    Theme.Helpers.SetFlatBackdrop(dialog.warningBox, Colors.awardWarningBg, Colors.awardWarningBorder, 1);
+    dialog.warningIcon = dialog.warningBox:CreateTexture(nil, "ARTWORK");
+    dialog.warningIcon:SetSize(p.warningIconSize, p.warningIconSize);
+    dialog.warningIcon:SetPoint("LEFT", dialog.warningBox, "LEFT", p.warningPadding, 0);
+    dialog.warningIcon:SetTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew");
+    dialog.warningIcon:SetVertexColor(unpack(Colors.awardWarningIcon));
+    dialog.warningText = dialog.warningBox:CreateFontString(nil, "OVERLAY");
+    SetFont(dialog.warningText, "small");
+    dialog.warningText:SetTextColor(unpack(Colors.awardWarningText));
+    dialog.warningText:SetPoint("TOPLEFT", dialog.warningBox, "TOPLEFT", p.warningPadding + p.warningIconSize + 8, -p.warningPadding);
+    dialog.warningText:SetWidth(p.width - p.padding * 2 - (p.warningPadding + p.warningIconSize + 8) - p.warningPadding);
+    dialog.warningText:SetJustifyH("LEFT");
+    dialog.warningText:SetWordWrap(true);
+    dialog.warningText:SetText("This cannot be undone. A pinned row is kept forever, is never pruned, and the pin is shared with the whole guild.");
+
+    pinPopup:SetButtons("Cancel", "Pin", function()
+        local entry = pinPopupEntry;
+        pinPopupEntry = nil;
+        if (entry) then doPin(entry); end
+    end, function() pinPopupEntry = nil; end);
+end
+
+function pinEntry(entry)
+    if (not entry) then return; end
+    ensurePinPopup();
+    pinPopupEntry = entry;
+
+    local p = RootSizes.award.popup;
+    local dialog = pinPopup.dialog;
+
+    dialog.summaryIcon:SetTexture(entry.itemIcon or Util.GetItemIcon(entry.itemID) or FALLBACK_ICON);
+    local qr, qg, qb = Util.GetItemQualityColor(Util.GetItemQuality(entry.itemLink or entry.itemID));
+    qr, qg, qb = qr or 0.6, qg or 0.6, qb or 0.6;
+    dialog.summaryIconBorder:SetBackdropBorderColor(qr, qg, qb);
+    local itemName = entry.itemLink and Util.GetItemInfo(entry.itemLink);
+    dialog.summaryItemName:SetTextColor(qr, qg, qb);
+    dialog.summaryItemName:SetText("[" .. (itemName or "?") .. "]");
+
+    local r, g, b = classColorRGB(entry.awardedToClass);
+    dialog.summaryToLine:SetTextColor(unpack(Colors.description));
+    dialog.summaryToLine:SetText(("to |cff%02x%02x%02x%s|r \194\183 %s"):format(
+        math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), entry.awardedTo or "?",
+        entry.awardedAt and date("%m/%d/%Y", entry.awardedAt) or "?"));
+
+    pinPopup:Show(function(d, y)
+        dialog.summary:ClearAllPoints();
+        dialog.summary:SetPoint("TOPLEFT", d, "TOPLEFT", p.padding, y);
+        dialog.summary:SetPoint("TOPRIGHT", d, "TOPRIGHT", -p.padding, y);
+        y = y - dialog.summary:GetHeight() - p.sectionGap;
+
+        dialog.warningBox:ClearAllPoints();
+        dialog.warningBox:SetPoint("TOPLEFT", d, "TOPLEFT", p.padding, y);
+        dialog.warningBox:SetPoint("TOPRIGHT", d, "TOPRIGHT", -p.padding, y);
+        local textHeight = dialog.warningText:GetStringHeight();
+        dialog.warningBox:SetHeight(math.max(p.warningIconSize, textHeight) + p.warningPadding * 2);
+        y = y - dialog.warningBox:GetHeight() - p.sectionGap;
+        return y;
+    end);
 end
 
 --------------------------------------------------------------------------
@@ -2496,25 +2607,19 @@ function ensureFrame()
         x = savedPosition and savedPosition.x or 0, y = savedPosition and savedPosition.y or 0,
     }, function() Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, Colors.border, 1); end);
 
-    -- Escape closes this window - a deliberate first for this window family
-    -- (TradeQueueWindow/RespondWindow/SoftResImportWindow all intentionally
-    -- omit this so Escape never closes them). Add Entry's own
-    -- Skin.ConfirmPopup dialog already captures ESCAPE for itself while
-    -- shown, so it closes only the dialog, not this window, with no extra
-    -- code needed here.
-    tinsert(UISpecialFrames, "ForeverLootHistoryWindow");
+    -- NOTE: deliberately NOT added to UISpecialFrames - Escape never closes
+    -- this window, matching TradeQueueWindow/RespondWindow/SoftResImportWindow.
 
     createTitleBar();
 
-    -- Inset 1px (the window border's own thickness) on left/bottom so the
-    -- filter columns' solid sidebarBg fill doesn't paint over frame's border
-    -- there - same borderInset convention AwardWindow's itemPanel uses.
-    -- Right/top are untouched: nothing paints solid all the way to those
-    -- edges (titleBar has no fill, resultsColumn has no fill), so the
-    -- window's own border already shows through there.
+    -- Inset 1px (the window border's own thickness) on left/bottom/right so
+    -- the filter columns' solid sidebarBg fill and the filter bar's
+    -- lhFilterBarBg fill don't paint over frame's border there - same
+    -- borderInset convention AwardWindow's itemPanel uses. Top is untouched:
+    -- body starts below the title bar, which has no fill.
     body = CreateFrame("Frame", nil, frame);
     body:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -Sizes.titleBarHeight);
-    body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 1);
+    body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1);
 
     dateColumn = buildFilterColumn(body, {
         title = "Date", filterType = "date", hasSearch = false,

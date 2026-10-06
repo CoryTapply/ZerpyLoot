@@ -1,17 +1,18 @@
 --[[
 Automatic Rolls engine: decides whether/how to auto-respond to a native
-Group Loot roll (Need/Greed/Pass) in a raid, tracks the raid-entry popup's
+Group Loot roll (Need/Greed/Pass) in a raid or dungeon, tracks the popup's
 session-only choices, and is the entry point for /fl autoroll.
 
-Scope (AutoRoll.ScopeOK) gates everything here: outside a raid, or on a
-non-roll loot method (master looter/free-for-all/round-robin/personal
+Scope (AutoRoll.ScopeOK) gates everything here: outside a raid/dungeon, or
+on a non-roll loot method (master looter/free-for-all/round-robin/personal
 loot), nothing is auto-rolled, the popup never shows, and item overrides
 never apply - matching a plain Group Loot roll exactly as if this addon's
 automation didn't exist.
 
-TEMP TESTING: ScopeOK currently also allows party (dungeon) instances so
-the feature can be tested without a raid. Revert to raid-only before
-shipping.
+Raids and dungeons differ only in the raid-wide mode: raids follow the
+saved db.autoRoll.mode (and its "ask" popup on entry), while dungeons
+ignore it and always roll manually unless the player opts in for that
+dungeon via /fl autoroll. Item overrides apply identically in both.
 
 UI/AutoRollPopup.lua is presentation-only (Show/Hide/IsShown); every policy
 decision (when to show it, what to store) lives here. GroupLootRoll.lua owns
@@ -43,37 +44,30 @@ end
 
 function AutoRoll.ScopeOK()
     local inInstance, instanceType = IsInInstance();
-    -- TEMP TESTING: also allow dungeons, not just raids. Revert before shipping.
     return inInstance and (instanceType == "raid" or instanceType == "party") and AutoRoll.IsRollLootMethod();
 end
 
---- The mode that actually governs this raid right now: the current raid's
---- session choice (from the popup or /fl autoroll) if one was made, else the
---- saved default - except in "ask" mode, which stays "manual" (i.e. normal
---- rolling) until answered rather than falling back to itself.
+function AutoRoll.IsDungeon()
+    local _, instanceType = IsInInstance();
+    return instanceType == "party";
+end
+
+--- The mode that actually governs this instance right now: the current
+--- instance's session choice (from the popup or /fl autoroll) if one was
+--- made, else the saved default - except in "ask" mode, which stays
+--- "manual" (i.e. normal rolling) until answered rather than falling back to
+--- itself. Dungeons never use the saved default: "manual" until /fl autoroll.
 function AutoRoll.GetEffectiveMode()
     local instanceID = select(8, GetInstanceInfo());
     local mode = FL.Settings.GetAutoRollMode();
     local session = instanceID and FL.Settings.GetAutoRollSessionChoice(instanceID);
-    if (mode ~= "ask") then return session or mode; end
-    return session or "manual";
+    if (AutoRoll.IsDungeon() or mode == "ask") then return session or "manual"; end
+    return session or mode;
 end
 
 --------------------------------------------------------------------------
 -- Precedence chain
 --------------------------------------------------------------------------
-
--- AUTOMATION-RULES-HOOK: placeholder for a not-yet-built "Automation rules"
--- feature (e.g. "Auto-pass items I can't use") - no such feature exists
--- anywhere in this codebase today (verified by an exhaustive search before
--- this file was written). Always returns nil (no-op passthrough). A future
--- feature slots in here, between item overrides and the raid mode, with the
--- same (rule, source) return shape as the override branch in Decide() below
--- - Decide() already returns immediately whenever this returns non-nil, so
--- nothing else needs to change to wire it in.
-function AutoRoll.EvaluateAutomationRules(itemID, canNeed, canGreed)
-    return nil;
-end
 
 --- Returns rule ("need"|"greed"|"pass"|"manual"), source (a short label) or
 --- nil (no decision made at all - a normal roll row shows, nothing printed).
@@ -85,7 +79,7 @@ function AutoRoll.Decide(itemID, canNeed, canGreed)
     if (override) then
         -- An explicit item rule is never silently swapped for a different
         -- roll - every branch here returns outright, never falls through to
-        -- automation/raid mode below. "manual" returns a real rule (not nil)
+        -- the raid mode below. "manual" returns a real rule (not nil)
         -- so HandleStartLootRoll still prints the "Manually rolling on
         -- [item]" notice for this deliberate per-item exception, even though
         -- it leaves the roll row up for a manual click same as nil would.
@@ -95,9 +89,6 @@ function AutoRoll.Decide(itemID, canNeed, canGreed)
         if (override == "greed") then return (canGreed and "greed" or nil), "item override"; end
         return nil;
     end
-
-    local automationRule, automationSource = AutoRoll.EvaluateAutomationRules(itemID, canNeed, canGreed);
-    if (automationRule) then return automationRule, automationSource or "automation"; end
 
     local mode = AutoRoll.GetEffectiveMode();
     if (mode == "need") then
@@ -132,12 +123,22 @@ end
 --- mode that will govern this raid unless/until a session choice changes it.
 --- Skipped for "ask" mode with no session choice yet: the popup is about to
 --- ask, and PrintSessionChoiceMessage announces whatever the player picks.
+--- Dungeons announce an automatic session choice here too; with none (or
+--- "manual") they print PrintDungeonOffMessage instead.
 function AutoRoll.PrintModeMessage(mode)
+    local changeLink = FL.FormatReopenLink("AutoRoll", "Click here to change");
     if (mode == "manual") then
-        Util.Print("Automatic rolls: Rolling manually.");
+        Util.Print(("Automatic rolls: Rolling manually. %s"):format(changeLink));
     else
-        Util.Print(("Automatic rolls: %s on everything."):format(RULE_TITLE[mode] or mode));
+        Util.Print(("Automatic rolls: %s on everything. %s"):format(RULE_TITLE[mode] or mode, changeLink));
     end
+end
+
+--- Printed on dungeon entry when this dungeon has no automatic session
+--- choice - the clickable link is the in-chat equivalent of /fl autoroll.
+function AutoRoll.PrintDungeonOffMessage()
+    Util.Print(("Automatic rolls are off in this dungeon. %s"):format(
+        FL.FormatReopenLink("AutoRoll", "Click here to turn them on")));
 end
 
 function AutoRoll.PrintSessionChoiceMessage(choice, instanceName)
@@ -175,7 +176,7 @@ function AutoRoll.HandleStartLootRoll(rollID)
 end
 
 --------------------------------------------------------------------------
--- Raid popup trigger + session choices + /fl autoroll
+-- Popup trigger + session choices + /fl autoroll
 --------------------------------------------------------------------------
 
 -- Tracks whether scope was already active as of the last check, so the mode
@@ -196,6 +197,19 @@ local function checkShowPopup()
     local instanceID = select(8, GetInstanceInfo());
     local session = instanceID and FL.Settings.GetAutoRollSessionChoice(instanceID);
 
+    if (AutoRoll.IsDungeon()) then
+        -- No automatic popup in dungeons - only /fl autoroll opens it.
+        if (not scopeWasActive) then
+            scopeWasActive = true;
+            if (session and session ~= "manual") then
+                AutoRoll.PrintModeMessage(session);
+            else
+                AutoRoll.PrintDungeonOffMessage();
+            end
+        end
+        return;
+    end
+
     if (not scopeWasActive) then
         scopeWasActive = true;
         if (session or mode ~= "ask") then
@@ -209,12 +223,13 @@ local function checkShowPopup()
     FL.UI.AutoRollPopup.Show();
 end
 
---- /fl autoroll: opens the popup regardless of mode or whether this raid
---- already has a session answer (picking a choice only replaces the
---- session choice for the current raid, never db.autoRoll.mode).
+--- /fl autoroll: opens the popup regardless of mode or whether this
+--- instance already has a session answer (picking a choice only replaces
+--- the session choice for the current instance, never db.autoRoll.mode).
+--- The only way to turn on automatic rolls in a dungeon.
 function AutoRoll.HandleSlashAutoroll()
     if (not AutoRoll.ScopeOK()) then
-        Util.Print("Automatic rolls only apply in raids that use group loot.");
+        Util.Print("Automatic rolls only apply in raids and dungeons that use group loot.");
         return;
     end
     FL.UI.AutoRollPopup.Show();

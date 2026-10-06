@@ -110,7 +110,7 @@ FL.UI.SettingsWindow.RegisterPage("announcements", "Announcements", function(pag
     section:Checkbox{
         key = "raidChat.softresImported",
         label = "Announce when SoftRes data is imported",
-        desc = "Posts \"Softres data was imported\" to the raid/party when you import a soft-reserve sheet.",
+        desc = "Posts the number of soft reserves, plus a link to each hard-reserved item, to the raid/party when you import a soft-reserve sheet.",
         default = true,
     };
 

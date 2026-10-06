@@ -81,6 +81,14 @@ Trade.Queue = {};
 
 local nextEntryId = 0;
 
+-- Called after every add/remove below so the EllesmereUI Bags highlight
+-- (BagHighlight.lua) tracks the queue immediately.
+local function queueChanged()
+    if (FL.BagHighlight and FL.BagHighlight.Refresh) then
+        FL.BagHighlight.Refresh();
+    end
+end
+
 function Trade.QueueAdd(entry)
     if (not entry.id) then
         nextEntryId = nextEntryId + 1;
@@ -88,6 +96,7 @@ function Trade.QueueAdd(entry)
     end
 
     table.insert(Trade.Queue, entry);
+    queueChanged();
 
     -- Keep an already-open trade queue window in sync immediately - without
     -- this, an item added while the window happened to be open (or was open
@@ -107,6 +116,7 @@ function Trade.QueueRemoveEntry(entry)
     for i, queued in ipairs(Trade.Queue) do
         if (queued == entry) then
             table.remove(Trade.Queue, i);
+            queueChanged();
             return true;
         end
     end
@@ -121,11 +131,14 @@ end
 -- item (it dropped twice) queues its own independent entry instead of wiping
 -- out an earlier roll-off's still-pending one just because the item matches.
 function Trade.QueueRemoveByRollOff(rollOffId)
+    local removed = false;
     for i = #Trade.Queue, 1, -1 do
         if (Trade.Queue[i].rollOffId == rollOffId) then
             table.remove(Trade.Queue, i);
+            removed = true;
         end
     end
+    if (removed) then queueChanged(); end
 end
 
 -- Same idea as QueueRemoveByRollOff, but scoped to one winner within that
@@ -141,6 +154,7 @@ function Trade.QueueRemoveByRollOffAndWinner(rollOffId, winnerName)
         local entry = Trade.Queue[i];
         if (entry.rollOffId == rollOffId and Util.namesMatch(entry.winner, winnerName)) then
             table.remove(Trade.Queue, i);
+            queueChanged();
             if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Refresh) then
                 FL.UI.TradeQueueWindow.Refresh();
             end
@@ -375,6 +389,7 @@ local function onTradeComplete()
             and Util.namesMatch(entry.winner, activeSession.partner, true)
             and activeSession.placedItemLinks[entry.itemLink]) then
             table.remove(Trade.Queue, i);
+            queueChanged();
             onItemActuallyTraded(entry);
             return;
         end

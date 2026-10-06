@@ -22,12 +22,10 @@ local AceComm, LibDeflate, LibSerialize;
 -- channel, recipient, version}
 Comm.Actions = {};
 
-Comm.debugEnabled = false;
-
-local function debugPrint(msg)
-    if (Comm.debugEnabled) then
-        print("|cff8865ffForeverLoot|r " .. msg);
-    end
+--- Debug log line (Sync/Debug.lua, /fl debug) for this Gargul-compatible
+--- channel's traffic - COMM level 2, like the sync layer's own send/receive.
+local function commLog(fmt, ...)
+    FL.Sync.Debug.Log("COMM", 2, fmt, ...);
 end
 
 --- Send an action to the group (or a specific recipient).
@@ -54,11 +52,8 @@ function Comm.Send(action, content, channel, recipient)
     local compressed = LibDeflate:CompressDeflate(serialized, { level = 5 });
     local encoded = LibDeflate:EncodeForWoWAddonChannel(compressed);
 
-    debugPrint(("SEND %s -> %s%s"):format(
-        Constants.ActionNames[action] or tostring(action),
-        distribution,
-        target and (":" .. target) or ""
-    ));
+    commLog("sent %s on the Gargul channel · to %s", Constants.ActionNames[action] or tostring(action),
+        target or tostring(distribution):lower());
 
     AceComm:SendCommMessage(Constants.COMM_CHANNEL, encoded, distribution, target, "NORMAL");
 end
@@ -111,11 +106,8 @@ local function onMessage(prefix, encoded, distribution, senderName)
     };
     Message.isSelf = Util.iEquals(Message.senderFqn, myFqn) or Util.iEquals(Message.senderName, myName);
 
-    debugPrint(("RECV %s <- %s (%s)"):format(
-        Constants.ActionNames[Message.action] or tostring(Message.action),
-        Message.senderFqn or "?",
-        distribution
-    ));
+    commLog("got %s on the Gargul channel from %s · via %s", Constants.ActionNames[Message.action] or tostring(Message.action),
+        Message.senderName or Message.senderFqn or "?", tostring(distribution):lower());
 
     local handler = Comm.Actions[Message.action];
     if (handler) then

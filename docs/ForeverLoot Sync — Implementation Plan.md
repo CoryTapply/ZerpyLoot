@@ -619,7 +619,7 @@ This phase registers the running loot-council session as domain 2. Raid members 
 | --- | --- | --- |
 | Registered | `[DOMAIN] register id=2 name=councilSession strategy=snapshot scope=RAID gate=live` | 1 |
 | Version bumped | `[SNAP] bump d2 session=6 rev=14->15 cause=vote` | 2 |
-| RAID `HELLO` | `[PEERS] hello out scope=RAID trigger=joinRaid\|reloadInRaid\|notify domains=2` | 1 |
+| RAID `HELLO` | `[PEERS] hello out scope=RAID trigger=joinGroup\|reloadInGroup\|notify domains=2` | 1 |
 | Compare | `[SNAP] compare d2 from="<name>" local=6/14 remote=6/17 -> remoteNewer` | 1 |
 | Request and reply | `[SNAP] get d2 to="<name>"`, then on the sender `[SNAP] export d2 rev=17 items=12 enc=3.2KB` | 1 |
 | Import | `[SNAP] import d2 from="<name>" rev=14->17 result=applied\|stale\|invalid t=4ms` | 1 |
@@ -637,11 +637,11 @@ FL domains
 ### In-game checklist (A leads; B and C in a raid group)
 
 1. **Form a raid group** of A and B (a party converted to a raid works outdoors). A starts a council session and adds items. B follows along through the existing live messages, and `bump` lines appear on A.
-2. **Late joiner.** C joins the raid mid-session. C shows `hello out scope=RAID trigger=joinRaid`, `compare … -> remoteNewer`, `get` and `import … result=applied`. C's council window shows the session exactly as A and B see it.
-3. **Reload.** B runs `/reload` mid-session. Expect `trigger=reloadInRaid` and an import whose `rev` equals A's.
+2. **Late joiner.** C joins the raid mid-session. C shows `hello out scope=RAID trigger=joinGroup`, `compare … -> remoteNewer`, `get` and `import … result=applied`. C's council window shows the session exactly as A and B see it.
+3. **Reload.** B runs `/reload` mid-session. Expect `trigger=reloadInGroup` and an import whose `rev` equals A's.
 4. **Missed changes.** B logs out, A makes 3 changes, and B logs back in and rejoins the raid. B's import ends at A's current `rev`.
 5. **Ended session.** A ends the session. A player who joins within 10 minutes imports it with `ended=yes`. After the TTL, `summary d2 none reason=endedTtl` appears and the RAID `HELLO` no longer carries domain 2.
-6. **Inside a raid instance.** Repeat step 3 inside the instance: it works. During a boss pull, a reload's snapshot request is queued (`[GATE] live queued`) and completes after `ENCOUNTER_END`.
+6. **Inside a raid instance.** Repeat step 3 inside the instance: it works. During a boss pull, a reload's snapshot request is queued (`[GATE] group queued`) and completes after `ENCOUNTER_END`.
 7. **History is unaffected.** Inside the instance, GUILD-scope `HELLO`s log `hello skip reason=gateClosed` while RAID-scope ones still go out.
 
 ### Done when

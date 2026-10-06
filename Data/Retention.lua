@@ -3,12 +3,16 @@ Retention cutoff and pruning (spec section 10). Every client computes the
 same cutoff from GetServerTime(), so pruning never creates a digest
 mismatch and an old client can never re-introduce a pruned row.
 
-Safety switch (plan Phase 3 build item 2): PRUNE_REAL stays false until
-Phase 8. An expired, unpinned REAL row is left on disk but excluded from the
-digest and never sent, exactly as if it had been pruned (Data/Digest.lua's
-classifyRow already does the excluding) - Prune() below only counts it.
-Expired TEST rows are always actually removed, regardless of PRUNE_REAL, so
-pruning can be exercised and verified before Phase 8 turns real pruning on.
+Safety switch (plan Phase 3 build item 2): PRUNE_REAL was false until
+Phase 8, which turned it on. With it off, an expired, unpinned REAL row is
+left on disk but excluded from the digest and never sent, exactly as if it
+had been pruned (Data/Digest.lua's classifyRow already does the excluding) -
+Prune() below only counts it. Expired TEST rows are always actually
+removed, regardless of PRUNE_REAL.
+
+The first prune that removes real rows on a client logs first=yes (plan
+Phase 8: its count should match the Phase 3 dry run), remembered in
+FL.DB.lootCouncil.firstRealPruneAt.
 ]]
 
 local FL = ForeverLoot;
@@ -61,7 +65,7 @@ end
 --- pin, never re-evaluating KEY_ITEMS for themselves.
 function Retention.AutoPin(row)
     if (not FL.Sync.Constants.KEY_ITEMS[row.itemID]) then return false; end
-    FL.Sync.Debug.Log("PRUNE", 1, "autopin id=%s itemID=%d", row.id, row.itemID);
+    FL.Sync.Debug.Log("PRUNE", 1, "auto-pinned key item in row %s · item %d", row.id, row.itemID);
     return true;
 end
 
@@ -89,16 +93,16 @@ local function applyKeyItemsVersion()
     end
 
     db.keyItemsVersion = currentVersion;
-    FL.Sync.Debug.Log("PRUNE", 1, "keyitems version %d->%d pinned=%d", storedVersion, currentVersion, pinned);
+    FL.Sync.Debug.Log("PRUNE", 1, "key item list updated · version %d -> %d, pinned %d rows", storedVersion, currentVersion, pinned);
 end
 
 local function logCutoff()
     local cutoff = Retention.Cutoff();
     local utc = date("!*t", cutoff);
     local monthKey = utc.year * 12 + (utc.month - 1);
-    FL.Sync.Debug.Log("PRUNE", 1, "cutoff=%s monthKey=%d retention=%d pruneReal=%s",
-        date("!%Y-%m-%d", cutoff), monthKey, FL.Sync.Constants.RETENTION_MONTHS,
-        FL.Sync.Constants.PRUNE_REAL and "yes" or "no");
+    FL.Sync.Debug.Log("PRUNE", 1, "keeping history from %s · %d months (month %d)%s",
+        date("!%Y-%m-%d", cutoff), FL.Sync.Constants.RETENTION_MONTHS, monthKey,
+        FL.Sync.Constants.PRUNE_REAL and "" or ", real rows never pruned");
 end
 
 --- Removes expired, unpinned rows in slices of 200/frame (spec 10.3), then
@@ -135,10 +139,12 @@ function Retention.Prune()
     local function finish()
         local elapsed = debugprofilestop() - t0;
         if (FL.Sync.Constants.PRUNE_REAL) then
-            FL.Sync.Debug.Log("PRUNE", 1, "prune removedReal=%d removedTest=%d keptPinned=%d t=%dms",
-                removedRealTotal, removedTestTotal, keptPinned, elapsed);
+            local first = (db.firstRealPruneAt == nil);
+            if (first) then db.firstRealPruneAt = GetServerTime(); end
+            FL.Sync.Debug.Log("PRUNE", 1, "pruned old history%s · %d rows, %d test rows, kept %d pinned, %dms",
+                first and " (first run)" or "", removedRealTotal, removedTestTotal, keptPinned, elapsed);
         else
-            FL.Sync.Debug.Log("PRUNE", 1, "prune removedTest=%d expiredRealKept=%d keptPinned=%d t=%dms",
+            FL.Sync.Debug.Log("PRUNE", 1, "pruned test rows only · %d removed, kept %d expired real rows and %d pinned, %dms",
                 removedTestTotal, expiredRealKept, keptPinned, elapsed);
         end
         FL.Sync.Digest.Rebuild();
@@ -198,7 +204,7 @@ function Retention.PruneDry()
         end
     end
 
-    FL.Sync.Debug.Log("TEST", 1, "prunedry wouldRemove=%d oldest=%s newest=%s pinnedKept=%d test=%d",
+    FL.Sync.Debug.Log("TEST", 1, "prunedry: would remove %d rows · %s to %s, keeping %d pinned, %d test rows",
         wouldRemoveReal, oldest and date("!%Y-%m-%d", oldest) or "-", newest and date("!%Y-%m-%d", newest) or "-",
         pinnedKept, test);
 end
@@ -210,7 +216,7 @@ local function checkCutoffMoved()
     local newCutoff = Retention.Cutoff();
     if (newCutoff == lastCutoff) then return; end
 
-    FL.Sync.Debug.Log("PRUNE", 1, "cutoff moved %s->%s rebuilding",
+    FL.Sync.Debug.Log("PRUNE", 1, "history cutoff moved · %s -> %s, pruning and rebuilding",
         date("!%Y-%m-%d", lastCutoff), date("!%Y-%m-%d", newCutoff));
     lastCutoff = newCutoff;
     Retention.Prune();

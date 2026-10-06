@@ -98,7 +98,11 @@ and "some responses/votes arrived while it was down."
 ```lua
 roster = { ["Thrall"] = true, ["Jaina"] = true }
 ```
-`LootCouncil.IsCouncilMember(name) = LootCouncil.Roster[Util.stripRealm(name)] == true`.
+This is the **saved roster**: a local-only pre-selection, never sent or overwritten over
+the network. Starting a session copies the saved roster members who are in the group,
+plus the leader, into `Session.council` (same set shape), and that is the council for
+that session. `LootCouncil.IsCouncilMember(name) = Session.council[Util.stripRealm(name)] == true`;
+the saved roster is checked with `LootCouncil.IsOnSavedRoster(name)`.
 
 **`draft.items`** (Phase 1, local only, never touches comm):
 ```lua
@@ -206,10 +210,10 @@ Action names (plain strings, no Gargul-numeric-id constraint):
 
 | Action | Direction | Channel | Payload | Phase |
 |---|---|---|---|---|
-| `sessionStart` | leader → raid | GROUP | `{ sessionId, items = { itemLink, ... }, names = { rosterName, ... } }` | 2 (done); `names` added in 5 |
+| `sessionStart` | leader → raid | GROUP | `{ sessionId, items = { itemLink, ... }, council = { name, ... }, responses }` | 2 (done); `council` replaced `names` (per-session council) |
 | `response` | raider → raid | GROUP | `{ sessionId, itemSession, response, note, class }` | 3 |
 | `vote` | council member → raid | GROUP | `{ sessionId, itemSession, targetPlayer, approved }` | 5 |
-| `councilRoster` | any client → raid | GROUP | `{ names = { rosterName, ... } }` (full-replace snapshot) | 5, not in original design - see §7 Phase 5 deltas |
+| `sessionCouncilUpdate` | leader → raid | GROUP | `{ sessionId, council = { name, ... } }` (full-replace; ignored unless from the session's initiator) | replaced `councilRoster`/`councilSettingsSync` |
 | `award` | leader → raid | GROUP | `{ sessionId, itemSession, winner, awardSeq }` | 6, `awardSeq` not in original design - see §7 Phase 6 deltas |
 | `stopSession` | leader → raid | GROUP | `{ sessionId }` (optional/stretch — cancel) | — |
 | `sessionRequest` | raider → raid | GROUP | `{}` | 9 |

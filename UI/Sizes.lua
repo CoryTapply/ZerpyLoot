@@ -936,12 +936,32 @@ FL.UI.Sizes = {
     -- title bar over a single scrollable read-only text area, no other
     -- chrome.
     debugLog = {
-        window = { width = 520, height = 380 },
+        window = { width = 820, height = 600 },
         titleBarHeight = 32,
         contentPadX = 16,
         contentPadTop = 14,
         contentPadBottom = 14,
         textInset = 6,
+
+        -- Toolbar above the log: three labelled rows of buttons.
+        toolbar = {
+            rowHeight = 22,
+            rowGap = 8,
+            labelWidth = 78,   -- "TEST DATA" column
+            buttonGap = 6,
+            buttonPadX = 14,   -- each side of a button's label
+            minButtonWidth = 64,
+            categoryWidth = 220,
+            bottomGap = 12,    -- toolbar -> log box
+        },
+
+        -- Generate / Drop / Wipe / Probe popups (Skin.ConfirmPopup).
+        popup = {
+            width = 360, padding = 14, sectionGap = 10, titleHeight = 18,
+            buttonHeight = 22, buttonGap = 8, buttonWidth = 100, shadowInset = 8,
+            fieldLabelGap = 3, rowGap = 8, inputHeight = 22, numberWidth = 80,
+            noteGap = 6,
+        },
     },
 
     -- The live sync-status window (UI/SyncStatusWindow.lua, /fl sync

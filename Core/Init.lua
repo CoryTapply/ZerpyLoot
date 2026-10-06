@@ -20,6 +20,7 @@ FL.LootChat = FL.LootChat or {};
 FL.SoftRes = FL.SoftRes or {};
 FL.Tooltip = FL.Tooltip or {};
 FL.Trade = FL.Trade or {};
+FL.BagHighlight = FL.BagHighlight or {};
 FL.LootCouncil = FL.LootCouncil or {};
 FL.LootCouncilRoster = FL.LootCouncilRoster or {};
 FL.SessionItems = FL.SessionItems or {};
@@ -42,6 +43,7 @@ FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
 FL.UI.DebugLogWindow = FL.UI.DebugLogWindow or {};
 FL.UI.SyncStatusWindow = FL.UI.SyncStatusWindow or {};
+FL.UI.MinimapButton = FL.UI.MinimapButton or {};
 FL.Vendor = FL.Vendor or {};
 
 -- History-sync system (docs/ForeverLoot History Sync — Spec.md). The spec
@@ -60,11 +62,14 @@ FL.Sync.Live = FL.Sync.Live or {};
 FL.Sync.ItemLinks = FL.Sync.ItemLinks or {};
 FL.Sync.Codec = FL.Sync.Codec or {};
 FL.Sync.Transport = FL.Sync.Transport or {};
+FL.Sync.Probe = FL.Sync.Probe or {};
 FL.Sync.Domains = FL.Sync.Domains or {};
 FL.Sync.HistoryDomain = FL.Sync.HistoryDomain or {};
+FL.Sync.CouncilSessionDomain = FL.Sync.CouncilSessionDomain or {};
 FL.Sync.Peers = FL.Sync.Peers or {};
 FL.Sync.Session = FL.Sync.Session or {};
 FL.Sync.Coordinator = FL.Sync.Coordinator or {};
+FL.Sync.Stats = FL.Sync.Stats or {};
 
 local bootstrapFrame = CreateFrame("Frame");
 bootstrapFrame:RegisterEvent("ADDON_LOADED");
@@ -85,6 +90,7 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "Permissions", FL.Sync.Permissions }, -- no dependency on LootCouncil; grouped with the other foundational Sync modules
             { "ItemLinks", FL.Sync.ItemLinks }, -- same: no LootCouncil dependency (just creates its own driver frame)
             { "Transport", FL.Sync.Transport }, -- same: registers AceComm prefixes, no LootCouncil dependency
+            { "Probe", FL.Sync.Probe }, -- debug-only addon-message probe; just registers Transport handlers
             { "Settings", FL.Settings },
             { "Responses", FL.Responses },
             { "Comm", FL.Comm },
@@ -93,6 +99,7 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             { "SoftRes", FL.SoftRes },
             { "Tooltip", FL.Tooltip },
             { "Trade", FL.Trade },
+            { "BagHighlight", FL.BagHighlight }, -- after Trade (reads Trade.Queue) and Settings
             { "LootCouncil", FL.LootCouncil },
             -- Store/Live must init after LootCouncil (they read/write
             -- FL.LootCouncil.History/HistoryIndex). Live.Init() itself only
@@ -113,6 +120,9 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             -- HELLO doesn't fire until LOGIN_DELAY (~20s) later, well after
             -- every module here has finished initialising.
             { "HistoryDomain", FL.Sync.HistoryDomain },
+            -- Reads FL.LootCouncil.CurrentSession (set up by LootCouncil.Init()
+            -- above) to fill in the Phase 7 version fields on a saved session.
+            { "CouncilSessionDomain", FL.Sync.CouncilSessionDomain },
             { "Peers", FL.Sync.Peers },
             -- Session.Init() just registers Transport handlers and a
             -- Gate.OnChange callback - no dependency on Peers/Coordinator,
@@ -122,9 +132,12 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             -- module here has already finished initialising).
             { "Session", FL.Sync.Session },
             { "Coordinator", FL.Sync.Coordinator },
+            -- Only registers a Session.OnEnded callback (Sync settings page numbers).
+            { "Stats", FL.Sync.Stats },
             { "SessionItems", FL.SessionItems },
             { "LootChat", FL.LootChat },
             { "AutoRoll", FL.AutoRoll },
+            { "MinimapButton", FL.UI.MinimapButton }, -- after Settings (needs FL.DB.settings)
         };
 
         for _, module in ipairs(modules) do

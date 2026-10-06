@@ -46,9 +46,11 @@ Store.IsTestId = isTestId;
 -- Sync/Debug.lua's PrintSyncStats (/fl sync stats, phase 2) can report one
 -- added/dup/tombstoned/expired/rejected total across rows, tombstones and
 -- pins alike, matching the plan's sample output.
+local KIND_WORDS = { R = "row", D = "delete", P = "pin" };
+
 local function logApply(kind, id, source, result, reason)
-    FL.Sync.Debug.Log("STORE", 3, "apply kind=%s id=%s src=%s result=%s%s",
-        kind, id, source, result, reason and (" reason=" .. reason) or "");
+    FL.Sync.Debug.Log("STORE", 3, "%s %s from %s · %s%s",
+        KIND_WORDS[kind] or tostring(kind), id, source, result, reason and (" (" .. reason .. ")") or "");
     FL.Sync.Debug.Count("store.apply." .. result, 1);
 end
 
@@ -82,7 +84,7 @@ local function applyRow(entry, source)
     if (row.itemString == nil) then
         row.itemString = itemStringFromLink(row.itemLink);
         if (row.itemString == nil) then
-            FL.Sync.Debug.Warn("STORE", "migrate noItemString id=%s link=%s", id, tostring(row.itemLink));
+            FL.Sync.Debug.Warn("STORE", "upgrade: couldn't read the item in row %s · link %s", id, tostring(row.itemLink));
         end
     end
 
@@ -125,8 +127,8 @@ local function applyTombstone(entry, source)
     db.tombstones[id] = { rowTime = entry.rowTime, deletedAt = entry.at, deletedBy = entry.by };
     FL.Sync.Digest.Add("D", id, entry.rowTime);
 
-    FL.Sync.Debug.Log("STORE", 1, "tombstone id=%s by=%q rowTime=%d removedRow=%s removedPin=%s",
-        id, tostring(entry.by), entry.rowTime or 0, removedRow and "yes" or "no", removedPin and "yes" or "no");
+    FL.Sync.Debug.Log("STORE", 1, "deleted row %s · by %s%s%s", id, tostring(entry.by),
+        removedRow and "" or ", row wasn't here", removedPin and ", pin removed" or "");
     logApply("D", id, source, "tombstoned");
 
     entry.removedRow = removedRow;
@@ -356,7 +358,7 @@ function Store.GenerateTestRows(n, old)
         if (i <= n) then
             FL.Sync.Scheduler.Enqueue(genSlice, "gen");
         else
-            FL.Sync.Debug.Log("TEST", 1, "gen n=%d from=%s to=%s t=%dms", added,
+            FL.Sync.Debug.Log("TEST", 1, "gen: added %d test rows · %s to %s, %dms", added,
                 date("%Y-%m-%d", rangeStart), date("%Y-%m-%d", rangeEnd), elapsed);
             if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
                 FL.UI.LootHistoryWindow.Refresh();
@@ -398,7 +400,7 @@ function Store.PurgeTestRows()
         end
     end
 
-    FL.Sync.Debug.Log("TEST", 1, "purgetest removed=%d", removed);
+    FL.Sync.Debug.Log("TEST", 1, "purgetest: removed %d test rows", removed);
     if (removed > 0 and FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
         FL.UI.LootHistoryWindow.Refresh();
     end
@@ -434,7 +436,7 @@ function Store.WipeHistory()
         removed = removed + 1;
     end
 
-    FL.Sync.Debug.Log("TEST", 1, "wipehistory removed=%d", removed);
+    FL.Sync.Debug.Log("TEST", 1, "wipehistory: removed %d entries (rows, deletes and pins)", removed);
     if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
         FL.UI.LootHistoryWindow.Refresh();
     end
@@ -469,8 +471,8 @@ function Store.DropLocal(n, real)
         removed = removed + 1;
     end
 
-    FL.Sync.Debug.Log("TEST", 1, "droplocal n=%d newest=%s oldest=%s real=%s",
-        removed, newestId or "?", oldestId or "?", real and "yes" or "no");
+    FL.Sync.Debug.Log("TEST", 1, "droplocal: dropped %d %s rows · newest %s, oldest %s",
+        removed, real and "real" or "test", newestId or "?", oldestId or "?");
     if (removed > 0 and FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
         FL.UI.LootHistoryWindow.Refresh();
     end
@@ -502,13 +504,13 @@ function Store.Init()
                 withItemString = withItemString + 1;
             else
                 missingLink = missingLink + 1;
-                FL.Sync.Debug.Warn("STORE", "migrate noItemString id=%s link=%s", tostring(row.id), tostring(row.itemLink));
+                FL.Sync.Debug.Warn("STORE", "upgrade: couldn't read the item in row %s · link %s", tostring(row.id), tostring(row.itemLink));
             end
         end
 
         db.schema = 2;
         local elapsed = debugprofilestop() - t0;
-        FL.Sync.Debug.Log("STORE", 1, "migrate schema=1->2 rows=%d itemString=%d missingLink=%d t=%dms",
+        FL.Sync.Debug.Log("STORE", 1, "upgraded saved history to schema 2 · %d rows, %d with items, %d missing links, %dms",
             rows, withItemString, missingLink, elapsed);
     end
 end

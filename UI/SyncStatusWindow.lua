@@ -107,12 +107,54 @@ local function addPeerTotalsSection(add)
     end
 end
 
+-- Only this client's OWN send-confirm latency is observable here - see
+-- Net/Transport.lua's RecentSends() for the important caveat (it says
+-- nothing about how long a PEER took to receive/process/reply, which is
+-- what a slow handshake actually feels like from this side).
+local function addSendLatencySection(add)
+    add("Send latency (this client's own outgoing sends, most recent 30)");
+    local sends = FL.Sync.Transport.RecentSends();
+    if (#sends == 0) then
+        add("  (none yet)");
+        return;
+    end
+
+    local minDur, maxDur, total, failCount, overTwoSec = math.huge, 0, 0, 0, 0;
+    for _, s in ipairs(sends) do
+        minDur = math.min(minDur, s.dur);
+        maxDur = math.max(maxDur, s.dur);
+        total = total + s.dur;
+        if (not s.ok) then failCount = failCount + 1; end
+        if (s.dur > 2) then overTwoSec = overTwoSec + 1; end
+    end
+    add(("  n=%d  min=%.1fs  avg=%.1fs  max=%.1fs  failed=%d  over 2s=%d"):format(
+        #sends, minDur, total / #sends, maxDur, failCount, overTwoSec));
+
+    -- Newest first, most-recent-10 only - the summary line above already
+    -- covers the full 30-entry window; this is just enough recent detail
+    -- to eyeball whether slowness is steady or a one-off spike.
+    local shown = 0;
+    for i = #sends, 1, -1 do
+        local s = sends[i];
+        add(("    %-9s %5s  dur=%5.1fs  %-4s target=%s"):format(
+            s.type, FL.Sync.Debug.FormatBytes(s.bytes), s.dur, s.ok and "ok" or "FAIL", tostring(s.target)));
+        shown = shown + 1;
+        if (shown >= 10) then break; end
+    end
+end
+
 -- Substrings that mark a debug-log line as worth surfacing here, covering
 -- every retry/failure/warning category this sync system produces: bucket
 -- and compare-phase WANT retries, reassignment on a secondary's abort,
--- session aborts, stale (superseded-generation) batches, and OPEN refusals
--- - see docs/sync-deviations.md's Phase 5/6 entries for what each one means.
-local INTERESTING_PATTERNS = { "WARN", "retry", "reassign", "abort", "stale", "refuse" };
+-- session aborts, stale (superseded-generation) batches, OPEN refusals, and
+-- a peer declining to ack a HELLO (`-> silent reason=...` - deliberately
+-- NOT the generic "ack decide" substring, which would also match every
+-- ordinary "-> reply" decision and drown this feed in routine traffic; the
+-- silent case is the one that's actually worth a tester's attention, e.g.
+-- when a session never opens and the question is "did anyone even decide
+-- not to answer, and why") - see docs/sync-deviations.md's Phase 5/6
+-- entries for what each one means.
+local INTERESTING_PATTERNS = { "WARN", "retry", "reassign", "abort", "stale", "refuse", "-> silent" };
 
 local function lineIsInteresting(line)
     for _, pattern in ipairs(INTERESTING_PATTERNS) do
@@ -146,6 +188,8 @@ local function buildContent()
     addSessionsSection(add);
     add("");
     addPeerTotalsSection(add);
+    add("");
+    addSendLatencySection(add);
     add("");
     addRecentActivitySection(add, 25);
 

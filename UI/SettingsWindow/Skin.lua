@@ -586,6 +586,13 @@ local function closeOpenList()
     end
 end
 
+--- Multi-select mode (opt-in, every existing caller leaves these unset):
+---   opts.isSelected(value) -> bool   replaces the single getValue() match
+---                                    for each row's checkmark
+---   opts.keepOpen = true             a row click calls onSelect and repaints
+---                                    without closing the list
+---   opts.buttonLabel() -> string     the closed button's text, in place of
+---                                    the selected option's label
 function Skin.Dropdown(parent, opts)
     local rowHeight = opts.rowHeight or 26;
     local maxVisibleRows = opts.maxVisibleRows or 10;
@@ -675,8 +682,8 @@ function Skin.Dropdown(parent, opts)
     end
 
     local function paintClosedButton()
-        local opt = findOption(opts.getValue());
-        local fullLabel = opt and opt.label or "";
+        local opt = (not opts.buttonLabel) and opts.getValue and findOption(opts.getValue()) or nil;
+        local fullLabel = opts.buttonLabel and opts.buttonLabel() or (opt and opt.label or "");
 
         if (opt and opt.font) then
             -- Deliberately NOT SetFont via the role system: this previews
@@ -728,11 +735,16 @@ function Skin.Dropdown(parent, opts)
     end
 
     local function paintRows()
-        local selected = opts.getValue();
+        local selected = opts.getValue and opts.getValue();
         for i, row in ipairs(rows) do
             local opt = opts.options[i];
             if (opt) then
-                local isSelected = (opt.value == selected);
+                local isSelected;
+                if (opts.isSelected) then
+                    isSelected = opts.isSelected(opt.value) and true or false;
+                else
+                    isSelected = (opt.value == selected);
+                end
                 row.label:SetText(opt.label);
                 row.check:SetShown(isSelected);
                 row.selectedTex:SetShown(isSelected);
@@ -897,7 +909,7 @@ function Skin.Dropdown(parent, opts)
                 if (opts.onSelect) then opts.onSelect(opt.value); end
                 paintClosedButton();
                 paintRows();
-                closeOpenList();
+                if (not opts.keepOpen) then closeOpenList(); end
             end);
 
             rows[i] = row;

@@ -78,12 +78,9 @@ full in docs/sync-deviations.md "Phase 5"):
   server from occasionally losing a message outright. Without this, one
   lost bulk batch stalls the WHOLE session until SESSION_IDLE_TIMEOUT,
   discarding every other bucket's already-completed work just to restart
-  from a fresh HELLO. KNOWN GAP: the symmetric case (a bucket's HASHES, or
-  a server's HASHES reply, itself getting lost before any WANT exists to
-  retry) isn't covered the same way yet - only observed, so far, on the
-  WANT/response side; see docs/sync-deviations.md "Phase 5" for why a naive
-  "always reply to incoming HASHES" fix was rejected (ping-pong risk) and
-  wasn't attempted here under time pressure.
+  from a fresh HELLO. The symmetric case (a lost HASHES, a lost HASHES
+  reply, or a lost empty WANT) is covered by the opener's HASHES retry with
+  an explicit isRetry flag - see scheduleHashesRetry.
 - The COMPARING phase gets the identical retry treatment: beginCompare
   retries an unanswered MONTHS request (COMPARE_RETRY_DELAY/_MAX) exactly
   like a bucket's WANT, since even an ISOLATED, uncontended DAYS reply (the
@@ -170,6 +167,18 @@ docs/sync-deviations.md "Phase 6" for the full writeup; summarized here:
   PRIMARY session only, once every secondary has reported in (success or
   reassigned), combining `session.recv` (primary's own) with
   `session.secondaryRecvTotal` (accumulated as each secondary finishes).
+
+Phase 6 review fixes (docs/sync-deviations.md "Phase 6 review"):
+- A bucket reclaimed from a failed secondary before the primary reached it
+  is no longer skipped (`session.reclaimed`), and a FINISHED secondary's
+  buckets get a top-up check against the primary's saved hash list, since a
+  secondary isn't guaranteed to hold everything the primary does.
+- PING keeps the primary peer's side alive while we wait on secondaries.
+- Full-mode openers wait for DONE_ACK (state FINISHING) before closing, and
+  re-send whatever the server says it's still missing.
+- Every retry timer is armed from its message's send confirmation, not
+  from enqueue (sendControl).
+- A primary that refuses OPEN is replaced by the first secondary.
 ]]
 
 local FL = ForeverLoot;
@@ -210,6 +219,10 @@ local function notePeerSent(peer, count)
     peerTotals[peer] = t;
 end
 
+-- Callbacks run once per session as it closes, for any reason - see
+-- Session.OnEnded.
+local endedCallbacks = {};
+
 local TOKEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 local function newToken()
     local out = {};
@@ -224,12 +237,21 @@ local function maxServe()
     return maxServeOverride or Constants.MAX_SERVE;
 end
 
-local function formatDuration(seconds)
-    seconds = math.max(0, math.floor(seconds));
-    local m, s = math.floor(seconds / 60), seconds % 60;
-    if (m > 0) then return ("%dm%ds"):format(m, s); end
-    return ("%ds"):format(s);
+--- "sync with Bolvar (#a3F9)" - how every session line names its session.
+local function label(session)
+    return ("sync with %s (#%s)"):format(tostring(session.peer), tostring(session.token));
 end
+
+local function labelFor(token, peer)
+    return ("sync with %s (#%s)"):format(tostring(peer), tostring(token));
+end
+
+local function treeWord(tree)
+    return (tree == "W") and "recent" or "archive";
+end
+
+-- Looked up per call: Sync/Debug.lua (which defines it) loads after this file.
+local function fmtTime(seconds) return FL.Sync.Debug.FormatTime(seconds); end
 
 --------------------------------------------------------------------------
 -- Small pure helpers: month/day aggregate diffing, hash-set membership,
@@ -328,8 +350,10 @@ end
 -- Session lifecycle: creation, idle timeout, abort/close, cleanup.
 --------------------------------------------------------------------------
 
+local RETRY_AFTER_ABORT = 30; -- seconds (+-10) before rediscovering after a full session aborted mid-way
 local abortSession; -- forward declaration: resetIdleTimer's timer closure below captures this local and calls whatever it's later assigned to (defined further down this file)
 local reportSecondaryFinished; -- forward declaration (Phase 6): abortSession and onOpenReply's busy-refusal path both call this for a pull-mode session, before its own dependencies (advanceBuckets etc.) are defined
+local drainOutgoing; -- forward declaration: releasePrefix (just above it) calls back into it
 local trySessionComplete; -- forward declaration (Phase 6 fix): drainOutgoing's onSent/onFail (defined before advanceBuckets/finishSessionAsOpener exist as locals) need to re-check completion once a send actually confirms - see trySessionComplete's own comment, further down
 
 local function resetIdleTimer(session)
@@ -338,13 +362,51 @@ local function resetIdleTimer(session)
         abortSession(session, "timeout");
     end, "sessionIdle");
 end
-local touchSession = resetIdleTimer;
+-- Phase 6 review: traffic on a secondary's pull session also keeps its
+-- parent (the primary's full session) alive. The primary's own buckets
+-- often finish well before its secondaries do; with nothing arriving from
+-- the primary peer in that gap, the parent used to hit SESSION_IDLE_TIMEOUT
+-- and close, after which a failing secondary had nowhere to hand its
+-- buckets back to. The primary PEER's side is kept alive separately, by
+-- PING (see startParentKeepalive).
+local function touchSession(session)
+    resetIdleTimer(session);
+    local parent = session.parent;
+    if (parent and not parent.closed) then resetIdleTimer(parent); end
+end
 
 local function cleanupSession(session)
     sessions[session.token] = nil;
     if (session.role == "server") then
         servingCount = math.max(0, servingCount - 1);
     end
+    for _, cb in ipairs(endedCallbacks) do pcall(cb, session); end
+end
+
+--- Adds a new session to `sessions` and starts its idle timer. Also notes
+--- both sides' window counts at the start, so the settings page can
+--- estimate how many rows are still to come. The peer's count is the one
+--- its OPEN was planned from (opener) or its last HELLO (server).
+local function trackSession(session)
+    sessions[session.token] = session;
+    session.startLocalCount = FL.Sync.Digest.Root("W").count;
+    local remote = session.remoteWindowRoot and session.remoteWindowRoot.count;
+    if (not remote) then
+        local summary = FL.Sync.Peers.SummaryOf(session.peer, session.domainId);
+        remote = (type(summary) == "table") and summary[1] or nil;
+    end
+    session.startRemoteCount = remote;
+    resetIdleTimer(session);
+end
+
+--- Called by every handler for a message that actually arrived from the
+--- peer on this session (unlike touchSession, which sends and child-session
+--- traffic also call). `lastHeardAt` is the only reliable "is the peer
+--- still alive" signal - see onOpen's duplicate check and the parent
+--- keepalive, which both used to be fooled by our own activity.
+local function heardFrom(session)
+    session.lastHeardAt = GetTime();
+    touchSession(session);
 end
 
 local function closeSession(session)
@@ -357,10 +419,12 @@ end
 abortSession = function(session, reason, skipSend)
     if (not session or session.closed) then return; end
     session.closed = true;
+    session.endReason = reason;
     if (session.idleTimer) then Scheduler.Cancel(session.idleTimer); end
 
     local progress = session.bucketsTotalKnown and ("%d/%d"):format(session.bucketsDone or 0, session.bucketsTotalKnown) or "?";
-    FL.Sync.Debug.Log("SESS", 1, "%s abort reason=%s state=%s progress=%s", session.token, reason, session.state, progress);
+    FL.Sync.Debug.Log("SESS", 1, "%s: stopped early · %s, while %s, %s buckets done", label(session), tostring(reason),
+        tostring(session.state):lower(), progress);
 
     if (not skipSend) then
         pcall(function()
@@ -376,13 +440,34 @@ abortSession = function(session, reason, skipSend)
         reportSecondaryFinished(session.parent, session, reason);
     end
 
+    -- An opener's full session that died mid-way (peer gone, timeout) left
+    -- work undone. Spec 8 leaves that to "the next HELLO", which could be a
+    -- 12-minute periodic check away - ask for one ~30s from now instead.
+    -- Not for gate aborts (the instance-exit trigger covers those) or
+    -- duplicates (the surviving session covers the work).
+    if (session.role == "opener" and session.mode == "full" and reason ~= "gate" and reason ~= "dup") then
+        -- Waits (up to ~10 checks) for anything still running - e.g. the
+        -- aborted primary's secondary, still pulling its share - to finish
+        -- first, so the rediscovery compares against the final state.
+        local checks = 0;
+        local function retryWhenIdle()
+            checks = checks + 1;
+            if (Session.AnyActive() and checks < 10) then
+                Scheduler.After(RETRY_AFTER_ABORT, 0, retryWhenIdle, "retryAfterAbort");
+                return;
+            end
+            FL.Sync.Coordinator.RetryAfterAbort(session.domain);
+        end
+        Scheduler.After(RETRY_AFTER_ABORT, 10, retryWhenIdle, "retryAfterAbort");
+    end
+
     cleanupSession(session);
 end
 
 --- Logs the plan's own sample "[SESS] k7Q2 state COMPARING->RECONCILING"
 --- line (opener-only transitions: OPENING->COMPARING, COMPARING->RECONCILING).
 local function setState(session, newState)
-    FL.Sync.Debug.Log("SESS", 1, "%s state %s->%s", session.token, session.state, newState);
+    FL.Sync.Debug.Log("SESS", 1, "%s: %s -> %s", label(session), tostring(session.state):lower(), tostring(newState):lower());
     session.state = newState;
 end
 
@@ -455,7 +540,21 @@ local function anyPrefixBusy(session)
     return false;
 end
 
-local function drainOutgoing(session)
+-- How long a batch that hit Net/Transport.lua's send-queue timeout keeps its
+-- prefix marked busy while we wait for its late real callback (onLate). A
+-- timeout there means "no answer yet", not "lost" - releasing the prefix
+-- immediately used to let trySessionComplete send DONE while the batch was
+-- still sitting in ChatThrottleLib's BULK queue (DONE, at NORMAL priority,
+-- then overtook it). See docs/sync-deviations.md "Phase 6 review".
+local BATCH_LATE_GRACE = 30;
+
+local function releasePrefix(session, prefix, batchNum)
+    if (session.prefixBusy[prefix] ~= batchNum) then return; end -- already released, or reused by a later batch
+    session.prefixBusy[prefix] = nil;
+    if (not session.closed) then drainOutgoing(session); trySessionComplete(session); end
+end
+
+drainOutgoing = function(session)
     if (session.closed) then return; end
 
     while (#session.outQueue > 0) do
@@ -471,7 +570,7 @@ local function drainOutgoing(session)
         else session.marksSent = session.marksSent + chunk.count; end
         notePeerSent(session.peer, chunk.count);
 
-        session.prefixBusy[prefix] = true;
+        session.prefixBusy[prefix] = batchNum; -- the batch number, not just `true`, so a late release can't free a prefix a newer batch now owns
         local startedAt = GetTime();
         -- onQueued (not the return value) is what guarantees "batch out" prints
         -- before "batch sent": ChatThrottleLib can call onSent/onFail
@@ -481,19 +580,31 @@ local function drainOutgoing(session)
         Transport.Send(msgType, encoded, "WHISPER", session.peer, {
             prio = "BULK", prefix = prefix,
             onQueued = function()
-                FL.Sync.Debug.Log("SESS", 2, "%s batch out #%d rows=%d marks=%d enc=%s prefix=%s",
-                    session.token, batchNum, (chunk.kind == "ROWS") and chunk.count or 0, (chunk.kind == "MARKS") and chunk.count or 0,
+                FL.Sync.Debug.Log("SESS", 2, "%s: sending batch %d · %d %s, %s, prefix %s",
+                    label(session), batchNum, chunk.count, (chunk.kind == "ROWS") and "rows" or "pins/deletes",
                     FL.Sync.Debug.FormatBytes(stats.enc), prefix);
             end,
             onSent = function()
-                FL.Sync.Debug.Log("SESS", 2, "%s batch sent #%d dur=%.1fs prefix=%s", session.token, batchNum, GetTime() - startedAt, prefix);
-                session.prefixBusy[prefix] = false;
-                if (not session.closed) then touchSession(session); drainOutgoing(session); trySessionComplete(session); end
+                FL.Sync.Debug.Log("SESS", 2, "%s: sent batch %d · took %s", label(session), batchNum, fmtTime(GetTime() - startedAt));
+                if (not session.closed) then touchSession(session); end
+                releasePrefix(session, prefix, batchNum);
             end,
-            onFail = function()
-                FL.Sync.Debug.Warn("SESS", "%s batch send fail #%d prefix=%s", session.token, batchNum, prefix);
-                session.prefixBusy[prefix] = false;
-                if (not session.closed) then drainOutgoing(session); trySessionComplete(session); end
+            onFail = function(reason)
+                if (reason == "timeout") then
+                    -- Possibly still queued in ChatThrottleLib, not lost -
+                    -- keep the prefix busy until onLate, or the grace runs out.
+                    FL.Sync.Debug.Warn("SESS", "%s: batch %d is slow to send · waiting up to %ds more (prefix %s)",
+                        label(session), batchNum, BATCH_LATE_GRACE, prefix);
+                    Scheduler.After(BATCH_LATE_GRACE, 0, function() releasePrefix(session, prefix, batchNum); end, "batchLateGrace");
+                    return;
+                end
+                FL.Sync.Debug.Warn("SESS", "%s: batch %d FAILED to send (prefix %s)", label(session), batchNum, prefix);
+                releasePrefix(session, prefix, batchNum);
+            end,
+            onLate = function(ok)
+                FL.Sync.Debug.Log("SESS", 2, "%s: slow batch %d finally %s · after %s", label(session), batchNum,
+                    ok and "sent" or "failed", fmtTime(GetTime() - startedAt));
+                releasePrefix(session, prefix, batchNum);
             end,
         });
     end
@@ -505,10 +616,28 @@ end
 -- symmetric regardless of who's the opener).
 --------------------------------------------------------------------------
 
+--- Phase 6 review: every retry timer (HASHES, WANT, compare) is armed from
+--- the message's own send confirmation, not from when it was queued. Every
+--- NORMAL-priority FLoot message to every peer waits in ONE
+--- ChatThrottleLib FIFO (see Net/Transport.lua's header), so a message can
+--- easily sit there longer than a retry delay; a timer started at enqueue
+--- then fired a retry for a message that hadn't even left yet, adding more
+--- traffic to the very queue that was slow. `afterSend` runs once, on
+--- onSent or onFail (Transport guarantees one of them fires).
+local function sendControl(session, msgType, body, afterSend)
+    local encoded = Codec.EncodeMessage(body);
+    local opts = { prio = "NORMAL" };
+    if (afterSend) then
+        opts.onSent = function() afterSend(); end;
+        opts.onFail = function() afterSend(); end;
+    end
+    Transport.Send(msgType, encoded, "WHISPER", session.peer, opts);
+end
+
 --- `isRetry` (Phase 6 fix - see scheduleHashesRetry below) tags this send as
 --- a resend of an already-sent bucket, not a fresh one - appended as a new
 --- trailing field (spec 4.7's "new fields may only be appended" rule).
-local function sendHashesForBucket(session, bucket, isRetry)
+local function sendHashesForBucket(session, bucket, isRetry, afterSend)
     local Digest = session.domain:Tree();
     local collision = Digest.HasCollision(bucket.tree, bucket.key);
     local entries = Digest.EntriesInBucket(bucket.tree, bucket.key);
@@ -525,12 +654,11 @@ local function sendHashesForBucket(session, bucket, isRetry)
     bucket.myLookup = nil; -- invalidate myLookupFor's cache - myEntries/myIdMode were just rebuilt above
 
     if (collision) then
-        FL.Sync.Debug.Warn("SESS", "%s hash collision %s=%s fallback=fullIds",
-            session.token, (bucket.tree == "W") and "day" or "month", tostring(bucket.key));
+        FL.Sync.Debug.Warn("SESS", "%s: hash collision in %s %s · comparing full id lists instead",
+            label(session), (bucket.tree == "W") and "day" or "month", tostring(bucket.key));
     end
 
-    local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.HASHES, session.token, bucket.tree, bucket.key, collision and 1 or 0, list, isRetry and 1 or 0 });
-    Transport.Send(MSG.HASHES, encoded, "WHISPER", session.peer, { prio = "NORMAL" });
+    sendControl(session, MSG.HASHES, { Constants.PROTO_VERSION, MSG.HASHES, session.token, bucket.tree, bucket.key, collision and 1 or 0, list, isRetry and 1 or 0 }, afterSend);
 end
 
 -- Phase 6 fix (closes the Phase 5 "known gap, not yet fixed" - see
@@ -553,17 +681,26 @@ end
 local HASHES_RETRY_DELAY = 8;
 local HASHES_RETRY_MAX = 3;
 
+-- Phase 6 review: retrying stops only once the peer's WANT has arrived too,
+-- not just its HASHES. An EMPTY WANT (the side that already has everything)
+-- is never retried by its sender (scheduleWantRetry only runs for a
+-- non-empty want), so when one was lost the opener's giveDone never became
+-- true and the bucket held an in-flight slot until the session idled out.
+-- A HASHES resend with isRetry makes the peer resend both its HASHES and its
+-- WANT (onHashesReceived always sends a WANT). Pull-mode openers never give,
+-- so they only need the HASHES.
 local function scheduleHashesRetry(session, bucket, tree, key)
     Scheduler.After(HASHES_RETRY_DELAY, 0, function()
-        if (session.closed or bucket.recvHashesIn) then return; end
+        if (session.closed or bucket.finished) then return; end
+        if (bucket.recvHashesIn and (bucket.recvWant or session.mode == "pull")) then return; end
         bucket.hashesRetries = (bucket.hashesRetries or 0) + 1;
         if (bucket.hashesRetries > HASHES_RETRY_MAX) then
-            FL.Sync.Debug.Warn("SESS", "%s bucket %s hashes retry exhausted", session.token, tostring(key));
+            FL.Sync.Debug.Warn("SESS", "%s: gave up on bucket %s · no hashes after %d tries", label(session), tostring(key), HASHES_RETRY_MAX);
             return;
         end
-        FL.Sync.Debug.Log("SESS", 1, "%s bucket %s hashes retry attempt=%d", session.token, tostring(key), bucket.hashesRetries);
-        sendHashesForBucket(session, bucket, true);
-        scheduleHashesRetry(session, bucket, tree, key);
+        FL.Sync.Debug.Log("SESS", 1, "%s: no hashes for bucket %s yet · asking again (retry %d/%d)",
+            label(session), tostring(key), bucket.hashesRetries, HASHES_RETRY_MAX);
+        sendHashesForBucket(session, bucket, true, function() scheduleHashesRetry(session, bucket, tree, key); end);
     end, "hashesRetry");
 end
 
@@ -611,8 +748,8 @@ local function maybeFinishBucket(session, bucket)
     if (not done or bucket.finished) then return; end
     bucket.finished = true;
 
-    FL.Sync.Debug.Log("SESS", 2, "%s bucket %s local=%d remote=%d want=%d give=%d",
-        session.token, tostring(bucket.key), #bucket.myRawList, bucket.remoteCount or 0, bucket.wantCount, bucket.giveCount);
+    FL.Sync.Debug.Log("SESS", 2, "%s: bucket %s compared · mine %d, theirs %d, need %d, giving %d",
+        label(session), tostring(bucket.key), #bucket.myRawList, bucket.remoteCount or 0, bucket.wantCount, bucket.giveCount);
 
     if (session.role == "opener") then
         session.inFlightCount = session.inFlightCount - 1;
@@ -634,22 +771,60 @@ end
 local WANT_RETRY_DELAY = 8;  -- seconds before resending an unsatisfied WANT
 local WANT_RETRY_MAX = 3;    -- after this many retries, give up and let the session-level idle timeout be the fallback
 
-local function sendWant(session, tree, key, idMode, missing)
-    local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.WANT, session.token, tree, key, idMode and 1 or 0, missing });
-    Transport.Send(MSG.WANT, encoded, "WHISPER", session.peer, { prio = "NORMAL" });
+local function sendWant(session, tree, key, idMode, missing, afterSend)
+    sendControl(session, MSG.WANT, { Constants.PROTO_VERSION, MSG.WANT, session.token, tree, key, idMode and 1 or 0, missing }, afterSend);
 end
 
+--- This side's CURRENT entries for a bucket, listed in `idMode`'s format
+--- (raw "kind:id" strings or 32-bit hashes) - rebuilt from the digest rather
+--- than reusing bucket.myRawList, which was captured when HASHES was first
+--- sent and so misses everything a secondary has delivered since.
+local function currentLocalList(session, bucket, idMode)
+    local list = {};
+    for _, e in ipairs(session.domain:Tree().EntriesInBucket(bucket.tree, bucket.key)) do
+        table.insert(list, idMode and (e.kind .. ":" .. e.id) or e.hash);
+    end
+    return list;
+end
+
+--- True once every entry this bucket's WANT asked for is actually in the
+--- store now, however it got there (this session, a duplicate session, a
+--- live broadcast). A second completion test next to the batch-index one in
+--- onRowsOrMarks: it can finish a bucket whose answer batches were lost or
+--- merely slow, as long as the entries themselves arrived.
+local function wantFilledByContent(session, bucket)
+    if (not bucket.myWant or #bucket.myWant == 0) then return false; end
+    return #missingFrom(bucket.myWant, currentLocalList(session, bucket, bucket.myWantIdMode)) == 0;
+end
+
+-- Retries only count once the PEER has gone quiet. Found live (Phase 6 review
+-- follow-up): a peer answering a large backfill queues every bucket's answer
+-- behind the others, so a bucket can legitimately wait well past
+-- WANT_RETRY_DELAY while data for OTHER buckets keeps arriving. Retrying
+-- then just made the peer queue the whole answer a second and third time,
+-- which slowed everything further (3 retries, "exhausted", on bucket after
+-- bucket, with thousands of duplicate rows). While any ROWS/MARKS arrived
+-- for this session within the delay, the timer re-arms without counting.
 local function scheduleWantRetry(session, bucket, tree, key)
     Scheduler.After(WANT_RETRY_DELAY, 0, function()
         if (session.closed or bucket.wantSatisfied) then return; end -- self-checking: no handle to cancel, just a no-op if already done
-        bucket.wantRetries = (bucket.wantRetries or 0) + 1;
-        if (bucket.wantRetries > WANT_RETRY_MAX) then
-            FL.Sync.Debug.Warn("SESS", "%s bucket %s want retry exhausted", session.token, tostring(key));
+        if (wantFilledByContent(session, bucket)) then
+            bucket.wantSatisfied = true;
+            maybeFinishBucket(session, bucket);
             return;
         end
-        FL.Sync.Debug.Log("SESS", 1, "%s bucket %s want retry attempt=%d", session.token, tostring(key), bucket.wantRetries);
-        sendWant(session, tree, key, bucket.myWantIdMode, bucket.myWant);
-        scheduleWantRetry(session, bucket, tree, key);
+        if (session.lastDataAt and (GetTime() - session.lastDataAt) < WANT_RETRY_DELAY) then
+            scheduleWantRetry(session, bucket, tree, key); -- peer still busy answering; not a retry yet
+            return;
+        end
+        bucket.wantRetries = (bucket.wantRetries or 0) + 1;
+        if (bucket.wantRetries > WANT_RETRY_MAX) then
+            FL.Sync.Debug.Warn("SESS", "%s: gave up on bucket %s · rows never came after %d tries", label(session), tostring(key), WANT_RETRY_MAX);
+            return;
+        end
+        FL.Sync.Debug.Log("SESS", 1, "%s: rows for bucket %s haven't come · asking again (retry %d/%d)",
+            label(session), tostring(key), bucket.wantRetries, WANT_RETRY_MAX);
+        sendWant(session, tree, key, bucket.myWantIdMode, bucket.myWant, function() scheduleWantRetry(session, bucket, tree, key); end);
     end, "wantRetry");
 end
 
@@ -698,13 +873,13 @@ local function onHashesReceived(session, tree, key, idMode, list, isRetry)
     -- opposed to simply not having heard from me yet) - see
     -- maybeFinishBucket's own comment on why this can't be skipped just
     -- because `missing` is empty.
-    sendWant(session, tree, key, idMode, missing);
-
+    local afterSend;
     if (#missing > 0) then
         bucket.myWant = missing;
         bucket.myWantIdMode = idMode;
-        scheduleWantRetry(session, bucket, tree, key);
+        afterSend = function() scheduleWantRetry(session, bucket, tree, key); end;
     end
+    sendWant(session, tree, key, idMode, missing, afterSend);
 
     maybeFinishBucket(session, bucket);
 end
@@ -721,6 +896,7 @@ local function onWantReceived(session, tree, key, idMode, wantedList)
 
     bucket.recvWant = true;
     bucket.giveCount = #entries;
+    bucket.peerWantEntries = entries; -- kept so a DONE_ACK naming this bucket can re-send it (see onDoneAck)
 
     if (#entries == 0) then
         bucket.giveSatisfied = true;
@@ -746,10 +922,29 @@ advanceBuckets = function(session)
     while (session.inFlightCount < Constants.BUCKETS_IN_FLIGHT and #session.bucketQueue > 0) do
         local next_ = table.remove(session.bucketQueue, 1);
         local bucket = getOrCreateBucket(session, next_.tree, next_.key);
-        bucket.delegated = next_.delegatedTo ~= nil; -- Phase 6: full-mode only, see assignBucketsWithSecondaries
-        session.inFlightCount = session.inFlightCount + 1;
-        sendHashesForBucket(session, bucket);
-        scheduleHashesRetry(session, bucket, next_.tree, next_.key);
+        -- Phase 6: full-mode only, see assignBucketsWithSecondaries. A
+        -- bucket reclaimed from a failed secondary before we got this far
+        -- (reassignBucketToPrimary) is pulled from the primary as normal.
+        bucket.delegated = next_.delegatedTo ~= nil and not (session.reclaimed and session.reclaimed[next_.tree .. ":" .. next_.key]);
+        local tree, key = next_.tree, next_.key;
+
+        -- Delegated + empty on our side: we pull nothing from the primary
+        -- here (the secondary does that), and with no entries of our own
+        -- there's nothing the primary could be missing from us either - the
+        -- HASHES exchange would find nothing. Skipping it roughly halves
+        -- the primary's work in a fresh-member backfill. The bucket is
+        -- re-checked against the primary's own aggregate once its
+        -- secondary finishes (reassignBucketToPrimary), so anything the
+        -- secondary didn't have still gets pulled from the primary.
+        if (bucket.delegated and session.domain:Tree().Bucket(tree, key).count == 0) then
+            bucket.skippedPush = true;
+            bucket.finished = true;
+            session.bucketsDone = (session.bucketsDone or 0) + 1;
+            FL.Sync.Debug.Log("SESS", 2, "%s: skipped bucket %s · nothing here to give, another peer covers it", label(session), tostring(key));
+        else
+            session.inFlightCount = session.inFlightCount + 1;
+            sendHashesForBucket(session, bucket, false, function() scheduleHashesRetry(session, bucket, tree, key); end);
+        end
     end
 
     trySessionComplete(session);
@@ -798,57 +993,86 @@ end
 -- the primary. See this file's header comment for the overall design.
 --------------------------------------------------------------------------
 
---- Undoes a bucket's delegation and re-runs its want computation for real,
---- using the remote hash list already saved in onHashesReceived - no second
---- HASHES round trip needed, since the primary already exchanged HASHES for
---- EVERY bucket up front (spec 7.4 step 3's push direction already required
---- that). If the bucket had already finished (its push-direction giveDone
---- completed before this reassignment), its completion bookkeeping is
---- undone first so maybeFinishBucket can correctly redo it once the pull
---- side is also resolved.
+--- Hands a delegated bucket back to the primary (spec 7.4 step 4), or tops
+--- it up (Phase 6 review). Returns true if a real WANT went to the primary.
+---
+--- Three cases:
+---   - The primary hasn't reached this bucket yet (still in its queue), or
+---     its HASHES reply hasn't arrived: mark it `reclaimed`, so
+---     advanceBuckets/onHashesReceived treat it as an ordinary bucket and
+---     compute a real want when its turn comes. Before this, the queue entry
+---     kept `.delegatedTo` and the bucket was silently never pulled.
+---   - The primary already exchanged HASHES for it: diff the primary's saved
+---     list (bucket.remoteList - the primary HASHES every bucket up front
+---     for the push direction) against our CURRENT entries. That also covers
+---     a secondary that finished but simply didn't hold everything the
+---     primary has: secondaries are chosen for differing from us, not for
+---     being a superset.
+---   - Nothing missing: no-op (no message sent).
 local function reassignBucketToPrimary(parent, tree, key)
-    local bucket = parent.buckets[tree .. ":" .. key];
-    if (not bucket) then return; end -- shouldn't happen: the primary HASHES every bucket up front
+    local k = tree .. ":" .. key;
+    parent.reclaimed[k] = true;
+
+    local bucket = parent.buckets[k];
+
+    -- Skipped without a HASHES exchange (advanceBuckets: delegated and empty
+    -- on our side). Compare against the primary's own aggregate for this
+    -- bucket from the compare phase: equal means the secondary gave us
+    -- exactly what the primary holds; otherwise forget the skipped bucket
+    -- and queue it again for a normal exchange (reclaimed -> not delegated).
+    if (bucket and bucket.skippedPush) then
+        local remoteAgg = parent.remoteAgg and parent.remoteAgg[k] or { count = 0, x = 0, s = 0 };
+        if (aggEqual(parent.domain:Tree().Bucket(tree, key), remoteAgg)) then return false; end
+        parent.buckets[k] = nil;
+        parent.bucketsDone = math.max(0, (parent.bucketsDone or 0) - 1);
+        table.insert(parent.bucketQueue, 1, { tree = tree, key = key });
+        return true;
+    end
+
+    if (not bucket or not bucket.recvHashesIn) then
+        if (bucket) then bucket.delegated = false; end
+        return false;
+    end
+    bucket.delegated = false;
+
+    local missing = missingFrom(bucket.remoteList or {}, currentLocalList(parent, bucket, bucket.remoteIdMode));
+    if (#missing == 0) then return false; end
 
     if (bucket.finished) then
         parent.inFlightCount = parent.inFlightCount + 1;
         parent.bucketsDone = math.max(0, (parent.bucketsDone or 0) - 1);
     end
     bucket.finished = false;
-    bucket.delegated = false;
-
-    local missing = missingFrom(bucket.remoteList or {}, bucket.myRawList or {});
     bucket.wantCount = #missing;
-    bucket.wantSatisfied = (#missing == 0);
-    sendWant(parent, tree, key, bucket.remoteIdMode, missing);
-    if (#missing > 0) then
-        bucket.myWant = missing;
-        bucket.myWantIdMode = bucket.remoteIdMode;
-        scheduleWantRetry(parent, bucket, tree, key);
-    end
-
-    maybeFinishBucket(parent, bucket);
+    bucket.wantSatisfied = false;
+    bucket.wantBatchesSeen = nil; -- a different want list than any earlier one, so earlier batch indices don't apply
+    bucket.wantRetries = 0;
+    bucket.myWant = missing;
+    bucket.myWantIdMode = bucket.remoteIdMode;
+    sendWant(parent, tree, key, bucket.remoteIdMode, missing, function() scheduleWantRetry(parent, bucket, tree, key); end);
+    return true;
 end
 
 --- Called once a secondary's pull session is done, one way or another
---- (normal finish, abort, timeout, or an outright OPEN_REPLY refusal) -
---- reassigns whatever it never finished back to the primary's own queue
---- (spec 7.4 step 4), folds its received-row count into the primary's
---- domain-wide total, and lets the primary's own finish check (above) run
+--- (normal finish, abort, timeout, or an outright OPEN_REPLY refusal).
+--- Runs reassignBucketToPrimary over EVERY bucket it was assigned - its
+--- unfinished ones go back to the primary (spec 7.4 step 4), and its
+--- finished ones get a top-up check against the primary's own list (see
+--- reassignBucketToPrimary). Then folds its received-row count into the
+--- primary's domain-wide total and lets the primary's own finish check run
 --- again now that one fewer secondary is outstanding. `parent.closed` can
---- legitimately already be true here (e.g. the whole domain's gate closed
---- and aborted every session for it, primary included, in the same pass) -
---- nothing to reassign to in that case, so this is just a no-op.
+--- legitimately already be true here (e.g. the gate closed and aborted every
+--- session for this domain in the same pass) - nothing to reassign to then.
 reportSecondaryFinished = function(parent, pullSession, reason)
     if (not parent or parent.closed) then return; end
 
-    local reassigned = 0;
+    local reassigned, toppedUp = 0, 0;
     for _, b in ipairs(pullSession.assignedBuckets or {}) do
         local secBucket = pullSession.buckets[b.tree .. ":" .. b.key];
-        if (not secBucket or not secBucket.finished) then
-            reassignBucketToPrimary(parent, b.tree, b.key);
-            reassigned = reassigned + 1;
-        end
+        local unfinished = (not secBucket or not secBucket.finished);
+        local sentWant = reassignBucketToPrimary(parent, b.tree, b.key);
+        if (unfinished) then reassigned = reassigned + 1;
+        elseif (sentWant) then toppedUp = toppedUp + 1; end
     end
 
     parent.secondaryRecvTotal = (parent.secondaryRecvTotal or 0) + pullSession.recv;
@@ -856,8 +1080,12 @@ reportSecondaryFinished = function(parent, pullSession, reason)
     parent.secondariesRemaining = math.max(0, (parent.secondariesRemaining or 1) - 1);
 
     if (reassigned > 0) then
-        FL.Sync.Debug.Log("SESS", 1, "reassign d%d from=%q buckets=%d to=%q reason=%s",
-            parent.domainId, pullSession.peer, reassigned, parent.peer, reason);
+        FL.Sync.Debug.Log("SESS", 1, "history sync: moved %d buckets from %s to %s · %s",
+            reassigned, pullSession.peer, parent.peer, tostring(reason));
+    end
+    if (toppedUp > 0) then
+        FL.Sync.Debug.Log("SESS", 1, "history sync: %s finished early, gave %d more buckets to %s",
+            pullSession.peer, toppedUp, parent.peer);
     end
 
     advanceBuckets(parent);
@@ -882,11 +1110,10 @@ local function openSecondaryPull(parent, peerName, bucketList)
     };
     for _, b in ipairs(bucketList) do table.insert(session.bucketQueue, { tree = b.tree, key = b.key }); end
 
-    sessions[token] = session;
-    resetIdleTimer(session);
+    trackSession(session);
 
-    FL.Sync.Debug.Log("SESS", 1, "%s open d%d mode=pull role=opener peer=%q buckets=%d",
-        token, parent.domainId, peerName, #bucketList);
+    FL.Sync.Debug.Log("SESS", 1, "%s: asking to pull %d buckets · helper for the main sync",
+        labelFor(token, peerName), #bucketList);
     local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN, token, parent.domainId, "pull", flat });
     Transport.Send(MSG.OPEN, encoded, "WHISPER", peerName, { prio = "NORMAL" });
 end
@@ -899,6 +1126,34 @@ end
 --- the primary still needs every bucket for push direction) - this only
 --- tags each entry a secondary now owns with `.delegatedTo`, consumed by
 --- advanceBuckets/onHashesReceived above.
+-- Phase 6 review (docs/sync-deviations.md "PING keepalive"): while a
+-- primary session waits on its secondaries, nothing else may pass between it
+-- and the primary PEER, whose server-side session would then idle out and
+-- ABORT(timeout) us. touchSession already keeps OUR side alive off pull-
+-- session traffic; this keeps the peer's side alive too. Stops by itself
+-- once no secondary is outstanding or the session closes.
+local KEEPALIVE_INTERVAL = 15;
+
+local function startParentKeepalive(session)
+    Scheduler.After(KEEPALIVE_INTERVAL, 0, function()
+        if (session.closed or (session.secondariesRemaining or 0) <= 0) then return; end
+        -- Pull-session traffic keeps this session's idle timer alive
+        -- (touchSession), so a primary that vanished (reload, logout) would
+        -- otherwise never time out while a secondary is still busy - found
+        -- live: a dead primary session sat with exhausted retries, holding
+        -- its unfinished buckets, until long after the secondary was done.
+        -- The server answers every PING (onPing), so a live primary is
+        -- always heard from at least once per KEEPALIVE_INTERVAL.
+        if (GetTime() - (session.lastHeardAt or session.startedAt) > Constants.SESSION_IDLE_TIMEOUT) then
+            abortSession(session, "timeout");
+            return;
+        end
+        sendControl(session, MSG.PING, { Constants.PROTO_VERSION, MSG.PING, session.token });
+        FL.Sync.Debug.Log("SESS", 2, "%s: keep-alive · waiting on %d helpers", label(session), session.secondariesRemaining);
+        startParentKeepalive(session);
+    end, "sessionKeepalive");
+end
+
 local function assignBucketsWithSecondaries(session, queue)
     session.bucketQueue = queue;
 
@@ -933,9 +1188,10 @@ local function assignBucketsWithSecondaries(session, queue)
 
     session.secondariesTotal = opened;
     session.secondariesRemaining = opened;
+    if (opened > 0) then startParentKeepalive(session); end
 
-    FL.Sync.Debug.Log("SESS", 1, "plan d%d primary=%q secondaries=[%s] assign %s",
-        session.domainId, session.peer, table.concat(secondaryParts, ","), table.concat(assignParts, " "));
+    FL.Sync.Debug.Log("SESS", 1, "history sync plan: main peer %s, helpers %s · buckets %s",
+        session.peer, (#secondaryParts > 0) and table.concat(secondaryParts, ", ") or "none", table.concat(assignParts, " "));
 
     for slotIdx = 2, #slots do
         local slot = slots[slotIdx];
@@ -945,6 +1201,28 @@ local function assignBucketsWithSecondaries(session, queue)
     end
 end
 
+--- Our current window and archive roots as six flat values, appended to
+--- DONE (opener) and DONE_ACK (server) so the other side can compare final
+--- digests exactly - see rootsMatchFinal.
+local function finalRootFields(session)
+    local Digest = session.domain:Tree();
+    local w, a = Digest.Root("W"), Digest.Root("A");
+    return w.count, w.x, w.s, a.count, a.x, a.s;
+end
+
+--- Whether our roots equal the peer's final roots carried at body[i..i+5],
+--- or nil when the message has none (a build from before this field).
+local function rootsMatchFinal(session, body, i)
+    if (type(body[i]) ~= "number") then return nil; end
+    local Digest = session.domain:Tree();
+    return aggEqual(Digest.Root("W"), { count = body[i], x = body[i + 1], s = body[i + 2] })
+        and aggEqual(Digest.Root("A"), { count = body[i + 3], x = body[i + 4], s = body[i + 5] });
+end
+
+--- The roots check when the peer sent no final roots (DONE never acked, a
+--- pull session, or an older build): compares against the peer's roots
+--- from the START of the session, so it reads "no" whenever rows also
+--- flowed to the peer. Logged only; never shown as a result on the page.
 local function computeRootsMatchOpener(session)
     local Digest = session.domain:Tree();
     if (not session.remoteWindowRoot) then return true; end
@@ -960,21 +1238,29 @@ end
 local function logSessionRate(session, dur)
     local rowsPerMin = (session.recv / dur) * 60;
     local kbps = (session.recvBytes or 0) / 1024 / dur;
-    FL.Sync.Debug.Log("PERF", 1, "rate %s peer=%q rows=%d dur=%s rowsPerMin=%d kbps=%.2f",
-        session.token, session.peer, session.recv, formatDuration(dur), rowsPerMin, kbps);
+    FL.Sync.Debug.Log("PERF", 1, "%s speed · %d rows in %s, %d rows/min, %.2f KB/s",
+        label(session), session.recv, fmtTime(dur), rowsPerMin, kbps);
 end
 
-finishSessionAsOpener = function(session)
+--- Logs the final "done" line (and, for a primary with secondaries, the
+--- domain-wide "sync complete" line), then closes the session.
+local function completeOpener(session, acked)
     local dur = math.max(0.001, GetTime() - session.startedAt);
-    local rootsMatch = computeRootsMatchOpener(session);
+    -- session.finalRootsMatch: set by onDoneAck from the server's final
+    -- roots (exact). Otherwise fall back to the loose start-of-session check.
+    local exact = session.finalRootsMatch ~= nil;
+    local rootsMatch;
+    if (exact) then rootsMatch = session.finalRootsMatch; else rootsMatch = computeRootsMatchOpener(session); end
+    session.rootsMatch = rootsMatch;
+    session.rootsExact = exact;
 
-    FL.Sync.Debug.Log("SESS", 1, "%s done d%d sent=%d recv=%d marks=%d buckets=%d dur=%s rootsMatch=%s",
-        session.token, session.domainId, session.sent, session.recv, session.marksSent + session.marksRecv,
-        session.bucketsTotalKnown or 0, formatDuration(dur), rootsMatch and "yes" or "no");
+    FL.Sync.Debug.Log("SESS", 1, "%s: done, %s · sent %d, got %d rows, %d pins/deletes, %d buckets, %s",
+        label(session), rootsMatch and (exact and "now in sync" or "now in sync (loose check)") or "STILL DIFFERENT",
+        session.sent, session.recv, session.marksSent + session.marksRecv, session.bucketsTotalKnown or 0, fmtTime(dur));
+    if (acked == false) then
+        FL.Sync.Debug.Warn("SESS", "%s: %s never confirmed we're done · sent it %d times", label(session), session.peer, session.doneSends or 0);
+    end
     logSessionRate(session, dur);
-
-    local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.DONE, session.token, session.sent, session.recv });
-    Transport.Send(MSG.DONE, encoded, "WHISPER", session.peer, { prio = "NORMAL" });
     closeSession(session);
 
     if (session.mode == "pull" and session.parent) then
@@ -982,16 +1268,68 @@ finishSessionAsOpener = function(session)
     elseif ((session.secondariesTotal or 0) > 0) then
         -- Phase 6: the domain-wide summary (spec's own "[SESS] sync
         -- complete ..." sample) - only the primary logs this, and only
-        -- once every secondary has reported in (reportSecondaryFinished's
-        -- advanceBuckets call is what re-triggers this function once
-        -- secondariesRemaining reaches 0 - see advanceBuckets' own finish
-        -- check above).
+        -- once every secondary has reported in (trySessionComplete won't
+        -- get here while secondariesRemaining > 0).
         local totalRows = session.recv + (session.secondaryRecvTotal or 0);
         local totalPeers = 1 + session.secondariesTotal;
         local totalRowsPerMin = (totalRows / dur) * 60;
-        FL.Sync.Debug.Log("SESS", 1, "sync complete d%d peers=%d rows=%d dur=%s rowsPerMin=%d",
-            session.domainId, totalPeers, totalRows, formatDuration(dur), totalRowsPerMin);
+        FL.Sync.Debug.Log("SESS", 1, "history sync finished · %d peer%s, %d rows in %s, %d rows/min",
+            totalPeers, (totalPeers == 1) and "" or "s", totalRows, fmtTime(dur), totalRowsPerMin);
     end
+end
+
+-- Phase 6 review (docs/sync-deviations.md "DONE_ACK"): a full-mode opener
+-- no longer closes the moment it sends DONE. "Every give batch confirmed
+-- SENT" isn't "every batch ARRIVED" - this server loses whole messages, and
+-- the server-side WANT retry that would recover a lost batch died the
+-- instant DONE closed the session. Now the server answers DONE with a
+-- DONE_ACK listing any bucket it still wants data for; the opener re-sends
+-- those buckets and sends DONE again. Bounded: DONE_RETRY_MAX sends in
+-- total, each re-armed from its own send confirmation, after which the
+-- opener closes anyway (rootsMatch=no; the next periodic HELLO repairs it,
+-- exactly as before this change).
+local DONE_RETRY_DELAY = 8;
+local DONE_RETRY_MAX = 4;
+
+local function sendDone(session)
+    session.doneGen = (session.doneGen or 0) + 1;
+    session.doneSends = (session.doneSends or 0) + 1;
+    local gen = session.doneGen;
+    touchSession(session); -- the DONE retries can outlast SESSION_IDLE_TIMEOUT if nothing else arrives meanwhile
+    sendControl(session, MSG.DONE, { Constants.PROTO_VERSION, MSG.DONE, session.token, session.sent, session.recv, finalRootFields(session) }, function()
+        Scheduler.After(DONE_RETRY_DELAY, 0, function()
+            if (session.closed or session.doneGen ~= gen) then return; end -- answered (or superseded) already
+            if (session.doneSends >= DONE_RETRY_MAX) then
+                completeOpener(session, false);
+                return;
+            end
+            FL.Sync.Debug.Log("SESS", 1, "%s: no reply to done · sending it again (try %d)", label(session), session.doneSends + 1);
+            sendDone(session);
+        end, "doneRetry");
+    end);
+end
+
+finishSessionAsOpener = function(session)
+    -- Pull mode never gives data to the server (spec 6 notes), so there's
+    -- nothing for a DONE_ACK to confirm - send DONE once and finish.
+    if (session.mode == "pull") then
+        sendControl(session, MSG.DONE, { Constants.PROTO_VERSION, MSG.DONE, session.token, session.sent, session.recv });
+        completeOpener(session, true);
+        return;
+    end
+
+    if (session.state == "FINISHING") then
+        -- Re-entered via trySessionComplete once a DONE_ACK's re-sent
+        -- batches have flushed - only then is it time for the next DONE.
+        if (session.awaitingFlush) then
+            session.awaitingFlush = false;
+            sendDone(session);
+        end
+        return;
+    end
+
+    setState(session, "FINISHING");
+    sendDone(session);
 end
 
 local function tryFinishCompare(session)
@@ -1011,12 +1349,25 @@ local function tryFinishCompare(session)
     end
     table.sort(queue, function(a, b) return a.sortKey > b.sortKey; end);
 
+    -- The primary's own per-bucket aggregates (its DAYS reply / archive
+    -- MONTHS reply), kept for reassignBucketToPrimary's check on buckets the
+    -- primary session skipped.
+    session.remoteAgg = {};
+    local function keepAgg(tree, flat)
+        for i = 1, #(flat or {}), 4 do
+            session.remoteAgg[tree .. ":" .. flat[i]] = { count = flat[i + 1], x = flat[i + 2], s = flat[i + 3] };
+        end
+    end
+    keepAgg("W", session.windowReplyFlat);
+    keepAgg("A", session.archiveReplyFlat);
+
     assignBucketsWithSecondaries(session, queue); -- Phase 6: sets session.bucketQueue (unchanged full list) and opens any secondary pull sessions
     session.bucketsTotalKnown = #queue;
 
     local keys = {};
     for _, b in ipairs(queue) do table.insert(keys, tostring(b.key)); end
-    FL.Sync.Debug.Log("SESS", 1, "%s buckets n=%d [%s]", session.token, #queue, table.concat(keys, ","));
+    FL.Sync.Debug.Log("SESS", 1, "%s: %d bucket%s differ · %s", label(session), #queue, (#queue == 1) and "" or "s",
+        (#keys > 0) and table.concat(keys, ", ") or "none");
 
     setState(session, "RECONCILING");
     if (#queue == 0) then
@@ -1047,13 +1398,12 @@ local COMPARE_RETRY_MAX = 3;
 -- necessary after a retry-less reset let exactly this happen live: a
 -- session finished and reported `done` on a bucket list far too small for
 -- how large the actual mismatch was. See docs/sync-deviations.md "Phase 5".
-local function sendMonthsRequest(session, tree)
+local function sendMonthsRequest(session, tree, afterSend)
     local Digest = session.domain:Tree();
     local flat = flattenAggList(Digest.Months(tree), "monthKey");
     local gen;
     if (tree == "W") then gen = session.windowGen; else gen = session.archiveGen; end
-    local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.MONTHS, session.token, tree, flat, gen });
-    Transport.Send(MSG.MONTHS, encoded, "WHISPER", session.peer, { prio = "NORMAL" });
+    sendControl(session, MSG.MONTHS, { Constants.PROTO_VERSION, MSG.MONTHS, session.token, tree, flat, gen }, afterSend);
 end
 
 local function scheduleCompareRetry(session, tree)
@@ -1074,11 +1424,12 @@ local function scheduleCompareRetry(session, tree)
         local countKey = (tree == "W") and "windowRetries" or "archiveRetries";
         session[countKey] = (session[countKey] or 0) + 1;
         if (session[countKey] > COMPARE_RETRY_MAX) then
-            FL.Sync.Debug.Warn("SESS", "%s compare %s retry exhausted", session.token, tree);
+            FL.Sync.Debug.Warn("SESS", "%s: gave up comparing %s history · no answer after %d tries", label(session), treeWord(tree), COMPARE_RETRY_MAX);
             return;
         end
 
-        FL.Sync.Debug.Log("SESS", 1, "%s compare %s retry attempt=%d", session.token, tree, session[countKey]);
+        FL.Sync.Debug.Log("SESS", 1, "%s: no answer comparing %s history · asking again (retry %d/%d)",
+            label(session), treeWord(tree), session[countKey], COMPARE_RETRY_MAX);
         -- Bump the generation AND discard whatever partial reply accumulated
         -- from the attempt being retried - the bump is what lets onDays/
         -- onMonths reject a straggler from that old attempt instead of
@@ -1095,8 +1446,7 @@ local function scheduleCompareRetry(session, tree)
             session.archiveBatchesSeen = nil;
         end
 
-        sendMonthsRequest(session, tree);
-        scheduleCompareRetry(session, tree);
+        sendMonthsRequest(session, tree, function() scheduleCompareRetry(session, tree); end);
     end, "compareRetry");
 end
 
@@ -1109,12 +1459,10 @@ local function beginCompare(session)
     session.windowGen = 1;
     session.archiveGen = 1;
 
-    sendMonthsRequest(session, "W");
-    scheduleCompareRetry(session, "W");
+    sendMonthsRequest(session, "W", function() scheduleCompareRetry(session, "W"); end);
 
     if (needArchive) then
-        sendMonthsRequest(session, "A");
-        scheduleCompareRetry(session, "A");
+        sendMonthsRequest(session, "A", function() scheduleCompareRetry(session, "A"); end);
     end
 end
 
@@ -1181,8 +1529,8 @@ local function handleMonthsRequest(session, tree, flat, gen)
 
     local labels = {};
     for _, mk in ipairs(mismatched) do table.insert(labels, monthKeyLabel(mk)); end
-    FL.Sync.Debug.Log("SESS", 2, "%s months %s local=%d remote=%d mismatched=[%s]",
-        session.token, tree, #localMonths, #flat / 4, table.concat(labels, ","));
+    FL.Sync.Debug.Log("SESS", 2, "%s: compared %s months · mine %d, theirs %d, differ %s",
+        label(session), treeWord(tree), #localMonths, #flat / 4, (#labels > 0) and table.concat(labels, ", ") or "none");
 
     if (tree == "W") then
         session.openerWindowRoot = rollupAgg(flat);
@@ -1221,7 +1569,29 @@ end
 --------------------------------------------------------------------------
 
 local function gateOkFor(domain)
-    return (domain.gate == "live") and Gate.CanLive() or Gate.CanSync();
+    if (domain.gate == "group") then return Gate.CanGroup(); end
+    return (domain.gate == "awardUpdates") and Gate.CanSendAwardUpdates() or Gate.CanSync();
+end
+
+-- See onOpen's duplicate check: how long a peer that accepted our session
+-- must have been silent on it before a fresh OPEN from them means they lost it.
+local PEER_RESET_SILENCE = 5;
+
+--- An open full-mode session for `domainId` between us and `peer`, in the
+--- given role (nil = either) - used to stop two full sessions running
+--- between the same pair (see onOpen and Session.Open).
+local function findFullSessionWith(domainId, peer, role)
+    for _, s in pairs(sessions) do
+        if (not s.closed and s.mode == "full" and s.domainId == domainId
+            and (role == nil or s.role == role) and Util.iEquals(s.peer, peer)) then
+            return s;
+        end
+    end
+    return nil;
+end
+
+local function findFullOpenerWith(domainId, peer)
+    return findFullSessionWith(domainId, peer, "opener");
 end
 
 local function onOpen(body, senderName)
@@ -1237,6 +1607,14 @@ local function onOpen(body, senderName)
     local peer = Util.stripRealm(senderName);
     local domain = FL.Sync.Domains.Get(domainId);
 
+    -- Sync turned off or paused by the player: stay silent, not even a
+    -- refusal, so this client looks the same to peers as one without the
+    -- addon. The opener's own retries give up on their own.
+    if (Gate.UserStopped()) then
+        FL.Sync.Debug.Log("SESS", 1, "%s: ignored request · sync is off or paused here", labelFor(token, peer));
+        return;
+    end
+
     if (not domain or domain.strategy ~= "set" or (mode ~= "full" and mode ~= "pull")) then
         local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 0, 0 });
         Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });
@@ -1248,17 +1626,50 @@ local function onOpen(body, senderName)
     -- the instant this OPEN arrived (no "change" event ever fires for a
     -- steady-state), so that case needs its own check right here.
     if (not gateOkFor(domain)) then
-        FL.Sync.Debug.Log("SESS", 1, "%s refuse peer=%q reason=gate", token, peer);
+        FL.Sync.Debug.Log("SESS", 1, "%s: refused · gate closed here", labelFor(token, peer));
         local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 0, 0 });
         Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });
         return;
     end
 
     if (servingCount >= maxServe()) then
-        FL.Sync.Debug.Log("SESS", 1, "%s refuse peer=%q reason=busy retryAfter=%ds", token, peer, BUSY_RETRY_AFTER);
+        FL.Sync.Debug.Log("SESS", 1, "%s: refused · already serving %d, told them to retry in %ds", labelFor(token, peer), maxServe(), BUSY_RETRY_AFTER);
         local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 0, BUSY_RETRY_AFTER });
         Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });
         return;
+    end
+
+    -- Phase 6 review follow-up: two clients that both log in send HELLO,
+    -- hear each other's HELLO_ACK, and each OPEN a full session with the
+    -- other at about the same time. Full mode already moves data BOTH ways,
+    -- so two such sessions transfer every missing row twice and fight over
+    -- the same prefixes (found live: 2 sessions A<->C, ~4000 rows received
+    -- for a 1505-row history). Both clients apply the same rule, so exactly
+    -- one session survives: the one opened by the alphabetically lower name.
+    if (mode == "full") then
+        local mine = findFullOpenerWith(domainId, peer);
+        -- Our session with this peer is already past OPENING (they accepted
+        -- it) yet they're opening a new one and we haven't heard from them
+        -- on ours for a while: they lost it (/reload, relog). Found live:
+        -- the name rule below kept such a dead session and refused the
+        -- peer's fresh one. A peer that's genuinely still serving ours never
+        -- sends OPEN (Session.Open skips a peer it's serving), so the only
+        -- live case is the simultaneous-open race, where ours is still
+        -- OPENING or was answered moments ago.
+        if (mine and mine.state ~= "OPENING" and GetTime() - (mine.lastHeardAt or mine.startedAt) > PEER_RESET_SILENCE) then
+            abortSession(mine, "peerReset");
+            mine = nil;
+        end
+        if (mine) then
+            local me = Util.stripRealm(Util.UnitName("player")):lower();
+            if (me < peer:lower()) then
+                FL.Sync.Debug.Log("SESS", 1, "%s: refused · we both opened at once, keeping ours (#%s)", labelFor(token, peer), mine.token);
+                local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 0, 0, "dup" });
+                Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });
+                return;
+            end
+            abortSession(mine, "dup"); -- theirs wins; the ABORT tells their server side to drop ours
+        end
     end
 
     servingCount = servingCount + 1;
@@ -1268,25 +1679,39 @@ local function onOpen(body, senderName)
         sent = 0, recv = 0, marksSent = 0, marksRecv = 0,
         outQueue = {}, outBatchNum = 0, prefixBusy = {}, prefixCursor = 0, closed = false,
     };
-    sessions[token] = session;
-    resetIdleTimer(session);
+    trackSession(session);
 
     local bucketSuffix = "";
-    if (mode == "pull" and flatBuckets) then bucketSuffix = (" buckets=%d"):format(#flatBuckets / 2); end
-    FL.Sync.Debug.Log("SESS", 1, "%s accept d%d role=server mode=%s peer=%q serving=%d/%d%s",
-        token, domainId, mode, peer, servingCount, maxServe(), bucketSuffix);
+    if (mode == "pull" and flatBuckets) then bucketSuffix = (", %d buckets"):format(#flatBuckets / 2); end
+    FL.Sync.Debug.Log("SESS", 1, "%s: accepted, serving them · %s sync%s, now serving %d/%d",
+        labelFor(token, peer), mode, bucketSuffix, servingCount, maxServe());
     local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 1, 0 });
     Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });
 end
 
 local function onOpenReply(body)
-    local token, accepted, retryAfter = body[3], body[4], body[5];
+    local token, accepted, retryAfter, refuseReason = body[3], body[4], body[5], body[6];
     local session = sessions[token];
     if (not session or session.role ~= "opener" or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
+
+    -- The peer already runs a full session with us that it keeps (see
+    -- onOpen's duplicate check) - that one covers both directions, so just
+    -- drop ours: no promotion, no retry.
+    if (accepted ~= 1 and refuseReason == "dup") then
+        FL.Sync.Debug.Log("SESS", 1, "%s: they refused · we both opened at once, theirs wins", label(session));
+        session.endReason = "dup";
+        closeSession(session);
+        return;
+    end
 
     if (accepted ~= 1) then
-        FL.Sync.Debug.Log("SESS", 1, "%s refuse peer=%q reason=busy retryAfter=%ds", token, session.peer, retryAfter or 0);
+        -- retryAfter > 0 is a MAX_SERVE refusal; 0 means refused outright
+        -- (gate closed on their side, or an unknown domain/mode).
+        local reason = (retryAfter and retryAfter > 0) and "busy" or "refused";
+        FL.Sync.Debug.Log("SESS", 1, "%s: they refused · %s%s", label(session), (reason == "busy") and "busy" or "gate closed there",
+            (retryAfter and retryAfter > 0) and (", retry in " .. retryAfter .. "s") or "");
+        session.endReason = reason;
 
         -- Phase 6: a secondary that flat-out refuses is treated the same as
         -- an abort for reassignment purposes (spec 7.4 step 4's "aborts or
@@ -1296,17 +1721,32 @@ local function onOpenReply(body)
         if (session.mode == "pull") then
             local parent = session.parent;
             closeSession(session);
-            reportSecondaryFinished(parent, session, "busy");
+            reportSecondaryFinished(parent, session, reason);
             return;
         end
 
         local domain, peer, remoteSummary, secondaryNames = session.domain, session.peer, session.remoteSummaryRaw, session.secondaryNames;
         closeSession(session);
-        -- Plan Phase 5's own checklist: "B logs refuse ... reason=busy, then
-        -- tries again after retryAfter" - a single retry through the normal
-        -- Session.Open path (its own HasActiveSession/gate checks still
-        -- apply, so this is a no-op if something else already opened a
-        -- session with this domain by the time the delay elapses).
+
+        -- Spec 7.3 step 1: "If the reply is a refusal, it tries the next
+        -- responder." The first secondary (already ranked next-best by
+        -- Coordinator's planDomain) becomes the primary; the rest stay
+        -- secondaries. Its summary comes from Peers, which recorded it from
+        -- the same discovery round's HELLO_ACK.
+        if (secondaryNames and #secondaryNames > 0) then
+            local rest = {};
+            for i = 2, #secondaryNames do table.insert(rest, secondaryNames[i]); end
+            local nextPrimary = secondaryNames[1];
+            FL.Sync.Debug.Log("SESS", 1, "history sync: %s is the new main peer · %s %s", nextPrimary, peer, tostring(reason));
+            Session.Open(domain, nextPrimary, FL.Sync.Peers.SummaryOf(nextPrimary, domain.id), rest);
+            return;
+        end
+
+        -- No other candidate: plan Phase 5's own checklist ("B logs refuse
+        -- ... reason=busy, then tries again after retryAfter") - a single
+        -- retry through the normal Session.Open path (its own
+        -- HasActiveSession/gate checks still apply, so this is a no-op if
+        -- something else already opened a session for this domain by then).
         if (retryAfter and retryAfter > 0) then
             Scheduler.After(retryAfter, 0, function()
                 Session.Open(domain, peer, remoteSummary, secondaryNames);
@@ -1331,7 +1771,7 @@ local function onMonths(body)
     local token, tree, flat = body[3], body[4], body[5];
     local session = sessions[token];
     if (not session or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
 
     if (session.role == "server") then
         local gen = body[6]; -- nil on an old/other sender, but this addon always sends it - handleMonthsRequest just echoes whatever arrives
@@ -1346,7 +1786,7 @@ local function onMonths(body)
         -- own comment for why that must be dropped, not accumulated.
         local batchIndex, totalBatches, gen = body[6], body[7], body[8];
         if (gen ~= session.archiveGen) then
-            FL.Sync.Debug.Log("SESS", 2, "%s months A stale gen=%s current=%d - dropped", session.token, tostring(gen), session.archiveGen);
+            FL.Sync.Debug.Log("SESS", 2, "%s: ignored an old archive-months reply · round %s, now on %d", label(session), tostring(gen), session.archiveGen);
             return;
         end
 
@@ -1371,10 +1811,10 @@ local function onDays(body)
     local token, mismatchedMonths, flatDays, batchIndex, totalBatches, gen = body[3], body[4], body[5], body[6], body[7], body[8];
     local session = sessions[token];
     if (not session or session.role ~= "opener" or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
 
     if (gen ~= session.windowGen) then
-        FL.Sync.Debug.Log("SESS", 2, "%s days stale gen=%s current=%d - dropped", session.token, tostring(gen), session.windowGen);
+        FL.Sync.Debug.Log("SESS", 2, "%s: ignored an old days reply · round %s, now on %d", label(session), tostring(gen), session.windowGen);
         return;
     end
 
@@ -1402,7 +1842,7 @@ local function onHashes(body)
     local token, tree, key, idMode, list, isRetry = body[3], body[4], body[5], body[6], body[7], body[8];
     local session = sessions[token];
     if (not session or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
     onHashesReceived(session, tree, key, idMode == 1, list, isRetry == 1);
 end
 
@@ -1410,7 +1850,7 @@ local function onWant(body)
     local token, tree, key, idMode, list = body[3], body[4], body[5], body[6], body[7];
     local session = sessions[token];
     if (not session or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
     onWantReceived(session, tree, key, idMode == 1, list);
 end
 
@@ -1418,7 +1858,8 @@ local function onRowsOrMarks(msgType, body, senderName, bytes)
     local token = body[3];
     local session = sessions[token];
     if (not session or session.closed) then return; end
-    touchSession(session);
+    heardFrom(session);
+    session.lastDataAt = GetTime(); -- scheduleWantRetry: the peer is still answering, don't retry yet
     session.recvBytes = (session.recvBytes or 0) + (bytes or 0); -- Phase 6: real wire bytes for the "[PERF] rate" kbps field
 
     local batchNum = body[4];
@@ -1435,11 +1876,14 @@ local function onRowsOrMarks(msgType, body, senderName, bytes)
 
     if (msgType == MSG.ROWS) then
         session.recv = session.recv + total;
-        FL.Sync.Debug.Log("SESS", 2, "%s batch in #%d rows=%d added=%d dup=%d rejected=%d",
-            token, batchNum, total, result.added, result.dup, (result.rejected or 0) + (result.invalid or 0) + (result.expired or 0));
+        session.recvAdded = (session.recvAdded or 0) + (result.added or 0);
+        FL.Sync.Debug.Log("SESS", 2, "%s: got batch %d · %d rows: %d new, %d already had, %d rejected",
+            label(session), batchNum, total, result.added, result.dup, (result.rejected or 0) + (result.invalid or 0) + (result.expired or 0));
     else
         session.marksRecv = session.marksRecv + total;
-        FL.Sync.Debug.Log("SESS", 2, "%s batch in #%d marks=%d tombstoned=%d added=%d", token, batchNum, total, result.tombstoned or 0, result.added or 0);
+        session.marksAdded = (session.marksAdded or 0) + (result.added or 0) + (result.tombstoned or 0); -- pins + deletes that changed something
+        FL.Sync.Debug.Log("SESS", 2, "%s: got batch %d · %d pins/deletes: %d deletes applied, %d pins added",
+            label(session), batchNum, total, result.tombstoned or 0, result.added or 0);
     end
 
     -- Every index 1..totalBatches must be SEEN, not just the highest one -
@@ -1454,26 +1898,136 @@ local function onRowsOrMarks(msgType, body, senderName, bytes)
     local bucket = getOrCreateBucket(session, tree, key);
     bucket.wantBatchesSeen = bucket.wantBatchesSeen or {};
     bucket.wantBatchesSeen[batchIndex] = true;
-    if (Util.tcount(bucket.wantBatchesSeen) == totalBatches) then
+    if (Util.tcount(bucket.wantBatchesSeen) == totalBatches or wantFilledByContent(session, bucket)) then
         bucket.wantSatisfied = true;
         maybeFinishBucket(session, bucket);
     end
 end
 
-local function onDone(body)
+-- [token] = GetTime() a server session closed after an empty DONE_ACK. If
+-- that ack was lost, the opener re-sends DONE for a token we no longer
+-- have; answering it with another empty DONE_ACK (instead of silence) lets
+-- the opener finish cleanly rather than running out its retries.
+local recentlyDone = {};
+local RECENTLY_DONE_TTL = 120;
+
+-- `session`, when given, appends our final roots (body[5..10]) - only on the
+-- empty ack that closes the session; the opener compares them in onDoneAck.
+local function sendDoneAck(token, peer, flat, session)
+    local body = { Constants.PROTO_VERSION, MSG.DONE_ACK, token, flat };
+    if (session and #flat == 0) then
+        for _, v in ipairs({ finalRootFields(session) }) do table.insert(body, v); end
+    end
+    local encoded = Codec.EncodeMessage(body);
+    Transport.Send(MSG.DONE_ACK, encoded, "WHISPER", peer, { prio = "NORMAL" });
+end
+
+--- Buckets where this side asked for data (non-empty WANT) and hasn't yet
+--- received every batch of the answer, as a flat tree,key,... list.
+local function unsatisfiedBuckets(session)
+    local flat = {};
+    for _, b in pairs(session.buckets) do
+        if ((b.wantCount or 0) > 0 and not b.wantSatisfied) then
+            table.insert(flat, b.tree); table.insert(flat, b.key);
+        end
+    end
+    return flat;
+end
+
+local function onDone(body, senderName)
     local token = body[3];
     local session = sessions[token];
-    if (not session or session.closed) then return; end
 
-    if (session.role == "server") then
-        local dur = GetTime() - session.startedAt;
-        local rootsMatch = computeRootsMatchServer(session);
-        FL.Sync.Debug.Log("SESS", 1, "%s done d%d sent=%d recv=%d marks=%d buckets=%d dur=%s rootsMatch=%s",
-            session.token, session.domainId, session.sent, session.recv, session.marksSent + session.marksRecv,
-            session.bucketsSeen or 0, formatDuration(dur), rootsMatch and "yes" or "no");
+    local now = GetTime();
+    for t, at in pairs(recentlyDone) do
+        if (now - at > RECENTLY_DONE_TTL) then recentlyDone[t] = nil; end
     end
 
+    if (not session or session.closed) then
+        if (recentlyDone[token]) then sendDoneAck(token, Util.stripRealm(senderName), {}); end
+        return;
+    end
+    if (session.role ~= "server") then return; end
+    heardFrom(session);
+
+    -- Phase 6 review (DONE_ACK, see sendDone): don't close while we're
+    -- still owed data - name those buckets so the opener re-sends them, and
+    -- stay open (our own WANT retries keep running meanwhile).
+    local pending = unsatisfiedBuckets(session);
+    sendDoneAck(token, session.peer, pending, session);
+    if (#pending > 0) then
+        FL.Sync.Debug.Log("SESS", 1, "%s: not done yet · %d buckets incomplete, asked them to resend", label(session), #pending / 2);
+        return;
+    end
+
+    local dur = GetTime() - session.startedAt;
+    -- body[6..11]: the opener's final roots, taken when it sent this DONE
+    -- (full mode only; pull-mode DONE and older builds carry none).
+    local finalMatch = rootsMatchFinal(session, body, 6);
+    local exact = finalMatch ~= nil;
+    local rootsMatch;
+    if (exact) then rootsMatch = finalMatch; else rootsMatch = computeRootsMatchServer(session); end
+    session.rootsMatch = rootsMatch;
+    session.rootsExact = exact;
+    FL.Sync.Debug.Log("SESS", 1, "%s: done, %s · sent %d, got %d rows, %d pins/deletes, %d buckets, %s",
+        label(session), rootsMatch and (exact and "now in sync" or "now in sync (loose check)") or "STILL DIFFERENT",
+        session.sent, session.recv, session.marksSent + session.marksRecv, session.bucketsSeen or 0, fmtTime(dur));
+    recentlyDone[token] = now;
     closeSession(session);
+end
+
+--- Opener side of DONE_ACK: an empty list closes the session; otherwise
+--- re-queue whatever the server says it's still missing and, once that has
+--- flushed, send DONE again (finishSessionAsOpener's FINISHING branch).
+local function onDoneAck(body)
+    local token, flat = body[3], body[4] or {};
+    local session = sessions[token];
+    if (not session or session.role ~= "opener" or session.closed or session.state ~= "FINISHING") then return; end
+    heardFrom(session);
+    session.doneGen = (session.doneGen or 0) + 1; -- disarm the pending DONE retry timer
+
+    if (#flat == 0) then
+        session.finalRootsMatch = rootsMatchFinal(session, body, 5);
+        completeOpener(session, true);
+        return;
+    end
+
+    local requeued = 0;
+    for i = 1, #flat, 2 do
+        local tree, key = flat[i], flat[i + 1];
+        local bucket = session.buckets[tree .. ":" .. key];
+        if (bucket and bucket.peerWantEntries and #bucket.peerWantEntries > 0) then
+            -- Same entries, same order -> EncodeEntries chunks them exactly as
+            -- the first time, so batchIndex/totalBatches line up with what the
+            -- server has already seen (it only needs the missing indices).
+            local chunks = session.domain:EncodeEntries(bucket.peerWantEntries);
+            for idx, chunk in ipairs(chunks) do
+                chunk.tree = tree; chunk.key = key; chunk.batchIndex = idx; chunk.totalBatches = #chunks;
+                table.insert(session.outQueue, chunk);
+            end
+            requeued = requeued + 1;
+        end
+    end
+    FL.Sync.Debug.Log("SESS", 1, "%s: they replied to done · %d buckets still pending, resent %d", label(session), #flat / 2, requeued);
+
+    if (session.doneSends >= DONE_RETRY_MAX) then
+        completeOpener(session, false);
+        return;
+    end
+    session.awaitingFlush = true;
+    drainOutgoing(session);
+    trySessionComplete(session);
+end
+
+local function onPing(body)
+    local session = sessions[body[3]];
+    if (not session or session.closed) then return; end
+    heardFrom(session);
+    -- The server answers so the opener can tell a live primary from a dead
+    -- one (startParentKeepalive). The opener never answers - no ping-pong.
+    if (session.role == "server") then
+        sendControl(session, MSG.PING, { Constants.PROTO_VERSION, MSG.PING, session.token });
+    end
 end
 
 local function onAbort(body)
@@ -1514,11 +2068,17 @@ end
 --- real mismatched-bucket list (see assignBucketsWithSecondaries).
 function Session.Open(domain, peerName, remoteSummary, secondaryNames)
     if (Session.HasActiveSession(domain.id)) then
-        FL.Sync.Debug.Log("SESS", 2, "skip open d%d reason=alreadyActive peer=%q", domain.id, peerName);
+        FL.Sync.Debug.Log("SESS", 2, "history sync: not starting one with %s · one is already running", peerName);
         return;
     end
     if (not gateOkFor(domain)) then
-        FL.Sync.Debug.Log("SESS", 2, "skip open d%d reason=gateClosed peer=%q", domain.id, peerName);
+        FL.Sync.Debug.Log("SESS", 2, "history sync: not starting one with %s · gate closed", peerName);
+        return;
+    end
+    -- Already serving this peer a full session: it's symmetric, so it's
+    -- already fixing whatever we'd fix by opening our own.
+    if (findFullSessionWith(domain.id, peerName, "server")) then
+        FL.Sync.Debug.Log("SESS", 1, "history sync: not starting one with %s · already serving them", peerName);
         return;
     end
 
@@ -1529,7 +2089,7 @@ function Session.Open(domain, peerName, remoteSummary, secondaryNames)
         buckets = {}, bucketQueue = {}, inFlightCount = 0, bucketsDone = 0, bucketsSeen = 0,
         sent = 0, recv = 0, marksSent = 0, marksRecv = 0,
         outQueue = {}, outBatchNum = 0, prefixBusy = {}, prefixCursor = 0, closed = false,
-        secondaryNames = secondaryNames or {},
+        secondaryNames = secondaryNames or {}, reclaimed = {},
     };
 
     session.remoteSummaryRaw = remoteSummary; -- kept verbatim only to retry Session.Open with the same args after a "busy" refusal (see onOpenReply)
@@ -1538,19 +2098,33 @@ function Session.Open(domain, peerName, remoteSummary, secondaryNames)
         session.remoteArchiveRoot = { count = remoteSummary[4] or 0, x = remoteSummary[5] or 0, s = remoteSummary[6] or 0 };
     end
 
-    sessions[token] = session;
-    resetIdleTimer(session);
+    trackSession(session);
 
-    FL.Sync.Debug.Log("SESS", 1, "%s open d%d mode=full role=opener peer=%q", token, domain.id, peerName);
+    FL.Sync.Debug.Log("SESS", 1, "%s: asking to start · full sync", labelFor(token, peerName));
     local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN, token, domain.id, "full" });
     Transport.Send(MSG.OPEN, encoded, "WHISPER", peerName, { prio = "NORMAL" });
+end
+
+--- True while ANY session (opener or server, any domain) is open - spec
+--- 7.5's "if ... no session is running" condition for the periodic HELLO.
+function Session.AnyActive()
+    for _, s in pairs(sessions) do
+        if (not s.closed) then return true; end
+    end
+    return false;
+end
+
+--- Inbound sessions this client could still accept right now - HELLO's
+--- "free session slots" field (spec section 6).
+function Session.FreeSlots()
+    return math.max(0, maxServe() - servingCount);
 end
 
 --- /fl debug maxserve <n>: in-memory override for testing OPEN_REPLY
 --- refusals (plan Phase 5). nil restores the real Constants.MAX_SERVE.
 function Session.SetMaxServeOverride(n)
     maxServeOverride = tonumber(n);
-    FL.Sync.Debug.Log("TEST", 1, "maxserve=%s", maxServeOverride and tostring(maxServeOverride) or "default");
+    FL.Sync.Debug.Log("TEST", 1, "maxserve: serve limit set to %s", maxServeOverride and tostring(maxServeOverride) or "default");
 end
 
 --- (outCount, inCount) of currently active sessions - backs /fl sync
@@ -1570,7 +2144,11 @@ function Session.All()
         table.insert(out, {
             token = token, domainId = s.domainId, role = s.role, mode = s.mode, peer = s.peer, state = s.state,
             bucketsDone = s.bucketsDone or 0, bucketsTotal = s.bucketsTotalKnown or s.bucketsSeen or 0,
-            sent = s.sent, recv = s.recv, elapsed = GetTime() - s.startedAt,
+            bucketsTotalKnown = s.bucketsTotalKnown ~= nil,
+            sent = s.sent, recv = s.recv, recvAdded = s.recvAdded or 0, marksAdded = s.marksAdded or 0, marksSent = s.marksSent or 0, elapsed = GetTime() - s.startedAt,
+            startLocalCount = s.startLocalCount,
+            remoteCount = s.startRemoteCount,
+            isSecondary = s.parent ~= nil,
         });
     end
     table.sort(out, function(a, b) return a.token < b.token; end);
@@ -1593,6 +2171,16 @@ function Session.PeerTotals()
     return out;
 end
 
+--- Registers cb(session) to run once for every session as it closes:
+--- completed, aborted or timed out. `session.endReason` is the abort reason
+--- (nil when it finished normally) and `session.rootsMatch` whether the
+--- digests matched at the end (nil when it never got that far), and
+--- `session.rootsExact` whether that came from the peer's final roots
+--- (true) or the loose start-of-session comparison (false).
+function Session.OnEnded(cb)
+    table.insert(endedCallbacks, cb);
+end
+
 --- Phase 6 instrumentation (spec's own "[COMM] ctl queue ..." sample): logs
 --- Net/Transport.lua's own send-queue depth every 10s, but only while at
 --- least one session is actually open - see that file's own comment on why
@@ -1600,7 +2188,7 @@ end
 local function logQueueSample()
     if (Util.tcount(sessions) == 0) then return; end
     local counts, busy = Transport.QueueSample();
-    FL.Sync.Debug.Log("COMM", 2, "ctl queue bulk=%d normal=%d alert=%d prefixesBusy=%d",
+    FL.Sync.Debug.Log("COMM", 2, "send queue · %d bulk, %d normal, %d alert waiting, %d prefixes busy",
         counts.BULK or 0, counts.NORMAL or 0, counts.ALERT or 0, busy);
 end
 
@@ -1614,9 +2202,17 @@ function Session.Init()
     Transport.Register(MSG.ROWS, function(body, sender, dist, bytes) onRowsOrMarks(MSG.ROWS, body, sender, bytes); end);
     Transport.Register(MSG.MARKS, function(body, sender, dist, bytes) onRowsOrMarks(MSG.MARKS, body, sender, bytes); end);
     Transport.Register(MSG.DONE, onDone);
+    Transport.Register(MSG.DONE_ACK, onDoneAck);
+    Transport.Register(MSG.PING, onPing);
     Transport.Register(MSG.ABORT, onAbort);
 
-    Scheduler.Every(10, 0, logQueueSample, "syncQueueSample");
+    -- Deliberately a raw C_Timer, not Scheduler.Every - see
+    -- UI/SyncStatusWindow.lua's own refresh-ticker comment for why: every
+    -- Scheduler timer unconditionally logs its own "[SCHED] timer fire
+    -- ..." line, which would otherwise double up with (and add pure noise
+    -- ahead of) the actual "[COMM] ctl queue ..." line this already
+    -- produces on its own, every 10s, forever.
+    C_Timer.NewTicker(10, logQueueSample);
 
     -- Plan Phase 5: "Abort every session with reason=gate when the gate
     -- closes." A snapshot of tokens is iterated (not `sessions` itself)

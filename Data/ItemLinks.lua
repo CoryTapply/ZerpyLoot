@@ -47,7 +47,7 @@ local function startResolve(row)
         if (not link) then return; end
 
         row.itemLink = link;
-        FL.Sync.Debug.Log("ITEM", 2, "resolved id=%s wait=%.1fs", row.id, GetTime() - startedAt);
+        FL.Sync.Debug.Log("ITEM", 2, "item info arrived for row %s · after %s", row.id, FL.Sync.Debug.FormatTime(GetTime() - startedAt));
         if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
             FL.UI.LootHistoryWindow.Refresh();
         end
@@ -55,7 +55,7 @@ local function startResolve(row)
 
     C_Timer.After(UNRESOLVED_WARN_DELAY, function()
         if (not row.itemLink) then
-            FL.Sync.Debug.Warn("ITEM", "unresolved id=%s itemID=%d after=%ds", row.id, row.itemID, UNRESOLVED_WARN_DELAY);
+            FL.Sync.Debug.Warn("ITEM", "item info never arrived for row %s · item %d, waited %ds", row.id, row.itemID, UNRESOLVED_WARN_DELAY);
         end
     end);
 end
@@ -68,7 +68,7 @@ end
 ---@param row table the full keyed history row (spec section 3.1)
 function ItemLinks.Resolve(row)
     if (row.itemLink or not row.itemString or not row.itemID) then return; end
-    FL.Sync.Debug.Log("ITEM", 2, "pending id=%s itemID=%d", row.id, row.itemID);
+    FL.Sync.Debug.Log("ITEM", 2, "waiting on item info for row %s · item %d", row.id, row.itemID);
     table.insert(queue, row);
 end
 

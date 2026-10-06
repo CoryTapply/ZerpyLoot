@@ -2,7 +2,7 @@
 Entry point for the existing UI: Award/Delete/Pin all go through Store:Apply
 first, then (Phase 2) broadcast on the new wire format - LIVE_ROW, LIVE_DEL,
 LIVE_PIN (spec section 6) on GUILD at ALERT priority, through Net/Codec.lua +
-Net/Transport.lua, wrapped in Gate.QueueLive. This replaces Phase 1's
+Net/Transport.lua, wrapped in Gate.QueueAwardUpdate. This replaces Phase 1's
 historyDelete/historyPin broadcasts on LootCouncil's own "ForeverLootLC"
 prefix - those went out on GROUP (raid/party) distribution only, so a guild
 member who wasn't in the raid never received them; GUILD distribution is
@@ -30,9 +30,13 @@ Delete/Pin: still broadcast themselves, same as Phase 1, just on the new
 wire format and channel.
 
 Automatic pin (Phase 3, spec 10.5): Live.Award also checks
-Retention.AutoPin(row) in that same source=="local" branch, right after the
-LIVE_ROW broadcast - same single-originating-client reasoning applies, so
-only the awarding client ever creates/broadcasts the autopin.
+Retention.AutoPin(row) in that same source=="local" branch - same
+single-originating-client reasoning applies, so only the awarding client
+ever creates the autopin. It travels inside the LIVE_ROW itself (body[6], an
+encoded mark), not as a separate LIVE_PIN: a LIVE_PIN gets the officer-only
+check, which rejected every autopin from a non-officer awarder, and could
+arrive before its row. The autopin gets the row's own trust instead. See
+docs/sync-deviations.md "Autopin rides in LIVE_ROW".
 ]]
 
 local FL = ForeverLoot;
@@ -48,29 +52,68 @@ local function typeName(msgType)
     return (msgType == MSG.LIVE_DEL) and "LIVE_DEL" or "LIVE_PIN";
 end
 
+-- What a live message is about, for log lines.
+local function markWord(msgType)
+    return (msgType == MSG.LIVE_DEL) and "delete" or "pin";
+end
+
+-- Store.Apply outcomes as log words.
+local RESULT_WORDS = { added = "added", dup = "already had it", tombstoned = "deleted" };
+local function resultWord(result)
+    return RESULT_WORDS[result] or tostring(result);
+end
+
+-- An award row as shown in the log: its item link when we have one.
+local function rowLabel(row)
+    return (row and row.itemLink) or ("row " .. tostring(row and row.id));
+end
+
 local function logEncode(msgType, extra, stats)
-    FL.Sync.Debug.Log("CODEC", 2, "encode type=%s %sser=%s cmp=%s enc=%s t=%.1fms",
+    FL.Sync.Debug.Log("CODEC", 2, "encoded %s · %s%s raw, %s compressed, %s on the wire, %.1fms",
         Constants.MSG_NAMES[msgType] or tostring(msgType), extra,
         FL.Sync.Debug.FormatBytes(stats.ser), FL.Sync.Debug.FormatBytes(stats.cmp),
         FL.Sync.Debug.FormatBytes(stats.enc), stats.ms);
 end
 
---- Encodes+sends `row` as a LIVE_ROW, queued through the live gate (spec
+--- Sends an encoded LIVE_* message to the guild through the award-updates gate.
+--- Fan-out goes to known addon users only (Net/Transport.lua's GUILD
+--- workaround; anyone missed is repaired by sync). Spec 8's "send failures"
+--- rule: a recipient whose send came back failed is retried once, again
+--- through the award-updates gate, as a direct whisper.
+local function sendLive(msgType, encoded, label)
+    Gate.QueueAwardUpdate(function()
+        Transport.Send(msgType, encoded, "GUILD", nil, {
+            prio = "ALERT", fanout = "known",
+            onFail = function(reason, target)
+                if (not target) then return; end
+                FL.Sync.Debug.Log("LIVE", 1, "resending %s to %s by whisper · first send failed (%s)",
+                    Constants.MSG_NAMES[msgType] or tostring(msgType), target, tostring(reason));
+                Gate.QueueAwardUpdate(function()
+                    Transport.Send(msgType, encoded, "WHISPER", target, { prio = "ALERT" });
+                end, label .. "Retry");
+            end,
+        });
+    end, label);
+end
+
+--- Encodes+sends `row` as a LIVE_ROW, queued through the award-updates gate (spec
 --- section 8: live broadcasts queue during a boss encounter, allowed
 --- everywhere else). Only called for a row this client itself originated -
---- see this file's header comment.
-local function broadcastLiveRow(row)
+--- see this file's header comment. `pin`, when set, is the row's autopin
+--- mark, appended as body[6] (older builds ignore it and get it by sync).
+local function broadcastLiveRow(row, pin)
     local builder = Codec.NewDictBuilder();
     local wireRow = Codec.EncodeRow(row, builder);
-    local body = { Constants.PROTO_VERSION, MSG.LIVE_ROW, builder:Players(), builder:Types(), wireRow };
+    -- Encoded before builder:Players() is read, so the pinner is in it.
+    local wirePin = pin and Codec.EncodeMark(pin, row.awardedBy, builder);
+    local body = { Constants.PROTO_VERSION, MSG.LIVE_ROW, builder:Players(), builder:Types(), wireRow, wirePin };
     local encoded, stats = Codec.EncodeMessage(body);
-    logEncode(MSG.LIVE_ROW, ("rows=1 players=%d resp=%d "):format(builder:PlayerCount(), builder:TypeCount()), stats);
+    logEncode(MSG.LIVE_ROW, ("1 row, %d players, %d responses, "):format(builder:PlayerCount(), builder:TypeCount()), stats);
 
-    local queued = not Gate.CanLive();
-    Gate.QueueLive(function()
-        Transport.Send(MSG.LIVE_ROW, encoded, "GUILD", nil, { prio = "ALERT" });
-    end, "liveRow");
-    FL.Sync.Debug.Log("LIVE", 1, "out LIVE_ROW id=%s queued=%s", row.id, queued and "yes" or "no");
+    local queued = not Gate.CanSendAwardUpdates();
+    sendLive(MSG.LIVE_ROW, encoded, "liveRow");
+    FL.Sync.Debug.Log("LIVE", 1, "sent award %s to the guild%s%s", rowLabel(row),
+        pin and " · auto-pinned" or "", queued and " · held until the gate opens" or "");
 end
 
 --- Encodes+sends `mark` (a tombstone or pin) as LIVE_DEL/LIVE_PIN.
@@ -82,13 +125,12 @@ local function broadcastLiveMark(msgType, mark, originalAwardedBy, label)
     local wireMark = Codec.EncodeMark(mark, originalAwardedBy, builder);
     local body = { Constants.PROTO_VERSION, msgType, builder:Players(), wireMark };
     local encoded, stats = Codec.EncodeMessage(body);
-    logEncode(msgType, "marks=1 ", stats);
+    logEncode(msgType, "1 mark, ", stats);
 
-    local queued = not Gate.CanLive();
-    Gate.QueueLive(function()
-        Transport.Send(msgType, encoded, "GUILD", nil, { prio = "ALERT" });
-    end, label);
-    FL.Sync.Debug.Log("LIVE", 1, "out %s id=%s queued=%s", typeName(msgType), mark.id, queued and "yes" or "no");
+    local queued = not Gate.CanSendAwardUpdates();
+    sendLive(msgType, encoded, label);
+    FL.Sync.Debug.Log("LIVE", 1, "sent %s of row %s to the guild%s", markWord(msgType), mark.id,
+        queued and " · held until the gate opens" or "");
 end
 
 --- Applies a locally-built history row to the store, and - only when this
@@ -108,29 +150,27 @@ function Live.Award(row, source, replacedRow)
         FL.Sync.ItemLinks.Resolve(row);
     end
     if (applied and source == "local") then
-        broadcastLiveRow(row);
-
         -- Automatic pin (spec 10.5): only the awarding client checks
-        -- KEY_ITEMS and creates the pin - every other client just receives
-        -- it like any other pin, same as broadcastLiveRow above being
-        -- source=="local"-only.
+        -- KEY_ITEMS and creates the pin. It rides in the LIVE_ROW below, so
+        -- every other client applies row and pin together.
+        local pin;
         if (FL.Sync.Retention.AutoPin(row)) then
             local me = Util.stripRealm(Util.UnitName("player"));
             local pinEntry = { kind = "P", id = row.id, rowTime = row.awardedAt, at = GetServerTime(), by = me };
             if (FL.Sync.Store.Apply(pinEntry, "local")) then
-                broadcastLiveMark(MSG.LIVE_PIN,
-                    { id = pinEntry.id, rowTime = pinEntry.rowTime, at = pinEntry.at, by = pinEntry.by },
-                    row.awardedBy, "autopin");
+                pin = { id = pinEntry.id, rowTime = pinEntry.rowTime, at = pinEntry.at, by = pinEntry.by };
             end
         end
+        broadcastLiveRow(row, pin);
     end
     return applied;
 end
 
 local function logPermission(action, name, allowed)
     local rank = FL.Sync.Permissions.RankOf(name);
-    FL.Sync.Debug.Log("PERM", 1, "%s %s name=%q rank=%s max=%d",
-        action, allowed and "allowed" or "denied", name, tostring(rank), FL.Sync.Constants.OFFICER_RANK_MAX);
+    FL.Sync.Debug.Log("PERM", 1, "%s %s for %s · rank %s%s",
+        action, allowed and "allowed" or "DENIED", name, tostring(rank),
+        FL.Sync.Permissions.IsOfficerRank(rank) and " (officer)" or " (not an officer)");
 end
 
 --- Deletes `id`: officer-only. Tombstones it locally via Store:Apply, then
@@ -190,7 +230,7 @@ function Live.ForceDelete(id)
 
     local mark = { id = id, rowTime = row and row.awardedAt or GetServerTime(), at = GetServerTime(), by = me };
     broadcastLiveMark(MSG.LIVE_DEL, mark, row and row.awardedBy, "forcedelete");
-    FL.Sync.Debug.Log("TEST", 1, "forcedelete id=%s", id);
+    FL.Sync.Debug.Log("TEST", 1, "forcedelete: sent delete of row %s · officer check skipped", id);
 end
 
 --------------------------------------------------------------------------
@@ -205,25 +245,42 @@ local function onLiveRow(body, senderName)
 
     if (not row) then
         local guessId = Codec.WireRowIdGuess(wireRow);
-        FL.Sync.Debug.Log("CODEC", 2, "reject id=%s reason=%s%s", guessId, reason, field and (" field=" .. field) or "");
         FL.Sync.Debug.Count("codec.rowRejects", 1);
-        FL.Sync.Debug.Log("CODEC", 2, "decode type=LIVE_ROW from=%q ok=0 rejected=1 t=%.1fms", senderName, elapsed);
+        FL.Sync.Debug.Log("CODEC", 2, "couldn't decode LIVE_ROW from %s · row %s: %s%s, %.1fms", senderName,
+            tostring(guessId), tostring(reason), field and (" (field " .. field .. ")") or "", elapsed);
         -- "rejected" is one of the fixed outcome words (plan's Debug system
         -- section) - this line is what makes a dropped LIVE_ROW visible at
         -- the default debug level even with CODEC's own detail line (above)
         -- muted at level 2; without it, a rejected row looked identical to
         -- one that silently never arrived at all.
-        FL.Sync.Debug.Log("LIVE", 1, "in LIVE_ROW id=%s from=%q result=rejected reason=%s", guessId, senderName, reason);
+        FL.Sync.Debug.Log("LIVE", 1, "rejected award from %s · row %s: %s", senderName, tostring(guessId), tostring(reason));
         return;
     end
-    FL.Sync.Debug.Log("CODEC", 2, "decode type=LIVE_ROW from=%q ok=1 rejected=0 t=%.1fms", senderName, elapsed);
+    FL.Sync.Debug.Log("CODEC", 2, "decoded LIVE_ROW from %s · %.1fms", senderName, elapsed);
 
     local entry = { kind = "R", id = row.id, row = row };
     local applied, result = FL.Sync.Store.Apply(entry, "live");
     if (applied and not row.itemLink) then
         FL.Sync.ItemLinks.Resolve(row);
     end
-    FL.Sync.Debug.Log("LIVE", 1, "in LIVE_ROW id=%s from=%q result=%s", row.id, senderName, result);
+
+    -- The row's autopin (body[6]), trusted like the row itself. Also on
+    -- "dup": raid members already have the row from the council award
+    -- broadcast, but not the pin.
+    local pinResult;
+    if (body[6] ~= nil) then
+        local pin = Codec.DecodeMark(body[6], players);
+        if (not pin or pin.id ~= row.id) then
+            pinResult = "rejected";
+        elseif (result == "added" or result == "dup") then
+            local _, outcome = FL.Sync.Store.Apply({ kind = "P", id = pin.id, rowTime = pin.rowTime, at = pin.at, by = pin.by }, "live");
+            pinResult = outcome;
+        else
+            pinResult = "skipped";
+        end
+    end
+    FL.Sync.Debug.Log("LIVE", 1, "got award %s from %s · %s%s", rowLabel(row), senderName, resultWord(result),
+        pinResult and (", auto-pin " .. resultWord(pinResult)) or "");
 end
 
 -- Never trusts the sender's own claim (mirrors LootCouncil.lua's applyAward
@@ -232,9 +289,8 @@ end
 -- permitted RIGHT NOW (spec section 11.2 - only this live path re-checks; a
 -- later synced/relayed copy is accepted as-is, per spec section 11.3).
 local function applyRemoteMark(msgType, kind, mark, senderName, checkFn)
-    local name = typeName(msgType);
     if (not Util.iEquals(senderName, mark.by)) then
-        FL.Sync.Debug.Log("PERM", 1, "live reject type=%s from=%q by=%q reason=senderMismatch", name, senderName, mark.by);
+        FL.Sync.Debug.Log("PERM", 1, "rejected %s from %s · it claims to be from %s", markWord(msgType), senderName, tostring(mark.by));
         -- Never reaches Store:Apply, so without this it's invisible to
         -- every counter: not a codec.rowRejects (it decoded fine) and not a
         -- store.apply.* outcome (Store:Apply is never called). "rejected"
@@ -245,15 +301,15 @@ local function applyRemoteMark(msgType, kind, mark, senderName, checkFn)
 
     local allowed = checkFn(mark.by);
     if (not allowed) then
-        FL.Sync.Debug.Log("PERM", 1, "live reject type=%s from=%q by=%q reason=notOfficer rank=%s",
-            name, senderName, mark.by, tostring(FL.Sync.Permissions.RankOf(mark.by)));
+        FL.Sync.Debug.Log("PERM", 1, "rejected %s from %s · not an officer (rank %s)",
+            markWord(msgType), senderName, tostring(FL.Sync.Permissions.RankOf(mark.by)));
         FL.Sync.Debug.Count("store.apply.rejected", 1);
         return;
     end
 
     local entry = { kind = kind, id = mark.id, rowTime = mark.rowTime, at = mark.at, by = mark.by };
     local applied, result = FL.Sync.Store.Apply(entry, "live");
-    FL.Sync.Debug.Log("LIVE", 1, "in %s id=%s from=%q result=%s", name, mark.id, senderName, result);
+    FL.Sync.Debug.Log("LIVE", 1, "got %s of row %s from %s · %s", markWord(msgType), mark.id, senderName, resultWord(result));
 end
 
 local function onLiveMark(msgType, kind, checkFn)
@@ -265,13 +321,12 @@ local function onLiveMark(msgType, kind, checkFn)
         local name = typeName(msgType);
 
         if (not mark) then
-            FL.Sync.Debug.Log("CODEC", 2, "reject id=? reason=%s", reason);
             FL.Sync.Debug.Count("codec.rowRejects", 1);
-            FL.Sync.Debug.Log("CODEC", 2, "decode type=%s from=%q ok=0 rejected=1 t=%.1fms", name, senderName, elapsed);
-            FL.Sync.Debug.Log("LIVE", 1, "in %s id=? from=%q result=rejected reason=%s", name, senderName, reason);
+            FL.Sync.Debug.Log("CODEC", 2, "couldn't decode %s from %s · %s, %.1fms", name, senderName, tostring(reason), elapsed);
+            FL.Sync.Debug.Log("LIVE", 1, "rejected %s from %s · %s", markWord(msgType), senderName, tostring(reason));
             return;
         end
-        FL.Sync.Debug.Log("CODEC", 2, "decode type=%s from=%q ok=1 rejected=0 t=%.1fms", name, senderName, elapsed);
+        FL.Sync.Debug.Log("CODEC", 2, "decoded %s from %s · %.1fms", name, senderName, elapsed);
 
         applyRemoteMark(msgType, kind, mark, senderName, checkFn);
     end

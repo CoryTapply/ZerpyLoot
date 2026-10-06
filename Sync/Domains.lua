@@ -24,8 +24,8 @@ local registryOrder = {}; -- array of ids, in registration order
 function Domains.Register(domain)
     registry[domain.id] = domain;
     table.insert(registryOrder, domain.id);
-    FL.Sync.Debug.Log("DOMAIN", 1, "register id=%d name=%s strategy=%s scope=%s gate=%s",
-        domain.id, domain.name, domain.strategy, domain.scope, domain.gate);
+    FL.Sync.Debug.Log("DOMAIN", 1, "registered %s · %s strategy, %s scope, %s gate",
+        FL.Sync.Debug.DomainName(domain.id), domain.strategy, domain.scope, domain.gate);
 end
 
 function Domains.Get(id)

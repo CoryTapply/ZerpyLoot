@@ -69,6 +69,24 @@ function Settings.Init()
     snd.raidWarningSound = snd.raidWarningSound or FL.Constants.SOUND_RAID_WARNING_KEY;
     snd.selfSRSound = snd.selfSRSound or FL.Constants.SOUND_SONIC_RING_KEY;
 
+    -- General settings page > "Trade Queue" section (BagHighlight.lua).
+    -- On by default; has no effect without EllesmereUI Bags or Baganator loaded.
+    s.bags = s.bags or {};
+    s.bags.tradeQueueHighlight = (s.bags.tradeQueueHighlight == nil) and true or (s.bags.tradeQueueHighlight == true);
+
+    -- Sync settings page (UI/SettingsWindow/Pages/Sync.lua). Read by
+    -- Sync/Gate.lua's userReason, which also clears pausedThisLogin on an
+    -- initial login (not a /reload).
+    s.sync = s.sync or {};
+    local sy = s.sync;
+    sy.autoSync = (sy.autoSync == nil) and true or (sy.autoSync == true);
+    sy.pausedThisLogin = (sy.pausedThisLogin == true);
+
+    -- General settings page > "Enable minimap button" (UI/MinimapButton.lua).
+    -- On by default. `angle` (drag position) is left nil until first drag.
+    s.minimap = s.minimap or {};
+    s.minimap.show = (s.minimap.show == nil) and true or (s.minimap.show == true);
+
     FL.Theme.ApplyFont(s.font);
     FL.Pixel.SetGlobalScale(Settings.GetWindowScale());
 end
@@ -223,11 +241,29 @@ function Settings.SetSoundSelfSRKey(key)
 end
 
 --------------------------------------------------------------------------
+-- General settings page, "Trade Queue" section. Glows Trade Queue items in
+-- EllesmereUI Bags or Baganator (BagHighlight.lua) - the setter re-applies immediately so
+-- "Reset This Page" takes effect too, not just the checkbox click.
+--------------------------------------------------------------------------
+
+function Settings.GetBagTradeQueueHighlightEnabled()
+    local enabled = FL.DB and FL.DB.settings and FL.DB.settings.bags and FL.DB.settings.bags.tradeQueueHighlight;
+    if (enabled == nil) then return true; end
+    return enabled;
+end
+
+function Settings.SetBagTradeQueueHighlightEnabled(enabled)
+    FL.DB.settings.bags.tradeQueueHighlight = enabled and true or false;
+    if (FL.BagHighlight.Apply) then FL.BagHighlight.Apply(); end
+end
+
+--------------------------------------------------------------------------
 -- Loot Council settings page (UI/SettingsWindow/Pages/LootCouncil.lua)
 --------------------------------------------------------------------------
 
--- Whether "Select Officers" (and any future auto-roster logic) always
--- includes guild officers at/under the officer rank threshold.
+-- Whether own-guild officers (LootCouncilRoster.IsGuildOfficer) are kept on
+-- the council roster: the Loot Council page re-adds them on refresh and
+-- won't let them be clicked off (UI/SettingsWindow/Pages/LootCouncil.lua).
 function Settings.GetIncludeGuildOfficers()
     return (FL.DB and FL.DB.settings and FL.DB.settings.lootCouncil and FL.DB.settings.lootCouncil.includeOfficers) and true or false;
 end
@@ -475,6 +511,45 @@ function Settings.SetRaidChatLootCouncilAwardEnabled(enabled)
     FL.DB.settings.raidChat.lootCouncilAward = enabled and true or false;
 end
 
+-- Sync settings page (UI/SettingsWindow/Pages/Sync.lua). Both setters
+-- re-evaluate Sync/Gate.lua straight away, so turning sync off aborts any
+-- open session and turning it back on lets the next HELLO go out.
+function Settings.GetAutoSyncEnabled()
+    local sy = FL.DB and FL.DB.settings and FL.DB.settings.sync;
+    if (sy == nil or sy.autoSync == nil) then return true; end
+    return sy.autoSync == true;
+end
+
+function Settings.SetAutoSyncEnabled(enabled)
+    FL.DB.settings.sync.autoSync = enabled and true or false;
+    FL.Sync.Gate.RefreshUserSetting();
+end
+
+-- Cleared by Sync/Gate.lua on the next initial login (a /reload keeps it).
+function Settings.GetSyncPausedThisLogin()
+    local sy = FL.DB and FL.DB.settings and FL.DB.settings.sync;
+    return (sy and sy.pausedThisLogin) and true or false;
+end
+
+function Settings.SetSyncPausedThisLogin(paused)
+    FL.DB.settings.sync.pausedThisLogin = paused and true or false;
+    FL.Sync.Gate.RefreshUserSetting();
+end
+
+-- General settings page > "Enable minimap button". The setter shows/hides
+-- the button straight away; the button's own middle-click also routes
+-- through here so the checkbox and the button never disagree.
+function Settings.GetMinimapButtonEnabled()
+    local mm = FL.DB and FL.DB.settings and FL.DB.settings.minimap;
+    if (mm == nil or mm.show == nil) then return true; end
+    return mm.show == true;
+end
+
+function Settings.SetMinimapButtonEnabled(enabled)
+    FL.DB.settings.minimap.show = enabled and true or false;
+    if (FL.UI.MinimapButton.ApplyShown) then FL.UI.MinimapButton.ApplyShown(); end
+end
+
 --------------------------------------------------------------------------
 -- Dotted-path accessors (UI/SettingsWindow/Widgets.lua's Section:Checkbox
 -- and Section:Dropdown read/write settings by a "key" path string, e.g.
@@ -502,15 +577,18 @@ local PATHS = {
     },
     ["lootCouncil.includeOfficers"] = { get = Settings.GetIncludeGuildOfficers, set = Settings.SetIncludeGuildOfficers },
     ["lootCouncil.officerRankThreshold"] = { get = Settings.GetOfficerRankThreshold, set = Settings.SetOfficerRankThreshold },
+    ["general.minimapButton"] = { get = Settings.GetMinimapButtonEnabled, set = Settings.SetMinimapButtonEnabled },
     ["sounds.raidWarning"] = { get = Settings.GetSoundRaidWarningEnabled, set = Settings.SetSoundRaidWarningEnabled },
     ["sounds.raidWarningSound"] = { get = Settings.GetSoundRaidWarningKey, set = Settings.SetSoundRaidWarningKey },
     ["sounds.selfSR"] = { get = Settings.GetSoundSelfSREnabled, set = Settings.SetSoundSelfSREnabled },
     ["sounds.selfSRSound"] = { get = Settings.GetSoundSelfSRKey, set = Settings.SetSoundSelfSRKey },
+    ["bags.tradeQueueHighlight"] = { get = Settings.GetBagTradeQueueHighlightEnabled, set = Settings.SetBagTradeQueueHighlightEnabled },
     ["raidChat.softresImported"] = { get = Settings.GetRaidChatSoftresImportedEnabled, set = Settings.SetRaidChatSoftresImportedEnabled },
     ["raidChat.softresWhisperReply"] = { get = Settings.GetRaidChatSoftresWhisperReplyEnabled, set = Settings.SetRaidChatSoftresWhisperReplyEnabled },
     ["raidChat.rollCountdown"] = { get = Settings.GetRaidChatRollCountdownEnabled, set = Settings.SetRaidChatRollCountdownEnabled },
     ["raidChat.rollCountdownSeconds"] = { get = Settings.GetRaidChatRollCountdownSeconds, set = Settings.SetRaidChatRollCountdownSeconds },
     ["raidChat.lootCouncilAward"] = { get = Settings.GetRaidChatLootCouncilAwardEnabled, set = Settings.SetRaidChatLootCouncilAwardEnabled },
+    ["sync.autoSync"] = { get = Settings.GetAutoSyncEnabled, set = Settings.SetAutoSyncEnabled },
 };
 
 function Settings.GetPath(path)

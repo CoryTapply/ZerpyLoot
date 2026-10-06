@@ -212,7 +212,8 @@ function Digest.Add(kind, id, rowTime)
         end
     end
 
-    FL.Sync.Debug.Log("DIGEST", 3, "add kind=%s id=%s day=%d tree=%s", kind, id, dayKeyOf(rowTime), tree or "excluded");
+    FL.Sync.Debug.Log("DIGEST", 3, "hashed %s %s · day %d, %s", kind, id, dayKeyOf(rowTime),
+        (tree == "W") and "recent tree" or (tree == "A") and "archive tree" or "excluded (expired)");
 end
 
 --- Removes one stored entry's digest contribution. Looks up where the entry
@@ -223,7 +224,7 @@ end
 function Digest.Remove(kind, id, rowTime)
     local loc = removeEntry(kind, id);
     if (loc) then
-        FL.Sync.Debug.Log("DIGEST", 3, "remove kind=%s id=%s tree=%s", kind, id, loc.tree);
+        FL.Sync.Debug.Log("DIGEST", 3, "unhashed %s %s · %s tree", kind, id, (loc.tree == "W") and "recent" or "archive");
     end
 end
 
@@ -336,7 +337,7 @@ function Digest.Rebuild()
     local windowDayCount = Util.tcount(window.days);
     local elapsed = debugprofilestop() - t0;
     FL.Sync.Debug.Log("DIGEST", 1,
-        "rebuild entries=%d W=n:%d,x:%08X,s:%08X A=n:%d,x:%08X,s:%08X months=%d days=%d excludedExpired=%d t=%dms",
+        "rebuilt history hashes · %d entries: %d recent (hash %08X/%08X), %d archived (hash %08X/%08X), %d months, %d days, %d expired skipped, %dms",
         totalEntries, window.root.count, window.root.x, window.root.s,
         archive.root.count, archive.root.x, archive.root.s,
         windowMonthCount, windowDayCount, excludedExpired, elapsed);
@@ -346,10 +347,10 @@ local function runSelfTest()
     local a, foobar = fnv1a("a"), fnv1a("foobar");
     if (a == 0xE40C292C and foobar == 0xBF9CF968) then
         selfTestOK = true;
-        FL.Sync.Debug.Log("DIGEST", 1, "selftest ok");
+        FL.Sync.Debug.Log("DIGEST", 1, "hash self-test passed");
     else
         selfTestOK = false;
-        FL.Sync.Debug.Err("DIGEST", "selftest fail got=%08X want=E40C292C", a);
+        FL.Sync.Debug.Err("DIGEST", "hash self-test FAILED, history sync disabled · got %08X, expected E40C292C", a);
     end
 end
 

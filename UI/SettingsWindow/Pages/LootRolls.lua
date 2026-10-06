@@ -3,7 +3,7 @@ Loot Rolls settings page: the Group Loot popup-replacement/lock checkboxes
 (unchanged from the old ConfigWindow), a "Loot Chat" section (LootChat.lua)
 controlling the "X receives loot: [item]" chat log, and an "Automatic Rolls"
 section (AutoRoll.lua, UI/AutoRollPopup.lua, /fl autoroll) controlling
-auto-Need/Greed/Pass in raids. Both of the latter are full-width sections
+auto-Need/Greed/Pass in raids (and dungeons, via /fl autoroll). Both of the latter are full-width sections
 below the normal 2-column grid, each itself split into its own 2-column
 layout (checkboxes/radios left, an item list right), since Widgets.lua's
 page:Section only supports the page's own top-level 2-column arrangement,
@@ -326,8 +326,9 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
             -- forgets that choice for the current instance rather than
             -- letting GetEffectiveMode() keep favoring it. Only while
             -- actually in scope (raid + group loot); outside scope there's
-            -- nothing to override or announce.
-            if (FL.AutoRoll.ScopeOK()) then
+            -- nothing to override or announce. Dungeons ignore this setting
+            -- entirely, so a dungeon's /fl autoroll choice is left alone.
+            if (FL.AutoRoll.ScopeOK() and not FL.AutoRoll.IsDungeon()) then
                 local instanceID = select(8, GetInstanceInfo());
                 if (instanceID) then
                     FL.Settings.SetAutoRollSessionChoice(instanceID, nil);
@@ -353,7 +354,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     noteText:SetPoint("RIGHT", arLeftFrame, "RIGHT", 0, 0);
     noteText:SetJustifyH("LEFT");
     noteText:SetWordWrap(true);
-    noteText:SetText("Automatic Rolls and overrides only work for raid instances that are set to group loot.");
+    noteText:SetText("Automatic Rolls and overrides only work in instances set to group loot. Dungeons always roll manually unless you type /fl autoroll inside one; overrides apply in both.");
     noteText:SetTextColor(unpack(Colors.autoRollMutedNote));
 
     -- Positions the warning box and note under the radio group and sizes

@@ -350,3 +350,11 @@ FL.UI.Colors.responsePalette = {};
 for i, hex in ipairs(FL.Responses.PALETTE_PRESETS) do
     FL.UI.Colors.responsePalette[i] = { FL.Util.HexToRGB(hex) };
 end
+
+-- Sync settings page (UI/SettingsWindow/Pages/Sync.lua) - status words and
+-- the transfer progress bars, all aliases of colors already defined above.
+FL.UI.Colors.syncGood     = FL.UI.Colors.respondSentLabel;       -- #4fd964 - in sync / completed
+FL.UI.Colors.syncWarn     = FL.UI.Colors.lootChatQuestTag;       -- #d9b54a - different / paused / newer version
+FL.UI.Colors.syncBad      = FL.UI.Colors.sessionDeleteHoverIcon; -- #ff6b5e - incompatible / failed
+FL.UI.Colors.syncBarFill  = FL.UI.Colors.controlFocus;           -- #9c7c1c - progress bar fill
+FL.UI.Colors.syncBarTrack = FL.UI.Colors.controlBg;              -- #0c0b0a - progress bar track

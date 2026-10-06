@@ -1,7 +1,8 @@
 --[[
-The raid-entry popup for Automatic Rolls: shown (per FL.AutoRoll's own
-policy - this file is presentation-only) when mode is "ask" and this raid
-hasn't been answered yet, or on demand via /fl autoroll. A 2x2 grid of
+The popup for Automatic Rolls: shown (per FL.AutoRoll's own policy - this
+file is presentation-only) on raid entry when mode is "ask" and this raid
+hasn't been answered yet, or on demand via /fl autoroll (the only way it
+opens in a dungeon). A 2x2 grid of
 Need/Greed/Pass/Manual choice buttons that only ever writes a per-instance
 session choice (db.autoRoll.sessionChoices) - it never touches
 db.autoRoll.mode.
@@ -180,11 +181,9 @@ local function ensureFrame()
     subtitleText:SetPoint("RIGHT", titleRow, "RIGHT", 0, 0);
     subtitleText:SetJustifyH("LEFT");
     subtitleText:SetWordWrap(true);
-    subtitleText:SetText("How should ForeverLoot roll on loot in this raid?");
     subtitleText:SetTextColor(unpack(Colors.description));
-
-    titleRow:SetHeight(math.max(closeButton:GetHeight(),
-        instanceTitle:GetStringHeight() + Sizes.titleSubtitleGap + subtitleText:GetStringHeight() + Sizes.gridTopMargin));
+    -- Text (raid vs dungeon) is set in paint(); titleRow's height follows it
+    -- in resizeFrame below.
 
     ----------------------------------------------------------------------
     -- 2x2 choice grid.
@@ -265,6 +264,8 @@ local function ensureFrame()
     footerText:SetTextColor(unpack(Colors.muted));
 
     resizeFrame = function()
+        titleRow:SetHeight(math.max(closeButton:GetHeight(),
+            instanceTitle:GetStringHeight() + Sizes.titleSubtitleGap + subtitleText:GetStringHeight() + Sizes.gridTopMargin));
         frame:SetHeight(Sizes.padding + titleRow:GetHeight() + gridHeight + Sizes.gap
             + noteText:GetStringHeight() + Sizes.gap + Sizes.footerDividerHeight + Sizes.footerGap
             + viewOverridesButton:GetHeight() + Sizes.padding);
@@ -293,6 +294,8 @@ end
 --- button on a /fl autoroll reopen when one was already made.
 local function paint()
     instanceTitle:SetText(GetInstanceInfo() or "");
+    subtitleText:SetText(("How should ForeverLoot roll on loot in this %s?"):format(
+        FL.AutoRoll.IsDungeon() and "dungeon" or "raid"));
 
     local instanceID = select(8, GetInstanceInfo());
     local current = instanceID and FL.Settings.GetAutoRollSessionChoice(instanceID);
@@ -310,6 +313,7 @@ end
 function AutoRollPopup.Show()
     ensureFrame();
     paint();
+    resizeFrame();
     frame:EnableKeyboard(true);
     frame:Show();
     -- noteText's wrap-driven GetStringHeight() isn't always settled the

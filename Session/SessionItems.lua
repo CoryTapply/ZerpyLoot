@@ -276,8 +276,7 @@ function SessionItems.SendToActiveSession()
     if (#items == 0) then
         return false, "Add at least one item to the list first.";
     end
-    local Session = FL.LootCouncil.CurrentSession;
-    if (not Session or Session.status ~= "active") then
+    if (not FL.LootCouncil.IsSessionLive()) then
         return false, "There's no active session to add items to.";
     end
 

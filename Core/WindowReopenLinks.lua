@@ -27,8 +27,8 @@ local reopenTargets = {
     LootHistory = { label = "Loot History", show = function() FL.UI.LootHistoryWindow.Show(); end },
     Settings = { label = "Settings", show = function() FL.UI.SettingsWindow.Show(); end },
     -- Routed through HandleSlashAutoroll (not AutoRollPopup.Show directly) so
-    -- a click still gets the "only applies in raids that use group loot"
-    -- guard if scope was lost between the message printing and the click.
+    -- a click still gets the "only applies in raids and dungeons that use
+    -- group loot" guard if scope was lost between the message printing and the click.
     AutoRoll = { label = "Automatic Rolls", show = function() FL.AutoRoll.HandleSlashAutoroll(); end },
 };
 

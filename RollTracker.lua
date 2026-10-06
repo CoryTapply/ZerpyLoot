@@ -48,10 +48,9 @@ local rsSend, onRollSyncMessage;
 local RSAceComm, RSLibDeflate, RSLibSerialize;
 local RollSyncActions = {}; -- action name (string) -> handler(Message)
 
-local function debugPrint(msg)
-    if (Comm.debugEnabled) then
-        print("|cff8865ffForeverLoot|r " .. msg);
-    end
+--- Debug log line in the ROLL category (Sync/Debug.lua, /fl debug).
+local function rollLog(level, fmt, ...)
+    FL.Sync.Debug.Log("ROLL", level, fmt, ...);
 end
 
 --------------------------------------------------------------------------
@@ -130,7 +129,7 @@ function RollTracker.ProcessRoll(message)
                 classification = classification,
             });
 
-            debugPrint(("ROLL %s rolls %d (%d-%d) [%s]"):format(rollerBase, roll, low, high, classification));
+            rollLog(1, "%s rolled %d · range %d-%d, counted as %s", rollerBase, roll, low, high, tostring(classification));
 
             if (FL.UI.RollWindow and FL.UI.RollWindow.Refresh) then
                 FL.UI.RollWindow.Refresh();
@@ -202,9 +201,9 @@ local function applyStart(Message)
         C_Item.RequestLoadItemDataByID(itemID);
     end
 
-    -- Whether *we* soft-reserved this item - drives the louder sound/orange
-    -- border pop below, so our own reserved item up for roll doesn't get
-    -- missed among everything else going on.
+    -- Whether *we* soft-reserved this item - drives the louder sound below
+    -- and UI/RollWindow.lua's gold border/red timer bar, so our own reserved
+    -- item up for roll doesn't get missed among everything else going on.
     local isSelfSR = FL.SoftRes ~= nil and FL.SoftRes.PlayerHasReservedItem(Util.stripRealm(Util.UnitName("player")), itemID);
 
     nextRollOffId = nextRollOffId + 1;
@@ -279,7 +278,7 @@ local function applyStart(Message)
         FL.UI.RollWindow.Show();
     end
 
-    debugPrint(("Roll-off started by %s for %s (%ds)"):format(Message.senderFqn or "?", content.item, content.time));
+    rollLog(1, "roll-off for %s started by %s · %ds", tostring(content.item), Message.senderName or Message.senderFqn or "?", content.time);
 end
 
 --- Replays a stashed competing roll-off start (see applyStart's guard above)
@@ -326,7 +325,7 @@ function RollTracker.LocalStop()
             local channel = Util.GroupChatChannel("RAID_WARNING");
             if (channel) then
                 Util.SendChatMessageSafe("Stop your rolls!", channel, nil, nil, function()
-                    debugPrint("Could not announce roll stop (missing raid warning permission?)");
+                    rollLog(1, "couldn't announce the roll stop · no raid warning permission?");
                 end);
             end
         end
@@ -427,7 +426,7 @@ rsSend = function(action, content)
     local encoded = RSLibDeflate:EncodeForWoWAddonChannel(
         RSLibDeflate:CompressDeflate(RSLibSerialize:Serialize(payload), { level = 5 }));
 
-    debugPrint(("SEND %s -> %s"):format(tostring(action), distribution));
+    rollLog(2, "sent %s · to %s", tostring(action), target or tostring(distribution):lower());
 
     RSAceComm:SendCommMessage(ROLL_SYNC_PREFIX, encoded, distribution, target, "NORMAL");
 end
@@ -459,7 +458,8 @@ onRollSyncMessage = function(prefix, encoded, distribution, senderName)
     };
     Message.isSelf = Util.iEquals(Message.senderFqn, Util.playerFqn()) or Util.iEquals(Message.senderName, Util.UnitName("player"));
 
-    debugPrint(("RECV %s <- %s (%s)"):format(tostring(Message.action), Message.senderFqn or "?", distribution));
+    rollLog(2, "got %s from %s · via %s", tostring(Message.action), Message.senderName or Message.senderFqn or "?",
+        tostring(distribution):lower());
 
     local handler = RollSyncActions[Message.action];
     if (handler) then handler(Message); end
@@ -469,6 +469,9 @@ end
 -- to resend since replacing a list with an identical list is a no-op, and
 -- only the initiator (the only one who can award/reassign) ever sends this.
 -- queueEntryId is stripped since it's meaningless on another client's queue.
+-- RollOff.id is a per-client counter (each client numbers roll-offs from its
+-- own login/reload), so receivers match on `item` instead - rollOffId is
+-- still sent only so older clients that check it keep their old behavior.
 local function broadcastWinners(RollOff, kind)
     local sanitized = {};
     for _, w in ipairs(RollOff.winners) do
@@ -478,17 +481,29 @@ local function broadcastWinners(RollOff, kind)
         });
     end
 
-    rsSend("winners", { rollOffId = RollOff.id, type = kind, winners = sanitized });
+    rsSend("winners", { rollOffId = RollOff.id, item = RollOff.item, type = kind, winners = sanitized });
 end
 
 RollSyncActions.winners = function(Message)
     local content = Message.content;
-    if (type(content) ~= "table" or not content.rollOffId or type(content.winners) ~= "table") then
+    if (type(content) ~= "table" or type(content.winners) ~= "table") then
         return;
     end
 
     local RollOff = RollTracker.CurrentRollOff;
-    if (not RollOff or RollOff.id ~= content.rollOffId) then
+    if (not RollOff) then return; end
+
+    -- Match by item, not RollOff.id - see broadcastWinners. Senders from
+    -- before `item` was added only have their own local id to go on.
+    local matches;
+    if (content.item) then
+        local itemID = Util.itemIDFromLink(content.item);
+        matches = itemID ~= nil and itemID == RollOff.itemID;
+    else
+        matches = content.rollOffId ~= nil and content.rollOffId == RollOff.id;
+    end
+    if (not matches) then
+        rollLog(2, "ignored winners for %s · current roll-off is %s", tostring(content.item or content.rollOffId), tostring(RollOff.item));
         return; -- stale or foreign roll-off
     end
 
@@ -545,7 +560,7 @@ local function attemptAutoTrade(RollOff, playerName, queueEntry)
             return;
         end
 
-        debugPrint(("Auto-trade to %s failed: %s"):format(playerName, tostring(reason)));
+        rollLog(1, "couldn't start the trade with %s · %s, added to the trade queue", playerName, tostring(reason));
 
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
             FL.UI.TradeQueueWindow.Show();

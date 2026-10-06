@@ -188,14 +188,14 @@ end
 --- for `awardedBy`.
 function Codec.EncodeId(id, awardedBy, builder)
     if (type(id) ~= "string" or type(awardedBy) ~= "string") then
-        FL.Sync.Debug.Log("CODEC", 2, "id raw id=%s reason=noPattern", tostring(id));
+        FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · not in the usual id pattern", tostring(id));
         FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
 
     local prefix, a, b, c = id:match("^(.-)%-(%d+)%-(%d+)%-(%d+)$");
     if (not prefix) then
-        FL.Sync.Debug.Log("CODEC", 2, "id raw id=%s reason=noPattern", id);
+        FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · not in the usual id pattern", id);
         FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
@@ -215,7 +215,7 @@ function Codec.EncodeId(id, awardedBy, builder)
     local realm = (GetRealmName() or ""):lower():gsub("%s+", "");
     local expectedPrefix = (awardedBy .. "-" .. realm):lower():gsub("%s+", "");
     if (prefix ~= expectedPrefix) then
-        FL.Sync.Debug.Log("CODEC", 2, "id raw id=%s reason=leaderUnknown", id);
+        FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · id doesn't start with its awarder's name", id);
         FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
@@ -227,7 +227,7 @@ function Codec.EncodeId(id, awardedBy, builder)
     -- CURRENT state - fine, PlayerIndex above already added `awardedBy`)
     -- and compare byte-for-byte before trusting the compact form.
     if (Codec.DecodeId(compact, builder:Players()) ~= id) then
-        FL.Sync.Debug.Log("CODEC", 2, "id raw id=%s reason=roundtrip", id);
+        FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · short form didn't decode back the same", id);
         FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
@@ -383,7 +383,7 @@ function Codec.EncodeMark(mark, originalAwardedBy, builder)
         idEncoded = Codec.EncodeId(mark.id, originalAwardedBy, builder);
     else
         idEncoded = mark.id;
-        FL.Sync.Debug.Log("CODEC", 2, "id raw id=%s reason=leaderUnknown", tostring(mark.id));
+        FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · awarder unknown", tostring(mark.id));
         FL.Sync.Debug.Count("codec.rawIds", 1);
     end
     local byIdx = builder:PlayerIndex(mark.by, FL.Sync.Permissions.ClassOf(mark.by));
@@ -408,6 +408,9 @@ end
 -- encoding, and back (spec 4.1). `bodyArray` must already start with
 -- {PROTO_VERSION, msgType, ...}; DecodeMessage hands the whole thing back
 -- for the caller (Net/Transport.lua) to read bodyArray[2] and dispatch.
+-- A body from another PROTO_VERSION fails with "version" but is returned as
+-- a third value, so Transport can still read a foreign HELLO's addon
+-- version for the update hint (plan Phase 8) without dispatching it.
 --------------------------------------------------------------------------
 
 function Codec.EncodeMessage(bodyArray)
@@ -429,7 +432,7 @@ function Codec.DecodeMessage(encoded)
     local ok3, bodyArray = LibSerialize:Deserialize(serialized);
     if (not ok3 or type(bodyArray) ~= "table") then return nil, "deserialize"; end
 
-    if (bodyArray[1] ~= Constants.PROTO_VERSION) then return nil, "version"; end
+    if (bodyArray[1] ~= Constants.PROTO_VERSION) then return nil, "version", bodyArray; end
     return bodyArray;
 end
 
@@ -534,7 +537,7 @@ function Codec.Roundtrip(n)
     local token = "test";
     local body = { Constants.PROTO_VERSION, MSG.ROWS, token, 1, builder:Players(), builder:Types(), wireRows };
     local encoded, stats = Codec.EncodeMessage(body);
-    FL.Sync.Debug.Log("CODEC", 2, "encode type=ROWS rows=%d players=%d resp=%d ser=%s cmp=%s enc=%s t=%.1fms",
+    FL.Sync.Debug.Log("CODEC", 2, "encoded ROWS · %d rows, %d players, %d responses, %s raw, %s compressed, %s on the wire, %.1fms",
         #rows, builder:PlayerCount(), builder:TypeCount(), FL.Sync.Debug.FormatBytes(stats.ser),
         FL.Sync.Debug.FormatBytes(stats.cmp), FL.Sync.Debug.FormatBytes(stats.enc), stats.ms);
 
@@ -547,7 +550,8 @@ function Codec.Roundtrip(n)
         if (row) then
             decodedById[row.id] = row;
         else
-            FL.Sync.Debug.Log("CODEC", 2, "reject id=%s reason=%s%s", Codec.WireRowIdGuess(wireRow), reason, field and (" field=" .. field) or "");
+            FL.Sync.Debug.Log("CODEC", 2, "rejected row %s · %s%s", tostring(Codec.WireRowIdGuess(wireRow)), tostring(reason),
+                field and (" (field " .. field .. ")") or "");
         end
     end
 
@@ -556,12 +560,12 @@ function Codec.Roundtrip(n)
         local decoded = decodedById[original.id];
         if (not decoded) then
             diff = diff + 1;
-            FL.Sync.Debug.Log("TEST", 1, "roundtrip diff id=%s field=%s local=%q decoded=%q", original.id, "row", "present", "missing");
+            FL.Sync.Debug.Log("TEST", 1, "roundtrip history: row %s MISSING after decode", original.id);
         else
             local mismatch = compareRows(original, decoded);
             if (mismatch) then
                 diff = diff + 1;
-                FL.Sync.Debug.Log("TEST", 1, "roundtrip diff id=%s field=%s local=%q decoded=%q",
+                FL.Sync.Debug.Log("TEST", 1, "roundtrip history: row %s MISMATCH in %s · local %q, decoded %q",
                     original.id, mismatch.field, tostring(mismatch.localVal), tostring(mismatch.decodedVal));
             else
                 ok = ok + 1;
@@ -570,6 +574,7 @@ function Codec.Roundtrip(n)
     end
 
     local rawIds = FL.Sync.Debug.GetCounter("codec.rawIds") - rawIdsBefore;
-    FL.Sync.Debug.Log("TEST", 1, "roundtrip n=%d ok=%d diff=%d rawIds=%d skipped=%d avgRow=%s batch=%s",
-        #rows, ok, diff, rawIds, skipped, FL.Sync.Debug.FormatBytes(math.floor(stats.cmp / #rows)), FL.Sync.Debug.FormatBytes(stats.cmp));
+    FL.Sync.Debug.Log("TEST", 1, "roundtrip history: %s · %d rows, %d ok, %d mismatched, %d full ids, %d skipped, %s per row, %s total",
+        (diff == 0) and "ok" or "MISMATCH", #rows, ok, diff, rawIds, skipped,
+        FL.Sync.Debug.FormatBytes(math.floor(stats.cmp / #rows)), FL.Sync.Debug.FormatBytes(stats.cmp));
 end

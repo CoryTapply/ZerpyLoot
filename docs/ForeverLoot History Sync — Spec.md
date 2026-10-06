@@ -41,6 +41,12 @@ The binding constraint is the addon-message throttle: about one 255-byte message
 
 The exact limits in WoW Forever should be confirmed during beta. They live in one constants table (section 13) so they are easy to change.
 
+**Measured on WoW Forever during development** (details in `docs/sync-deviations.md`):
+
+- **No per-prefix throttle.** The real ceiling is ChatThrottleLib's total of about 0.7 KB/s per sender. Rotating `FLootS1`–`S3` is harmless and kept, but extra speed comes from extra senders (secondaries), not extra prefixes.
+- **The server reorders messages** sent in the same instant. AceComm's multi-part reassembly can't cope, so `Transport` never hands AceComm more than one 255-byte piece. Each message goes out as `"~!"..payload` or numbered pieces `"~id:i:n:"..slice`, reassembled in any order. A message still missing pieces after 30 s is dropped with a warning.
+- **GUILD-distribution addon messages are not relayed.** Every `GUILD` send is rewritten into one `WHISPER` per online guild member, or per known addon user (`fanout = "known"`: anyone whose message decoded cleanly in the last 30 days). Login, forced and every 4th periodic `HELLO` go to every online member so new users are found.
+
 ## 3. Data model
 
 The store holds three kinds of entry, all keyed by the row id: **rows**, **tombstones** and **pins**. For any id, the only valid final states are {row}, {row + pin} and {tombstone}. A tombstone always wins.
@@ -98,7 +104,7 @@ These rules are commutative and idempotent. Any delivery order, and any number o
 ### 3.5 Id requirements
 
 - Ids must be globally unique and **byte-identical on every client**, because digests hash the id string.
-- The current format appears to be `<leader name, lowercased, spaces removed>-<normalized realm>-<sessionId>-<itemSession>-<n>`, where the name is the session leader's. Section 4.6 encodes ids structurally when they match this pattern, with a raw-string fallback.
+- The format is `<leader fqn, lowercased, spaces removed>-<sessionId>-<itemSession>-<awardSeq>`, where the fqn is the session leader's `name-realm` as one string (a realm name may itself contain hyphens). Section 4.6 encodes ids structurally when they match this pattern, with a raw-string fallback. Manual entries (`manual-...`) and test rows (`zztest-...`) always use the fallback.
 
 ## 4. Wire encoding: shrinking rows for transmission
 
@@ -183,7 +189,7 @@ The link carries much more than the item id, so it is **not** reduced to `itemID
 
 ### 4.6 Id encoding
 
-- **When the id matches the pattern** `^([^%-]+)%-([^%-]+)%-(%d+)%-(%d+)%-(%d+)$`, and the name part equals `compact(name) = name:lower():gsub(" ", "")` for a player known to the encoder, encode it as `{playerIdx, realm, a, b, c}`. The realm string repeats in every row of a batch, so LibSerialize writes it once and then back-references it. The id's name is the session leader's, who is often neither the awarder nor a responder. The encoder looks the compact name up in the batch dictionary first, then in the guild roster. A leader found only in the roster is added to the batch dictionary, with class id 0 if the class is unknown. Because compact() drops spaces, the decoder rebuilds the id from the dictionary's full name, and the round-trip guard below still applies.
+- **The id is parsed from the right:** `^(.-)%-(%d+)%-(%d+)%-(%d+)$` takes the three trailing numbers, and everything before them is one opaque leader prefix, however many hyphens it holds. The prefix must equal `(compact(awardedBy) .. "-" .. realm):lower()` for the row's own `awardedBy`, which is always the session leader. The id is then encoded as `{a, b, c}` and the decoder rebuilds the prefix from the row's `awardedBy` player-dictionary entry, so no separate leader lookup is needed.
 - **Round-trip guard:** the encoder always checks `decodeId(encodeId(id)) == id`. If the check fails, it sends the raw string. The decoder tells the two forms apart by type (table or string).
 - **Why exactness matters:** digests hash the id string, so any mismatch would make two clients disagree forever.
 
@@ -307,7 +313,7 @@ The entry hash from 5.1 doubles as a short id. When two clients compare a mismat
 
 ## 6. Protocol message catalog
 
-The protocol has 15 message types. Three of them are live broadcasts; the rest are for discovery and sync sessions. Every body is a positional table that starts with `PROTO_VERSION, MSG_TYPE`. Session messages then carry a `token`: 4 random characters chosen by the client that opened the session. Messages with an unknown or expired token are ignored, so late packets from an abandoned session are harmless.
+The protocol has 17 message types (15 from the original design, plus `PING` and `DONE_ACK`). Three of them are live broadcasts; the rest are for discovery and sync sessions. Every body is a positional table that starts with `PROTO_VERSION, MSG_TYPE`. Session messages then carry a `token`: 4 random characters chosen by the client that opened the session. Messages with an unknown or expired token are ignored, so late packets from an abandoned session are harmless.
 
 | Type | Name | Channel | Prefix | CTL priority | Body after the header |
 | --- | --- | --- | --- | --- | --- |
@@ -325,6 +331,8 @@ The protocol has 15 message types. Three of them are live broadcasts; the rest a
 | 12 | `ABORT` | WHISPER | `FLoot` | NORMAL | token, reason code (`gate`, `timeout`, `busy`, `version`) |
 | 13 | `SNAP_GET` | WHISPER | `FLoot` | NORMAL | domain id: asks a peer for its full snapshot of a snapshot-strategy domain (7.7) |
 | 14 | `SNAP` | WHISPER | `FLoot` | NORMAL | domain id, version, payload from the domain's Export(); sent as the reply to SNAP\_GET, or pushed when the sender holds the newer version |
+| 15 | `PING` | WHISPER | `FLoot` | NORMAL | token: keeps a primary session alive while the opener waits on its secondaries (every 15 s); the server answers with its own `PING` |
+| 16 | `DONE_ACK` | WHISPER | `FLoot` | NORMAL | token, flat `tree, key` list of buckets the server still wants data for; the server only closes when the list is empty |
 | 20 | `LIVE_ROW` | GUILD | `FLoot` | ALERT | player dictionary, response-type dictionary, one row |
 | 21 | `LIVE_DEL` | GUILD | `FLoot` | ALERT | one tombstone |
 | 22 | `LIVE_PIN` | GUILD | `FLoot` | ALERT | one pin |
@@ -334,6 +342,15 @@ Notes:
 - **Control messages stay small.** Everything except `ROWS` and `MARKS` fits in one or two 255-byte chunks. A `DAYS` reply for a full month is about 31 × 14 bytes, roughly 2 chunks.
 - **Symmetry.** In `full` mode both peers send `HASHES` and `WANT`, so data flows both ways. In `pull` mode only the opener requests; the other side only answers.
 - **Tombstones and pins** use the same id encoding and player dictionary as rows.
+- **Fields added during development** (all appended, so the leading fields above are unchanged):
+  - `OPEN` pull mode carries a flat `tree, key` list instead of bare day keys, since window days and archive months are both integers.
+  - `OPEN_REPLY` may append `"dup"` when two clients opened full sessions to each other at once; the session opened by the alphabetically lower name survives.
+  - `MONTHS` requests carry a generation number, echoed on every `DAYS` and archive `MONTHS` reply batch, so replies to a retried request can be told from stragglers.
+  - `DAYS` carries the server's mismatched month keys, and is sent in batches of 40 tuples, each with `batchIndex, totalBatches, gen`.
+  - `HASHES` is `token, tree, key, idMode, list, isRetry`; `WANT` is `token, tree, key, idMode, list`. `WANT` is always sent, even empty. Only the opener retries `HASHES` (8 s, 3 tries), and the peer re-answers a message flagged `isRetry`.
+  - `ROWS` and `MARKS` append `tree, key, batchIndex, totalBatches`; `MARKS` also has a batch number in the same position as `ROWS`. A bucket's transfer completes when every index has arrived, or when every entry it asked for is in the store.
+- **The `HELLO` / `HELLO_ACK` header is fixed forever:** `PROTO_VERSION, MSG_TYPE, scope, addon version`. A client reads the addon version from a peer on another `PROTO_VERSION` from those slots, to show the update hint, without decoding anything else.
+- **Abuse limits.** At most 5 `HELLO`s and 3 `OPEN`s per sender per minute are handled; the rest are dropped. A reassembled message over 64 KB is dropped before decoding.
 
 ## 7. Sync flows
 
@@ -355,7 +372,7 @@ Live broadcasts deliver data to whoever is online right away. `HELLO` checks at 
    - `TARGET_RESPONDERS` is 3.
    - `knownPeers` is the number of distinct clients heard from (`HELLO` or `HELLO_ACK`) in the last 30 minutes.
    - A peer whose own gate is closed (in an instance or in combat) never replies.
-4. The opener collects replies for 6 s. It picks a **primary**: the responder with the highest window count, with random tie-breaks. Up to 2 more responders become **secondaries**.
+4. The opener collects replies for `HELLO_COLLECT_WINDOW` (12 s). It picks a **primary**: the responder with the highest window count, with random tie-breaks. Up to 2 more responders become **secondaries**.
 5. **No replies at all:** after 30 s, retry `HELLO` with the `urgent` flag, which doubles `p`. After 3 attempts, give up until the next periodic check.
 6. Silence after a `HELLO` does not prove the client is in sync, because nobody may be online. Proof arrives when the client hears someone else's `HELLO` with identical roots.
 
@@ -365,11 +382,12 @@ Live broadcasts deliver data to whoever is online right away. `HELLO` checks at 
 2. The opener sends `MONTHS` for the window tree, and for the archive tree if the archive roots differ.
 3. The peer compares and replies with `DAYS` for every window month that differs. Archive leaves are months, so archive mismatches skip straight to step 4.
 4. The opener compares the day aggregates and builds the list of mismatched buckets, **newest first**.
-5. For each mismatched bucket, with at most 3 in flight:
+5. For each mismatched bucket, with at most `BUCKETS_IN_FLIGHT` (6) in flight:
    1. Both sides send `HASHES` for that bucket.
    2. Each side computes which hashes it lacks and sends `WANT`.
    3. Each side answers the other's `WANT` with `ROWS` and `MARKS` batches on the sync prefixes.
-6. When all buckets are done, the opener sends `DONE`. If the roots still differ, for example because new live data arrived during the session, it does **not** loop immediately. The next periodic check handles it.
+6. When all buckets are done and every batch it owes is confirmed sent, the opener sends `DONE`. The server answers `DONE_ACK` listing any bucket whose data it still lacks; the opener resends those and sends `DONE` again, at most 4 times. If the roots still differ, for example because new live data arrived during the session, it does **not** loop immediately. The next periodic check handles it.
+7. If two clients open full sessions to each other, only one survives (see `OPEN_REPLY` in section 6). A full session that aborts for any reason other than `gate` or `dup` triggers a rediscovery about 30 s later.
 
 ### 7.4 Parallel pull from secondaries
 
@@ -378,8 +396,9 @@ The throttle limits each **sender**, so receiving from three peers roughly tripl
 1. After step 4 above, the opener assigns mismatched buckets round-robin, newest first, across the primary and the secondaries.
 2. Each secondary gets `OPEN(pull, dayKeys)`. The opener sends `HASHES` for those days, and the secondary replies with `ROWS` and `MARKS` for whatever the opener lacks. A secondary never requests data from the opener.
 3. The primary session still handles the **push direction for every bucket**. Pull work for buckets assigned to secondaries is skipped on the primary.
-4. If a secondary aborts or times out, its unfinished buckets go back to the primary's queue.
-5. Overlap is harmless. The same row arriving twice is a no-op in `Store:Apply`.
+4. If a secondary aborts or times out, its unfinished buckets go back to the primary's queue. The primary's saved `HASHES` list for that bucket is reused, so no new round trip is needed.
+5. **Top-up.** A secondary may hold less than the primary. When a secondary finishes, each of its buckets is checked against the primary's hashes (or, for buckets the primary skipped because ours was empty, the primary's compare-phase aggregate), and anything still missing is pulled from the primary.
+6. Overlap is harmless. The same row arriving twice is a no-op in `Store:Apply`.
 
 ### 7.5 Periodic check
 
@@ -404,7 +423,7 @@ Discovery itself (`HELLO`, `HELLO_ACK`, picking responders, suppression) knows n
 | Strategy | Fits | Summary carried in `HELLO` | How a mismatch is repaired |
 | --- | --- | --- | --- |
 | `set` | Large collections that grow and occasionally delete (loot history) | Digest roots `{count, x, s}` | A sync session per domain (7.3–7.4) |
-| `snapshot` | Small state replaced as a whole (the current council session) | A version such as `{sessionId, startedAt, rev, ended}` | One round trip: `SNAP_GET` then `SNAP`, or a pushed `SNAP` when we hold the newer version |
+| `snapshot` | Small state replaced as a whole (the current council session) | A version such as `{sessionId, startedAt, rev, ended, leader}` | One round trip: `SNAP_GET` then `SNAP`, or a pushed `SNAP` when we hold the newer version |
 
 #### Domain interface
 
@@ -418,7 +437,8 @@ local Domain = {
   gate     = "live",           -- "sync": outside instances only; "live": anywhere except boss encounters
 }
 function Domain:Summary() end                         -- small positional table for HELLO; nil = nothing to offer
-function Domain:Compare(remoteSummary) end            -- "same" | "remoteNewer" | "localNewer" | "diverged"
+function Domain:Compare(remoteSummary, remoteName) end -- "same" | "remoteNewer" | "localNewer" | "diverged" | "incompatible"
+function Domain:SummaryFor(remoteSummary) end         -- optional: HELLO_ACK summary in reply to a given remote one
 
 -- snapshot strategy
 function Domain:Export() end                          -- returns version, payload (positional, ready for Codec)
@@ -434,7 +454,7 @@ The registry offers `Domains.Register(domain)`, `Domains.Get(id)`, `Domains.InSc
 
 #### How the handshake uses domains
 
-1. **Building `HELLO`.** `Peers` sends one `HELLO` per scope. It carries a `domainId, summary` pair for every registered domain in that scope whose gate is open. Domains whose `Summary()` returns `nil` are left out.
+1. **Building `HELLO`.** `Peers` sends one `HELLO` per scope. It carries a `domainId, summary` pair for every registered domain in that scope whose gate is open. Domains whose `Summary()` returns `nil` are left out, but the `HELLO` still goes out (a late joiner's RAID `HELLO` carries nothing). It is skipped only when every domain in the scope has its gate closed. A receiver treats a snapshot domain missing from a `HELLO` as `Compare(nil)`, which is `localNewer` when it holds something.
 2. **Unknown domains.** A receiver ignores domain ids it does not know. Clients on an older addon version keep syncing the domains they share with newer clients.
 3. **Replying.** The receiver calls `Compare` for every domain in the `HELLO`. If any result is not `same`, it replies with `HELLO_ACK` under the usual probability rule, carrying its own summaries for those domains.
 4. **Repairing.** The opener handles each mismatched domain by its strategy:
@@ -456,9 +476,10 @@ The registry offers `Domains.Register(domain)`, `Domains.Get(id)`, `Domains.InSc
 #### Example: the council-session domain
 
 - **State:** the running session: session id, leader, council members, items and their status, responses and votes.
-- **Single writer:** only the session leader changes it. Every change bumps `rev`.
-- **Version and `Compare`:** the summary is `{sessionId, startedAt, rev, ended}`. For the same `sessionId`, the higher `rev` wins. For a different `sessionId`, the later `startedAt` wins, so a new session supersedes an old one.
-- **Ended sessions:** an ended session keeps advertising itself with `ended = true` for `SESSION_END_TTL` (10 minutes), so late joiners learn it ended. After that, `Summary()` returns `nil`.
+- **Every client counts `rev`.** Responses and votes come from raiders, so every client bumps `rev` once for each change it applies (the network apply handlers, plus the leader's own optimistic paths). Members who saw the same messages hold the same `rev`.
+- **Version and `Compare`:** the summary is `{sessionId, startedAt, rev, ended, leader}`, with `startedAt` in server time. Ended beats active for the same session. Otherwise the leader's copy wins for its own session, then the higher `rev`. For a different session, the later `startedAt` wins, so a new session supersedes an old one.
+- **Only sessions whose leader is in our group** are advertised or imported, so an old session left in SavedVariables can't leak into an unrelated raid. `SNAP_GET` is only answered for group members, and is retried once after 15 s.
+- **Ended sessions are not advertised.** `Summary()` returns `nil` as soon as a session ends; `SESSION_END_TTL` is unused. A member who still advertises it as active gets the ended version through `SummaryFor` in the `HELLO_ACK`.
 - **Payload:** `Export` reuses the `Codec` player and response-type dictionaries plus LibDeflate. AceComm chunks it when it is larger than one message.
 - **Live updates are unchanged.** The leader still broadcasts each change on RAID as it happens. The snapshot path only catches up someone who joined late, reloaded or disconnected mid-session.
 
@@ -466,7 +487,7 @@ The registry offers `Domains.Register(domain)`, `Domains.Get(id)`, `Domains.InSc
 
 1. Pick a permanent `id`, a `strategy`, a `scope` and a `gate`.
 2. Implement the interface methods for that strategy.
-3. Register the domain at load with `Domains.Register`.
+3. Register the domain from its module's `Init()` with `Domains.Register` (not at file load: the debug log it writes to doesn't exist yet).
 4. Add its payload encoding to `Codec`, and cover it in /fl debug roundtrip.
 5. Add its lines to /fl sync domains and its scenarios to the implementation plan's in-game checklists.
 
@@ -736,7 +757,7 @@ All tunables live in `Sync/Constants.lua`. Values marked "guild-wide" must match
 
 | Constant | Default | Guild-wide | Purpose |
 | --- | --- | --- | --- |
-| `PROTO_VERSION` | 1 | Yes | Wire format version. Peers with a different value ignore each other. |
+| `PROTO_VERSION` | 2 | Yes | Wire format version. Peers with a different value ignore each other. 1 was only used by development builds. |
 | `RETENTION_MONTHS` | 4 | Yes | Window length (section 10) |
 | `PREFIX_MAIN` | `FLoot` | Yes | Live and control messages |
 | `PREFIX_SYNC` | `FLootS1`, `FLootS2`, `FLootS3` | Yes | Bulk `ROWS` and `MARKS` |
@@ -745,14 +766,14 @@ All tunables live in `Sync/Constants.lua`. Values marked "guild-wide" must match
 | `LOGIN_DELAY` | 20 s ± 10 s | No | Delay before the first `HELLO` |
 | `PERIODIC_INTERVAL` | 12 min ± 3 min | No | Periodic check |
 | `HELLO_REPLY_JITTER` | 0–4 s | No | Delay before `HELLO_ACK` |
-| `HELLO_COLLECT_WINDOW` | 6 s | No | How long the opener waits for replies |
+| `HELLO_COLLECT_WINDOW` | 12 s | No | How long the opener waits for replies (6 s was too short for WoW Forever's round trip) |
 | `HELLO_RETRY` | 30 s, max 3 tries | No | Retry when nobody replies |
 | `TARGET_RESPONDERS` | 3 | No | Expected number of `HELLO_ACK`s |
 | `PEER_MEMORY` | 30 min | No | Window for counting `knownPeers` |
 | `MAX_SECONDARIES` | 2 | No | Pull-only helpers per session |
 | `MAX_SERVE` | 2 | No | Inbound sessions served at once |
-| `BUCKETS_IN_FLIGHT` | 3 | No | Concurrent buckets per session |
-| `BATCH_TARGET_BYTES` | 4,096 (serialized) | No | `ROWS` batch size |
+| `BUCKETS_IN_FLIGHT` | 6 | No | Concurrent buckets per session (sessions are latency-bound, not bandwidth-bound) |
+| `BATCH_TARGET_BYTES` | 4,096 (serialized) | No | `ROWS` batch size; batches are actually cut at 40 rows, which lands close to this |
 | `SESSION_IDLE_TIMEOUT` | 45 s | No | Drop a silent session |
 | `COMBAT_RESUME_DELAY` | 5 s | No | Wait after leaving combat |
 | `FRAME_BUDGET_MS` | 4 ms | No | Scheduler time slice |
@@ -760,7 +781,10 @@ All tunables live in `Sync/Constants.lua`. Values marked "guild-wide" must match
 | `OFFICER_RANK_MAX` | 1 | Yes | Highest rank index counted as officer |
 | `DOMAIN_HISTORY` | 1 | Yes | Wire id of the loot-history domain; never reused |
 | `DOMAIN_COUNCIL_SESSION` | 2 | Yes | Wire id of the council-session domain; never reused |
-| `SESSION_END_TTL` | 10 min | No | How long an ended council session keeps advertising itself |
+| `SESSION_END_TTL` | 10 min | No | Unused: ended council sessions are no longer advertised |
+| `PRUNE_REAL` | true | No | Real pruning on (it was off until the release) |
+| `RATE_LIMITS` | `HELLO` 5, `OPEN` 3 | No | Messages handled per sender per `RATE_LIMIT_WINDOW` (60 s) |
+| `MAX_MESSAGE_BYTES` | 65,536 | No | Larger reassembled messages are dropped undecoded |
 
 ## 14. Edge cases and failure modes
 
@@ -805,10 +829,10 @@ Every phase increments `PROTO_VERSION` whenever the wire format changes. A clien
 
 ## 16. Open questions
 
-- [ ] Is the id format always `<lowercase name>-<realm>-<sessionId>-<itemSession>-<n>`, and whose name is it: the awarder or the session leader? This decides how often the compact id encoding (4.6) applies.
+- [x] Is the id format always `<lowercase name>-<realm>-<sessionId>-<itemSession>-<n>`, and whose name is it? Answered: the session leader's fqn, with 3 numbers after it (section 3.5).
 - [ ] Is there already a length cap on response notes? If not, is 120 characters acceptable?
 - [ ] Which rules define "key items" and "key players" for automatic pins, and who maintains those lists?
 - [ ] Is `RETENTION_MONTHS = 4` the right starting value?
-- [ ] What are the actual addon-message limits in WoW Forever? Confirm them during beta.
+- [x] What are the actual addon-message limits in WoW Forever? Measured: no per-prefix throttle, about 0.7 KB/s per sender, messages reordered, GUILD relay broken (section 2).
 - [ ] Do stored player names include a realm suffix for players from connected realms?
 - [ ] Should the council policy (`DELETE_POLICY = council`) mean the council of the session the row came from, or anyone who has ever been on a council?

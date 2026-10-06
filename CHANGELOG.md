@@ -1,0 +1,23 @@
+# Changelog
+
+## 0.2.0 (pre-release)
+
+### Trade Queue
+
+- With EllesmereUI Bags or Baganator enabled, items waiting in the Trade Queue now glow in your bags, in the item's quality color. Toggle it in Settings > General > Trade Queue (on by default; greyed out without either bag addon). In Baganator the glow is listed as a corner widget ("ForeverLoot: Trade Queue glow") in its Corners settings; keep it at the top of its corner.
+
+### Loot history sync
+
+- Loot history now syncs across the whole guild. Awards, deletes and pins are sent live to everyone online, and anyone who was offline catches up automatically the next time they log in (outside instances, out of combat). The first login after updating may take a few minutes to catch up.
+- **Only officers can delete history rows.** Deletes spread to every guild member's history.
+- Rows older than 4 months are pruned automatically at the start of each month. Pinned rows ("keep forever") are never pruned.
+- Raid members who join late, reload or disconnect during a loot council session catch up to the leader's current session state within seconds.
+- A loot council session you missed the end of (you were offline when the leader ended it) no longer stops you from starting a new one. A session counts as finished once its leader isn't in your group, and the leader's own unended session expires after 12 hours.
+- If you miss the end of a loot council session and log back in while still in the leader's raid, your copy is now corrected to ended within seconds. Before, the leader only answered your catch-up request some of the time, so the session could stay stuck as active for a long while.
+- Loot council catch-up on login, /reload and joining a group now works in a 5-man party, not just in a raid.
+- Loot council catch-up no longer needs you to be in a guild, so pugs catch up too. Guild history sync still does.
+- Debug log lines are rewritten in plain words (`area: what happened · details`), with reply times on sync requests and a visible line when a reply arrives too late to count. Council, roll and softres debug lines moved from `/fl commdebug` into `/fl debug` (new categories COUNCIL, ROLL, SOFTRES; `SNAP` is now COUNCIL). See `docs/debug-logs.md`.
+- The Debug Log window (`/fl debug log`) has a toolbar: debug on/off, level, category mute list, clear, sync history / council session now, network probe, and the test-data tools (generate, drop, purge, wipe). It updates live while open.
+- If a guildmate runs a newer ForeverLoot, you'll see one chat line telling you an update is available.
+- New slash commands for troubleshooting: `/fl sync status`, `/fl sync digest`, `/fl debug log`. Debug output is off by default.
+- New **Sync** settings page. Turn automatic sync off, or pause it until your next login (a /reload keeps it paused), and press Sync Now to compare right away. The page shows live status, active transfers with progress bars, speed and time left, the guild members you sync with and their versions, your local history, and a log of recent syncs. With sync off or paused, your client sends no sync traffic at all, but new awards are still shared live. While the page is open, it checks with your peers every 30 seconds, so the peer list stays current.

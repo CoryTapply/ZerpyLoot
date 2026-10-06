@@ -208,6 +208,22 @@ local function updateHeightAnimation()
     if (t >= 1) then heightAnim = nil; end
 end
 
+-- Our own soft-reserved item up for roll gets a gold window border and a
+-- red timer bar (same gradient as GroupLootFrame's last-10s danger state)
+-- for its whole duration, on top of RollTracker's louder self-SR sound.
+local function isSelfSRRollOff()
+    local RollOff = RollTracker.CurrentRollOff;
+    return RollOff ~= nil and RollOff.isSelfSR == true;
+end
+
+local function runningVariant()
+    return isSelfSRRollOff() and "selfSR" or "running";
+end
+
+local function applyWindowBorder()
+    Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, isSelfSRRollOff() and Colors.gold or Colors.border, 1);
+end
+
 local function updateCountdown()
     local RollOff = RollTracker.CurrentRollOff;
     if (not RollOff or not RollOff.active) then return; end
@@ -267,7 +283,7 @@ local function ensureFrame()
     Pixel.RegisterWindow(frame, {
         width = Sizes.window.width, height = Sizes.titleBarHeight + Sizes.padding * 2 + Sizes.header.iconSize,
         x = savedPosition and savedPosition.x or 0, y = savedPosition and savedPosition.y or 0,
-    }, function() Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, Colors.border, 1); end);
+    }, applyWindowBorder);
 
     -- Title bar
     local titleBar = CreateFrame("Frame", nil, frame);
@@ -415,6 +431,7 @@ local function ensureFrame()
         variants = {
             running = { from = Colors.controlFocus, to = Colors.gold },
             hover = { from = Colors.rollHoverFillStart, to = Colors.rollHoverFillEnd },
+            selfSR = { from = Colors.groupLootTimerDangerStart, to = Colors.rollHoverFillEnd },
         },
     });
     timerBar.track:EnableMouse(true);
@@ -431,7 +448,7 @@ local function ensureFrame()
         barHovered = false;
         local RollOff = RollTracker.CurrentRollOff;
         if (RollOff and RollOff.active) then
-            timerBar:SetVariant("running");
+            timerBar:SetVariant(runningVariant());
             lastLabelSeconds = nil;
             updateCountdown();
         end
@@ -1252,10 +1269,16 @@ end
 -- another client's rows, since arrivalIndex is only ever meaningful locally
 -- (each client parses CHAT_MSG_SYSTEM independently).
 local function isRowWinner(RollOff, data)
+    -- Name/amount/classification first: w.rollId is the AWARDER's local
+    -- arrivalIndex, which needn't line up with this client's own roll order
+    -- for synced winners (RollTracker's "winners" sync), so it's only a
+    -- fallback for an entry with no name to match on.
     for _, w in ipairs(RollOff.winners or {}) do
-        if (data.arrivalIndex ~= nil and w.rollId ~= nil and w.rollId == data.arrivalIndex) then
-            return true;
-        elseif (Util.namesMatch(w.name, data.player) and w.amount == data.amount and w.classification == data.classification) then
+        if (w.name ~= nil) then
+            if (Util.namesMatch(w.name, data.player) and w.amount == data.amount and w.classification == data.classification) then
+                return true;
+            end
+        elseif (data.arrivalIndex ~= nil and w.rollId ~= nil and w.rollId == data.arrivalIndex) then
             return true;
         end
     end
@@ -1570,6 +1593,7 @@ function RollWindow.Refresh()
     end
 
     paintHeader(RollOff);
+    applyWindowBorder();
 
     if (not RollOff) then
         wasStartPrompt = true;
@@ -1649,7 +1673,7 @@ function RollWindow.Refresh()
         setStatus("info", stoppedEarly and "Rolling stopped early." or "Rolling ended.");
     else
         timerBar:Unfreeze();
-        timerBar:SetVariant("running");
+        timerBar:SetVariant(runningVariant());
         setStatus(nil, nil);
         updateCountdown();
     end

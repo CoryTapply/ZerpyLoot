@@ -2,9 +2,11 @@
 ## Title: ForeverLoot
 ## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
 ## Author: Zerpy
-## Version: 0.1.0
+## Version: 0.2.0
+## IconTexture: Interface\AddOns\ForeverLoot\Media\Icons\ForeverLootCrown64.tga
 ## SavedVariables: ForeverLootDB
 ## DefaultState: enabled
+## OptionalDeps: EllesmereUI, EllesmereUIBags, Baganator
 
 # Vendored libraries (each carries its own separate open-source license, see file headers)
 Libs\LibStub\LibStub.lua
@@ -38,13 +40,16 @@ Data\Retention.lua
 Data\ItemLinks.lua
 Net\Codec.lua
 Net\Transport.lua
+Sync\Probe.lua
 Sync\Permissions.lua
 Sync\Live.lua
 Sync\Domains.lua
 Data\HistoryDomain.lua
+Data\CouncilSessionDomain.lua
 Sync\Peers.lua
 Sync\Session.lua
 Sync\Coordinator.lua
+Sync\Stats.lua
 Sync\Debug.lua
 
 # Vendor: small, fresh, decode-only implementations
@@ -58,6 +63,7 @@ RollSession.lua
 GroupLootRoll.lua
 SoftRes.lua
 Trade.lua
+BagHighlight.lua
 LootCouncil.lua
 LootCouncilRoster.lua
 Tooltip.lua
@@ -83,6 +89,7 @@ UI\SettingsWindow\Pages\LootRolls.lua
 UI\SettingsWindow\Pages\LootCouncil.lua
 UI\SettingsWindow\Pages\LootResponses.lua
 UI\SettingsWindow\Pages\Announcements.lua
+UI\SettingsWindow\Pages\Sync.lua
 UI\SettingsWindow\Pages\Profiles.lua
 UI\SettingsWindow\Pages\About.lua
 UI\OptionsPanel.lua
@@ -97,6 +104,7 @@ UI\AwardWindow.lua
 UI\LootHistoryWindow.lua
 UI\DebugLogWindow.lua
 UI\SyncStatusWindow.lua
+UI\MinimapButton.lua
 
 # Debug / slash commands
 Debug.lua

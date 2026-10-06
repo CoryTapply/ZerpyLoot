@@ -8,6 +8,10 @@ roll-off start, Util.playConfiguredSound). Full width (rather than
 page:Section's normal 2-column grid) because more sounds/checkboxes are
 expected here later - see LootRolls.lua's own hand-built full-width "Loot
 Chat" section for the left-checkboxes/right-content pattern this follows.
+
+Below Sounds, a full-width "Trade Queue" section with the bag highlight
+toggle (BagHighlight.lua, EllesmereUI Bags or Baganator) - greyed out, with
+its desc swapped for a "requires" note, when neither bag addon is loaded.
 ]]
 
 local FL = ForeverLoot;
@@ -42,6 +46,28 @@ local function soundOptions(sentinelKey, sentinelLabel)
     return options;
 end
 
+-- Builds a full-width section shell (gold title + divider) on the page and
+-- returns its outer frame plus the Y offset (inside that frame) where its
+-- content starts. The caller positions the outer frame and sets its height.
+local function buildFullWidthSection(page, title)
+    local outer = CreateFrame("Frame", nil, page.frame);
+    outer:SetWidth(page.contentWidth);
+
+    local titleText = outer:CreateFontString(nil, "OVERLAY");
+    SetFont(titleText, "sectionHeader");
+    titleText:SetTextColor(unpack(Colors.gold));
+    titleText:SetPoint("TOPLEFT", outer, "TOPLEFT", 0, 0);
+    titleText:SetText(title);
+
+    local divider = outer:CreateTexture(nil, "ARTWORK");
+    divider:SetColorTexture(unpack(Colors.divider));
+    divider:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -6);
+    divider:SetPoint("TOPRIGHT", outer, "TOPRIGHT", 0, 0);
+    divider:SetHeight(FL.Pixel.PixelSize(1));
+
+    return outer, -(titleText:GetStringHeight() + 6 + Sizes.layout.rowGap);
+end
+
 FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
     page:Header("General");
 
@@ -56,6 +82,12 @@ FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
             end
         end,
     };
+    section:Checkbox{
+        key = "general.minimapButton",
+        label = "Enable minimap button",
+        desc = "Shows the ForeverLoot button on the minimap. Middle-clicking the button also turns this off.",
+        default = true,
+    };
 
     --------------------------------------------------------------------------
     -- "Sounds" section - full width, below the normal 2-column grid above.
@@ -65,23 +97,8 @@ FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
 
     local soundsTop = page:contentBottom() - Sizes.layout.sectionGap;
 
-    local soundsOuter = CreateFrame("Frame", nil, page.frame);
+    local soundsOuter, soundsInnerTop = buildFullWidthSection(page, "Sounds");
     soundsOuter:SetPoint("TOPLEFT", page.frame, "TOPLEFT", 0, soundsTop);
-    soundsOuter:SetWidth(page.contentWidth);
-
-    local soundsTitle = soundsOuter:CreateFontString(nil, "OVERLAY");
-    SetFont(soundsTitle, "sectionHeader");
-    soundsTitle:SetTextColor(unpack(Colors.gold));
-    soundsTitle:SetPoint("TOPLEFT", soundsOuter, "TOPLEFT", 0, 0);
-    soundsTitle:SetText("Sounds");
-
-    local soundsDivider = soundsOuter:CreateTexture(nil, "ARTWORK");
-    soundsDivider:SetColorTexture(unpack(Colors.divider));
-    soundsDivider:SetPoint("TOPLEFT", soundsTitle, "BOTTOMLEFT", 0, -6);
-    soundsDivider:SetPoint("TOPRIGHT", soundsOuter, "TOPRIGHT", 0, 0);
-    soundsDivider:SetHeight(FL.Pixel.PixelSize(1));
-
-    local soundsInnerTop = -(soundsTitle:GetStringHeight() + 6 + Sizes.layout.rowGap);
     local colWidth = math.floor((page.contentWidth - COLUMN_GAP) / 2);
 
     ----------------------------------------------------------------------
@@ -203,7 +220,54 @@ FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
         return top - height;
     end
 
-    page.contentBottomOverride = layoutSoundsSection(soundsTop);
+    --------------------------------------------------------------------------
+    -- "Trade Queue" section - full width, below Sounds. One column (a single
+    -- SectionMethods spanning the whole width), so it reflows normally.
+    --------------------------------------------------------------------------
+
+    local tradeOuter, tradeInnerTop = buildFullWidthSection(page, "Trade Queue");
+
+    local tradeFrame = CreateFrame("Frame", nil, tradeOuter);
+    tradeFrame:SetPoint("TOPLEFT", tradeOuter, "TOPLEFT", 0, tradeInnerTop);
+    tradeFrame:SetWidth(page.contentWidth);
+
+    local tradeSection = setmetatable({
+        page = page,
+        frame = tradeFrame,
+        width = page.contentWidth,
+        startY = 0,
+        nextRowY = 0,
+        rows = {},
+        items = {},
+    }, Widgets.SectionMethods);
+
+    local bagsAvailable = FL.BagHighlight.IsAvailable();
+    local highlightRow = tradeSection:Checkbox{
+        key = "bags.tradeQueueHighlight",
+        label = "Highlight Trade Queue items in bags",
+        desc = bagsAvailable
+            and "Adds a glow, colored by item quality, to items in your bags that are waiting in the Trade Queue. Works with EllesmereUI Bags and Baganator."
+            or "Requires EllesmereUI Bags or Baganator to be enabled.",
+        default = true,
+    };
+    if (not bagsAvailable) then highlightRow:SetEnabledState(false); end
+
+    -- Same contract as layoutSoundsSection: position at `top`, return where
+    -- the next thing should start.
+    local function layoutTradeQueueSection(top)
+        tradeOuter:SetPoint("TOPLEFT", page.frame, "TOPLEFT", 0, top);
+        local innerHeight = tradeSection:Reflow();
+        local height = (-tradeInnerTop) + innerHeight;
+        tradeOuter:SetHeight(height);
+        return top - height;
+    end
+
+    local function layoutFullWidthSections(top)
+        local afterSounds = layoutSoundsSection(top);
+        return layoutTradeQueueSection(afterSounds - Sizes.layout.sectionGap);
+    end
+
+    page.contentBottomOverride = layoutFullWidthSections(soundsTop);
 
     -- Re-run once this client's fonts/geometry have actually settled
     -- (Registry.LayoutCurrentPage, via PageMethods:Layout) - page:Section's
@@ -211,7 +275,7 @@ FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
     -- below already reflects it.
     page:AddLayoutHook(function()
         page.contentBottomOverride = nil;
-        page.contentBottomOverride = layoutSoundsSection(page:contentBottom() - Sizes.layout.sectionGap);
+        page.contentBottomOverride = layoutFullWidthSections(page:contentBottom() - Sizes.layout.sectionGap);
     end);
 
     -- No opts.footer passed to RegisterPage below - this page gets the

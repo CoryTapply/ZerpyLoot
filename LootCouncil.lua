@@ -32,7 +32,6 @@ LootCouncil.FALLBACK_ICON = FALLBACK_ICON;
 -- broadcast unrelated traffic to real Gargul clients in the raid).
 local LC_PREFIX = "ForeverLootLC";
 LootCouncil.CommActions = {}; -- action name (string) -> handler(Message)
-LootCouncil.debugEnabled = false;
 
 -- In-memory (never persisted to FL.DB) proof that a given raid/party member
 -- is actually running ForeverLoot: name -> true, set the moment ANY LC_PREFIX
@@ -129,6 +128,62 @@ function LootCouncil.Init()
     AceComm:RegisterComm(LC_PREFIX, onLCMessage);
 
     ensureItemInfoFrame();
+    LootCouncil.InitReloadWindows();
+    LootCouncil.InitGroupWatcher();
+end
+
+--- Whether the local player still owes a response to an item that can
+--- still be awarded. Awarded or removed items don't count: nothing the
+--- player answers there can change anything.
+local function hasOpenUnansweredItem(Session)
+    local myName = Util.stripRealm(Util.UnitName("player"));
+    for _, item in ipairs(Session.items) do
+        if (not item.candidates[myName] and not item.awardedTo and not item.removedEarly) then
+            return true;
+        end
+    end
+    return false;
+end
+
+--- Brings the council windows back after a /reload or a relog after a
+--- disconnect. The session itself survives in SavedVariables; only the
+--- windows were lost.
+---   - Respond window: when the player still has items to answer.
+---   - Review and Award window: when the player is on the council (or is
+---     the session's leader - CanAccessReviewWindow).
+--- Checked a few seconds after the first PLAYER_ENTERING_WORLD, and once
+--- more later in case the group roster hadn't loaded yet on a fresh login.
+--- The council session domain's Summary() is the guard: it's nil unless the
+--- session is active and its leader is in our group, so a leftover session
+--- from an earlier raid never pops a window. If the session changed while we
+--- were away, the snapshot catch-up that follows repaints (or hides) them.
+local RELOAD_CHECK_DELAYS = { 3, 10 };
+
+function LootCouncil.InitReloadWindows()
+    local frame = CreateFrame("Frame");
+    frame:RegisterEvent("PLAYER_ENTERING_WORLD");
+    frame:SetScript("OnEvent", function(self)
+        self:UnregisterEvent("PLAYER_ENTERING_WORLD"); -- later ones are zone changes
+        local respondShown, awardShown = false, false;
+        for _, delay in ipairs(RELOAD_CHECK_DELAYS) do
+            C_Timer.After(delay, function()
+                local Session = LootCouncil.CurrentSession;
+                if (not LootCouncil.IsSessionLive()) then return; end
+                if (not FL.Sync.CouncilSessionDomain:Summary()) then return; end
+
+                if (not respondShown and hasOpenUnansweredItem(Session)
+                    and FL.UI.RespondWindow and FL.UI.RespondWindow.Show) then
+                    respondShown = true;
+                    FL.UI.RespondWindow.Show();
+                end
+                if (not awardShown and LootCouncil.CanAccessReviewWindow()
+                    and FL.UI.AwardWindow and FL.UI.AwardWindow.Show) then
+                    awardShown = true;
+                    FL.UI.AwardWindow.Show();
+                end
+            end);
+        end
+    end);
 end
 
 --------------------------------------------------------------------------
@@ -138,10 +193,34 @@ end
 -- to satisfy here.
 --------------------------------------------------------------------------
 
-local function lcDebugPrint(msg)
-    if (LootCouncil.debugEnabled) then
-        print("|cff8865ffForeverLoot|r " .. msg);
+--- Debug log line in the COUNCIL category (Sync/Debug.lua, /fl debug).
+local function lcLog(level, fmt, ...)
+    FL.Sync.Debug.Log("COUNCIL", level, fmt, ...);
+end
+
+--- "item 3 (|cff...|h[Thunderfury]|h|r)" - a session item for log lines.
+local function itemLabel(Session, itemSession)
+    local item = Session and Session.items and Session.items[itemSession];
+    local link = item and (item.itemLink or item.itemName);
+    return link and ("item %d (%s)"):format(itemSession, link) or ("item " .. tostring(itemSession));
+end
+
+--- A response id's label from the session's own response list.
+local function responseLabel(Session, responseId)
+    for _, r in ipairs((Session and Session.responses) or {}) do
+        if (r.id == responseId) then return r.label or tostring(responseId); end
     end
+    return tostring(responseId);
+end
+
+-- Every change to CurrentSession is counted here, once per client, so a
+-- raid member who joins late or reloads can tell they're behind (plan Phase
+-- 7, Data/CouncilSessionDomain.lua's "single version point"). Called where a
+-- change is actually applied: the network apply handlers below, plus the
+-- leader's own optimistic paths whose echo is ignored. A raider's own
+-- optimistic SubmitResponse/ToggleVote is counted at its echo instead.
+local function bump(cause)
+    FL.Sync.CouncilSessionDomain:Bump(cause);
 end
 
 lcSend = function(action, content, channel, recipient)
@@ -155,7 +234,7 @@ lcSend = function(action, content, channel, recipient)
     local encoded = LibDeflate:EncodeForWoWAddonChannel(
         LibDeflate:CompressDeflate(LibSerialize:Serialize(payload), { level = 5 }));
 
-    lcDebugPrint(("SEND %s -> %s%s"):format(tostring(action), distribution, target and (":" .. target) or ""));
+    lcLog(2, "sent %s · to %s", tostring(action), target or tostring(distribution):lower());
 
     AceComm:SendCommMessage(LC_PREFIX, encoded, distribution, target, "NORMAL");
 end
@@ -204,7 +283,8 @@ onLCMessage = function(prefix, encoded, distribution, senderName)
         LootCouncil.Presence[Message.senderName] = true;
     end
 
-    lcDebugPrint(("RECV %s <- %s (%s)"):format(tostring(Message.action), Message.senderFqn or "?", distribution));
+    lcLog(2, "got %s from %s · via %s", tostring(Message.action), Message.senderName or Message.senderFqn or "?",
+        tostring(distribution):lower());
 
     local handler = LootCouncil.CommActions[Message.action];
     if (handler) then handler(Message); end
@@ -212,37 +292,53 @@ end
 
 --------------------------------------------------------------------------
 -- Council membership (Phase 4+)
+--
+-- Two separate lists:
+--   - The saved roster (LootCouncil.Roster, FL.DB.lootCouncil.roster): this
+--     client's own local list of who to pre-select on the Loot Council
+--     settings page. Never sent or overwritten over the network.
+--   - The session council (Session.council): who actually sits on the
+--     council for the running session. Set by the leader at session start
+--     from the saved roster members who are in the group (plus the leader),
+--     and only changed by the leader's "Update Session Council".
+-- Every vote/access check reads the session council.
 --------------------------------------------------------------------------
 
---- Pure roster check. Two separate, wider checks build on top of this -
---- CanAccessReviewWindow (window visibility) and CanVote (voting
---- eligibility) - both also let the session initiator in (whoever actually
---- started the session - not necessarily the group's current leader; see
---- those functions below). This function itself must stay the narrow
---- roster-only check other code relies on.
+--- Pure session-council check - false with no session. Two separate, wider
+--- checks build on top of this - CanAccessReviewWindow (window visibility)
+--- and CanVote (voting eligibility) - both also let the session initiator
+--- in, as a safety net for an older session saved without a council. This
+--- function itself must stay the narrow council-only check other code
+--- relies on.
 ---@param name string
 function LootCouncil.IsCouncilMember(name)
+    local Session = LootCouncil.CurrentSession;
+    local council = Session and Session.council;
+    return council ~= nil and council[Util.stripRealm(name)] == true;
+end
+
+--- Whether `name` is on this client's saved roster (the settings page's
+--- pre-selection), regardless of any session.
+---@param name string
+function LootCouncil.IsOnSavedRoster(name)
     return LootCouncil.Roster[Util.stripRealm(name)] == true;
 end
 
 --- Whether the local player may open UI/AwardWindow.lua. Wider
---- than IsCouncilMember: also lets the current session's initiator in, so a
---- leader who forgot to add themselves to the roster (Phase 7 concern) can
---- still review the session they started - the Award button stays disabled
---- until Phase 6 regardless.
+--- than IsCouncilMember: also lets the current session's initiator in.
 function LootCouncil.CanAccessReviewWindow()
     if (LootCouncil.IsCouncilMember(Util.UnitName("player"))) then return true; end
     local Session = LootCouncil.CurrentSession;
     return Session ~= nil and Session.initiatorIsMe == true;
 end
 
---- Whether `name`/`fqn` may cast a vote in the current session - a council
---- member, or the session's own initiator, even if the initiator forgot to
---- add themselves to the roster (mirrors CanAccessReviewWindow's widening,
---- for the same reason). Takes an explicit fqn (rather than reading the
---- local-only Session.initiatorIsMe flag) so the SAME function verifies
---- both the local player (ToggleVote) and a remote sender (applyVote) by
---- comparing fqn against Session.initiatorFqn, which every client agrees on.
+--- Whether `name`/`fqn` may cast a vote in the current session - a session
+--- council member, or the session's own initiator (mirrors
+--- CanAccessReviewWindow's widening). Takes an explicit fqn (rather than
+--- reading the local-only Session.initiatorIsMe flag) so the SAME function
+--- verifies both the local player (ToggleVote) and a remote sender
+--- (applyVote) by comparing fqn against Session.initiatorFqn, which every
+--- client agrees on.
 ---@param name string
 ---@param fqn string|nil
 function LootCouncil.CanVote(name, fqn)
@@ -252,152 +348,198 @@ function LootCouncil.CanVote(name, fqn)
 end
 
 --------------------------------------------------------------------------
--- Roster management (stopgap ahead of Phase 7's dedicated UI)
+-- Saved roster + session council management
 --------------------------------------------------------------------------
 
--- Fired (no arguments) whenever the council roster changes for any reason -
--- a local edit (RosterAdd/RosterRemove/RosterClear) or an incoming sync
--- (councilSettingsSync/session-start snapshot, both of which go through
--- applyRosterNames below). Lets UI outside the settings page (e.g.
--- StartSessionWindow's council-count button) react immediately instead of
--- polling.
-local rosterChangedCallbacks = {};
+-- Fired (no arguments) whenever the saved roster OR the session council
+-- changes - a local roster edit (RosterAdd/RosterRemove/RosterClear), a new
+-- session, or an incoming council update. Lets UI outside the settings page
+-- (e.g. StartSessionWindow's council-count button) react immediately
+-- instead of polling.
+local councilChangedCallbacks = {};
 
 function LootCouncil.RegisterRosterChangedCallback(fn)
-    table.insert(rosterChangedCallbacks, fn);
+    table.insert(councilChangedCallbacks, fn);
 end
 
-local function fireRosterChanged()
-    for _, fn in ipairs(rosterChangedCallbacks) do
+local function fireCouncilChanged()
+    for _, fn in ipairs(councilChangedCallbacks) do
         pcall(fn);
     end
 end
 
---- Alphabetical array of every current council member's name, for display
---- and for broadcasting (see SyncCouncilSettings/sessionStart below).
-function LootCouncil.RosterNames()
+local function sortedKeys(set)
     local names = {};
-    for name in pairs(LootCouncil.Roster) do
+    for name in pairs(set or {}) do
         table.insert(names, name);
     end
     table.sort(names);
     return names;
 end
 
---- Replaces the local roster wholesale with `names` (full-replace snapshot,
---- not a merge) - self-healing the same way response/vote state already is,
---- matching this module's idempotent-absolute-state convention throughout.
---- Shared by the explicit councilSettingsSync push (applyCouncilSettingsSync)
---- and sessionStart's own roster snapshot (applySessionStart) - the only two
---- ways a roster reaches the wire; local edits (RosterAdd/RosterRemove/
---- RosterClear) deliberately do NOT auto-broadcast, so the raid leader
---- decides when to actually push a roster in progress (see
---- LootCouncil.pendingRosterSync below and UI/SettingsWindow/Pages/
---- LootCouncil.lua's "Sync to Raid" button).
----@param names string[]
-local function applyRosterNames(names)
-    wipe(LootCouncil.Roster);
-    for _, name in ipairs(names) do
-        if (type(name) == "string" and name ~= "") then
-            LootCouncil.Roster[Util.stripRealm(name)] = true;
-        end
-    end
-    fireRosterChanged();
+--- Alphabetical array of every saved roster name (in the group or not).
+function LootCouncil.RosterNames()
+    return sortedKeys(LootCouncil.Roster);
 end
 
--- Set by every LOCAL roster edit (RosterAdd/RosterRemove/RosterClear) and
--- cleared by SyncCouncilSettings - tracks whether the roster has changed
--- since the last explicit "Sync to Raid" push, so the settings page can
--- highlight that button gold again as a reminder those changes still need
--- to go out (see UI/SettingsWindow/Pages/LootCouncil.lua's updateFooterCount).
--- Deliberately NOT set by applyRosterNames: that path only ever runs for
--- roster state arriving FROM the network (a councilSettingsSync push or a
--- session-start snapshot), which is already synced by definition.
-LootCouncil.pendingRosterSync = false;
+--- Alphabetical array of the running session's council, or {} with no
+--- session.
+function LootCouncil.SessionCouncilNames()
+    local Session = LootCouncil.CurrentSession;
+    return sortedKeys(Session and Session.council);
+end
 
---- Adds `name` to the council roster. Returns false if already present.
---- Does NOT broadcast - local edits only take effect on the wire once the
---- raid leader explicitly hits "Sync to Raid" (SyncCouncilSettings) or
---- starts a session (SendToRaid), both of which send the full roster.
+--- The council a session started (or updated) right now would get: every
+--- saved roster member currently in the raid/party, plus the local player
+--- (the leader always sits on their own session's council). Alphabetical,
+--- realm-stripped.
+function LootCouncil.SelectedCouncilNames()
+    local selected = {};
+    selected[Util.stripRealm(Util.UnitName("player"))] = true;
+
+    local groupsResult = FL.LootCouncilRoster.BuildGroups();
+    for _, group in pairs(groupsResult.groups) do
+        for _, member in ipairs(group.members) do
+            if (LootCouncil.IsOnSavedRoster(member.name)) then
+                selected[Util.stripRealm(member.name)] = true;
+            end
+        end
+    end
+
+    return sortedKeys(selected);
+end
+
+--- Builds a { [strippedName] = true } set from a names array off the wire.
+---@param names string[]
+local function councilSet(names)
+    local set = {};
+    for _, name in ipairs(names or {}) do
+        if (type(name) == "string" and name ~= "") then
+            set[Util.stripRealm(name)] = true;
+        end
+    end
+    return set;
+end
+
+--- Replaces the running session's council wholesale with `names`
+--- (full-replace, not a merge - this module's idempotent-absolute-state
+--- convention). Used by the leader's sessionCouncilUpdate
+--- (applySessionCouncilUpdate). Never touches the saved roster.
+---@param names string[]
+local function applySessionCouncil(names)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session) then return; end
+    Session.council = councilSet(names);
+    fireCouncilChanged();
+end
+
+--- Whether the leader's current in-group selection differs from the running
+--- session's council - i.e. "Update Session Council" has something to push.
+--- Always false with no live session, or when we didn't start it.
+function LootCouncil.HasPendingCouncilUpdate()
+    if (not LootCouncil.IsSessionLive() or not LootCouncil.CurrentSession.initiatorIsMe) then return false; end
+    local current = LootCouncil.CurrentSession.council or {};
+    local selected = LootCouncil.SelectedCouncilNames();
+    if (#selected ~= Util.tcount(current)) then return true; end
+    for _, name in ipairs(selected) do
+        if (not current[name]) then return true; end
+    end
+    return false;
+end
+
+--- Adds `name` to the saved roster. Returns false if already present.
+--- Local only - a running session's council changes only through
+--- UpdateSessionCouncil.
 ---@param name string
 function LootCouncil.RosterAdd(name)
     name = Util.stripRealm(name or "");
     if (name == "") then return false; end
     if (LootCouncil.Roster[name]) then return false; end
     LootCouncil.Roster[name] = true;
-    LootCouncil.pendingRosterSync = true;
-    fireRosterChanged();
+    fireCouncilChanged();
     return true;
 end
 
---- Removes `name` from the council roster. Returns false if not present.
---- Does NOT broadcast - see RosterAdd's comment above.
+--- Removes `name` from the saved roster. Returns false if not present.
 ---@param name string
 function LootCouncil.RosterRemove(name)
     name = Util.stripRealm(name or "");
     if (not LootCouncil.Roster[name]) then return false; end
     LootCouncil.Roster[name] = nil;
-    LootCouncil.pendingRosterSync = true;
-    fireRosterChanged();
+    fireCouncilChanged();
     return true;
 end
 
---- Removes every current council roster member. Returns the number removed.
---- Does NOT broadcast - see RosterAdd's comment above.
+--- Removes every saved roster member. Returns the number removed.
 function LootCouncil.RosterClear()
     local n = Util.tcount(LootCouncil.Roster);
     if (n == 0) then return 0; end
     wipe(LootCouncil.Roster);
-    LootCouncil.pendingRosterSync = true;
-    fireRosterChanged();
+    fireCouncilChanged();
     return n;
 end
 
---- Pushes the full council roster to the raid - distinct from SendToRaid
---- below, which starts a new voting SESSION on the leader's draft item list.
---- Only meaningful to call as the raid leader/assistant (see
---- UI/SettingsWindow/Pages/LootCouncil.lua, which disables its "Sync to
---- Raid" button otherwise) - not gated here, matching this module's existing
---- trust model (any client can technically call RosterAdd/RosterRemove or
---- SendToRaid; the wire layer's anti-spoof check only guarantees identity,
---- not intent).
-function LootCouncil.SyncCouncilSettings()
-    lcSend("councilSettingsSync", {
-        names = LootCouncil.RosterNames(),
+--- Pushes the leader's current in-group selection (SelectedCouncilNames) to
+--- the running session as its new council. Only the session's initiator may
+--- do this - receivers ignore it from anyone else.
+---@return boolean success
+function LootCouncil.UpdateSessionCouncil()
+    local Session = LootCouncil.CurrentSession;
+    if (not LootCouncil.IsSessionLive() or not Session.initiatorIsMe) then return false; end
+    lcSend("sessionCouncilUpdate", {
+        sessionId = Session.id,
+        council = LootCouncil.SelectedCouncilNames(),
     }, "GROUP");
-    LootCouncil.pendingRosterSync = false;
+    return true;
+end
+
+--- Closes the Review and Award window if it's open but the local player no
+--- longer has access (taken off the session council, or a new session they
+--- aren't on). Returns true if it closed it.
+local function closeAwardWindowIfNoAccess()
+    local AwardWindow = FL.UI.AwardWindow;
+    if (not (AwardWindow and AwardWindow.IsShown and AwardWindow.IsShown())) then return false; end
+    if (LootCouncil.CanAccessReviewWindow()) then return false; end
+    AwardWindow.Hide();
+    return true;
 end
 
 --- Applied by every client (including the sender, via the self-looped
---- broadcast) when a councilSettingsSync arrives. If this local player was
---- just added while a session is already active, automatically pop the
---- Review and Award window open for them - matches the existing "broadcast
---- pops the window" convention MaybeAutoShow already uses for a brand-new
---- session (see applySessionStart) - without this, a newly-added council
---- member would have no way to know they need to open /flc themselves.
-local function applyCouncilSettingsSync(Message)
+--- broadcast) when a sessionCouncilUpdate arrives. If this local player was
+--- just added, automatically pop the Review and Award window open for them -
+--- matches the "broadcast pops the window" convention MaybeAutoShow already
+--- uses for a brand-new session (see applySessionStart).
+local function applySessionCouncilUpdate(Message)
     local content = Message.content;
-    if (type(content) ~= "table" or type(content.names) ~= "table") then return; end
+    if (type(content) ~= "table" or type(content.council) ~= "table" or not content.sessionId) then return; end
+
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.id ~= content.sessionId or Session.status ~= "active") then return; end
+    if (not Util.iEquals(Message.senderFqn, Session.initiatorFqn)) then return; end
 
     local myName = Util.stripRealm(Util.UnitName("player"));
     local wasMember = LootCouncil.IsCouncilMember(myName);
 
-    applyRosterNames(content.names);
+    applySessionCouncil(content.council);
+    bump("council");
 
-    print(("|cff8865ffForeverLoot|r Council settings synced from %s (%d members)."):format(
-        Message.senderFqn or "?", #content.names));
+    lcLog(1, "session #%d: council updated by %s · %d members", content.sessionId,
+        Util.stripRealm(Message.senderFqn or "?"), #content.council);
+    print(("|cff8865ffForeverLoot|r Session council updated by %s (%d members)."):format(
+        Util.stripRealm(Message.senderFqn or "?"), #content.council));
 
     local becameMember = (not wasMember) and LootCouncil.IsCouncilMember(myName);
-    local Session = LootCouncil.CurrentSession;
-    if (becameMember and Session and Session.status == "active") then
+    if (becameMember) then
         if (FL.UI.AwardWindow and FL.UI.AwardWindow.Show) then
             FL.UI.AwardWindow.Show(); -- Show() itself calls Refresh()
         end
+    elseif (closeAwardWindowIfNoAccess()) then
+        print("|cff8865ffForeverLoot|r You were removed from the session council.");
     elseif (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
         FL.UI.AwardWindow.Refresh();
     end
 end
-LootCouncil.CommActions.councilSettingsSync = applyCouncilSettingsSync;
+LootCouncil.CommActions.sessionCouncilUpdate = applySessionCouncilUpdate;
 
 --------------------------------------------------------------------------
 -- Session lifecycle
@@ -445,12 +587,27 @@ local function applySessionStart(Message)
         return;
     end
 
-    -- Roster snapshot carried alongside the session, so everyone converges
-    -- on the leader's current roster the moment a session starts, even if
-    -- they missed (or the leader never sent) an explicit "Sync to Raid".
-    if (type(content.names) == "table") then
-        applyRosterNames(content.names);
+    -- A repeat of the session we already hold (same leader, id and item
+    -- list) is a duplicate, not a new session. Before Phase 7 this only
+    -- happened on a duplicated message; now a snapshot import (late join,
+    -- reload) can deliver the session before its own sessionStart arrives,
+    -- and re-creating it here would wipe every response the import carried.
+    local existing = LootCouncil.CurrentSession;
+    if (existing and existing.id == content.sessionId and Util.iEquals(existing.initiatorFqn, Message.senderFqn)
+        and #existing.items >= #content.items) then
+        local same = true;
+        for i, itemLink in ipairs(content.items) do
+            if (existing.items[i].itemLink ~= itemLink) then same = false; break; end
+        end
+        if (same) then return; end
     end
+
+    -- This session's council: the leader's in-group selection at the moment
+    -- it started (SelectedCouncilNames). The initiator is always on it, even
+    -- if the leader's client somehow left them out.
+    local council = councilSet(type(content.council) == "table" and content.council or nil);
+    council[Util.stripRealm(Message.senderFqn or "")] = true;
+    council[""] = nil;
 
     -- The leader's response-button list at the moment the session started
     -- (Core/Responses.lua's SessionSnapshot) - every raider's Respond popup
@@ -473,13 +630,18 @@ local function applySessionStart(Message)
         initiatorFqn = Message.senderFqn,
         initiatorIsMe = Message.isSelf,
         startedAt = GetTime(),
+        startedAtServer = GetServerTime(), -- comparable across clients (snapshot versions); GetTime() isn't
         status = "active",
         items = items,
         responses = responses,
+        council = council,
+        rev = 0,
     };
     LootCouncil.CurrentSession = FL.DB.lootCouncil.session;
+    bump("start");
+    fireCouncilChanged();
 
-    lcDebugPrint(("Loot council session %d started by %s (%d items)"):format(content.sessionId, Message.senderFqn or "?", #items));
+    lcLog(1, "session #%d started by %s · %d items", content.sessionId, Util.stripRealm(Message.senderFqn or "?"), #items);
 
     -- Prove to the whole raid/party that we're running ForeverLoot even if
     -- we never end up responding/voting - lets ANY council member's Award
@@ -492,6 +654,10 @@ local function applySessionStart(Message)
     if (not Message.isSelf) then
         lcSend("presenceAck", nil, "GROUP");
     end
+
+    -- A window still open from the previous session closes if we aren't on
+    -- this one's council.
+    closeAwardWindowIfNoAccess();
 
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
         FL.UI.RespondWindow.MaybeAutoShow();
@@ -523,8 +689,10 @@ local function applySessionAddItems(Message)
     for i, itemLink in ipairs(content.items) do
         Session.items[baseIndex + i] = buildSessionItemEntry(itemLink, baseIndex + i);
     end
+    bump("addItems");
 
-    lcDebugPrint(("Loot council session %d: %d item(s) added by %s"):format(content.sessionId, #content.items, Message.senderFqn or "?"));
+    lcLog(1, "session #%d: %s added %d item%s · now %d items", content.sessionId, Util.stripRealm(Message.senderFqn or "?"),
+        #content.items, (#content.items == 1) and "" or "s", #Session.items);
 
     if (not Message.isSelf) then
         lcSend("presenceAck", nil, "GROUP");
@@ -579,7 +747,7 @@ function LootCouncil.SendToRaid()
     lcSend("sessionStart", {
         sessionId = sessionId,
         items = itemLinks,
-        names = LootCouncil.RosterNames(),
+        council = LootCouncil.SelectedCouncilNames(),
         responses = FL.Responses.SessionSnapshot(),
     }, "GROUP");
 
@@ -596,7 +764,7 @@ end
 ---@return boolean success
 function LootCouncil.AddItemsToSession(draftItems)
     local Session = LootCouncil.CurrentSession;
-    if (not Session or Session.status ~= "active") then return false; end
+    if (not LootCouncil.IsSessionLive()) then return false; end
     if (#draftItems == 0) then return false; end
 
     local itemLinks = {};
@@ -800,6 +968,7 @@ local function applyResponse(Message)
         voteOrder = (existing and existing.voteOrder) or (preVote and preVote.voteOrder) or {},
     };
     if (item.preVotes) then item.preVotes[Message.senderName] = nil; end
+    bump("response");
 
     -- Authoritative confirmation that SubmitResponse's optimistic send above
     -- actually made it out and back - clears any stale failure marker even
@@ -808,7 +977,8 @@ local function applyResponse(Message)
         item.sendFailed = false;
     end
 
-    lcDebugPrint(("%s responded %s to item %d"):format(Message.senderName, tostring(content.response), content.itemSession));
+    lcLog(1, "%s answered \"%s\" on %s", Message.senderName, responseLabel(Session, content.response),
+        itemLabel(Session, content.itemSession));
 
     if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
         FL.UI.RespondWindow.Refresh();
@@ -955,9 +1125,10 @@ local function applyVote(Message)
     updateVoteOrder(candidate, Message.senderName, content.approved);
     -- Set membership only - never store `false` (see ToggleVote above).
     candidate.approvals[Message.senderName] = content.approved or nil;
+    bump("vote");
 
-    lcDebugPrint(("%s %s %s for item %d"):format(Message.senderName,
-        content.approved and "approved" or "unapproved", content.targetPlayer, content.itemSession));
+    lcLog(1, "%s %s %s on %s", Message.senderName,
+        content.approved and "voted for" or "took back their vote for", content.targetPlayer, itemLabel(Session, content.itemSession));
 
     if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
         FL.UI.AwardWindow.Refresh();
@@ -1189,6 +1360,27 @@ function LootCouncil.CanAwardItems()
     return Session ~= nil and Session.initiatorIsMe == true;
 end
 
+-- How long our own never-ended session stays live. Past this it's treated
+-- as left over from an earlier raid, so the leader can start a fresh one.
+local STALE_OWN_SESSION_SECONDS = 12 * 60 * 60;
+
+--- Whether the current session is one this client can still act on: active,
+--- and either ours and started recently, or led by someone in our group. A
+--- session we were left holding from an earlier raid (the leader ended it
+--- while we were offline, or never ended it) isn't live, so it can't block
+--- starting a new one. Derived, never written back to Session.status, so a
+--- leader who's only briefly out of the group brings the session back the
+--- moment they rejoin - same rule CouncilSessionDomain's localVersion() uses.
+function LootCouncil.IsSessionLive()
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.status ~= "active") then return false; end
+    if (Session.initiatorIsMe) then
+        local started = Session.startedAtServer;
+        return started == nil or (GetServerTime() - started) < STALE_OWN_SESSION_SECONDS;
+    end
+    return FL.Sync.CouncilSessionDomain.InMyGroup(Util.stripRealm(Session.initiatorFqn or ""));
+end
+
 --- Awards `itemSession` to `playerName`: leader-only. Can be called again on
 --- an already-awarded item to re-award it to someone else - there is no
 --- "already awarded" guard, only the per-item awardCount below, which exists
@@ -1220,6 +1412,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
     item.awardCount = awardSeq;
     item.awardedTo = playerName;
     item.awardedAt = GetServerTime();
+    bump("award");
     local candidate = item.candidates[playerName];
 
     local councilAwardId = Session.id * 10000 + itemSession; -- reuses Trade's existing
@@ -1237,7 +1430,7 @@ function LootCouncil.AwardItem(itemSession, playerName)
         if (success) then
             return;
         end
-        lcDebugPrint(("Auto-trade to %s failed: %s"):format(playerName, tostring(reason)));
+        lcLog(1, "couldn't start the trade with %s · %s, added to the trade queue", playerName, tostring(reason));
         if (FL.UI.TradeQueueWindow and FL.UI.TradeQueueWindow.Show) then
             FL.UI.TradeQueueWindow.Show();
         end
@@ -1296,6 +1489,7 @@ function LootCouncil.DisenchantItem(itemSession)
     item.awardCount = awardSeq;
     item.awardedTo = recipient;
     item.awardedAt = GetServerTime();
+    bump("award");
 
     local awardChannel = Util.GroupChatChannel();
     if (awardChannel and FL.Settings.GetRaidChatLootCouncilAwardEnabled()) then
@@ -1351,10 +1545,11 @@ local function applyAward(Message)
     item.awardCount = content.awardSeq;
     item.awardedTo = content.winner;
     item.awardedAt = GetServerTime();
+    bump("award");
 
     LootCouncil.RecordHistory(Session, content.itemSession, content.winner, Message.senderName, content.awardSeq, "live");
 
-    lcDebugPrint(("%s awarded item %d to %s"):format(Message.senderName, content.itemSession, content.winner));
+    lcLog(1, "%s awarded %s to %s", Message.senderName, itemLabel(Session, content.itemSession), content.winner);
 
     if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
         FL.UI.AwardWindow.Refresh();
@@ -1381,6 +1576,7 @@ function LootCouncil.EndSession()
     if (not Session or Session.status ~= "active") then return; end
 
     Session.status = "ended";
+    bump("end");
     -- Printed here rather than left to applySessionEnd's self-looped echo -
     -- that handler's "already applied" guard (Session.status ~= "active")
     -- bails out before its own print, since the optimistic mutation above
@@ -1417,8 +1613,9 @@ local function applySessionEnd(Message)
     if (Session.status ~= "active") then return; end -- already applied (e.g. the leader's own echo)
 
     Session.status = "ended";
+    bump("end");
 
-    lcDebugPrint(("%s ended loot council session %d"):format(Message.senderName, content.sessionId));
+    lcLog(1, "session #%d ended by %s", content.sessionId, Message.senderName);
     -- Only reached on every OTHER client - the leader's own echo is caught by
     -- the "already applied" guard above (their optimistic mutation in
     -- EndSession already moved status off "active"), which is why EndSession
@@ -1436,6 +1633,138 @@ local function applySessionEnd(Message)
     end
 end
 LootCouncil.CommActions.sessionEnd = applySessionEnd;
+
+--------------------------------------------------------------------------
+-- Leaving the group mid-session
+--
+--   - A raider who leaves drops their local copy (DropSession). It is NOT
+--     marked ended: ended is terminal in sync (Data/CouncilSessionDomain.lua),
+--     so an ended copy would never resync on rejoin - and would even be
+--     pushed back to the raid as a "correction", ending it for everyone.
+--     With no session held, the joinGroup HELLO (Sync/Coordinator.lua)
+--     imports it again and ReplaceSession reopens the windows.
+--   - The leader leaving ends the session for good. The leader can't
+--     broadcast once out of the group, so every client ends it on its own
+--     side: the leader when it leaves, each raider when it sees the leader
+--     gone from the roster (endSessionLocally).
+--------------------------------------------------------------------------
+
+local function closeSessionWindows()
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Hide) then FL.UI.RespondWindow.Hide(); end
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Hide) then FL.UI.AwardWindow.Hide(); end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
+    end
+end
+
+--- Forgets the current session entirely (local only, nothing is sent) and
+--- closes its windows. It comes back through sync if the group still has it.
+---@param reason string for the debug log
+function LootCouncil.DropSession(reason)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session) then return; end
+    lcLog(1, "session #%d dropped · %s", Session.id or 0, tostring(reason));
+    FL.DB.lootCouncil.session = nil;
+    LootCouncil.CurrentSession = nil;
+    fireCouncilChanged();
+    closeSessionWindows();
+end
+
+--- Ends the current session on this client only - the same state change as
+--- applySessionEnd, for when no sessionEnd message can arrive (the leader
+--- left the group).
+---@param reason string for the debug log
+local function endSessionLocally(reason)
+    local Session = LootCouncil.CurrentSession;
+    if (not Session or Session.status ~= "active") then return; end
+    Session.status = "ended";
+    bump("end");
+    lcLog(1, "session #%d ended locally · %s", Session.id or 0, tostring(reason));
+    closeSessionWindows();
+end
+
+-- Wait after login before the first group check (the roster may not have
+-- loaded yet), and debounce for roster updates - ending a session can't be
+-- undone, so a half-loaded roster must never count as "left".
+local GROUP_WATCH_LOGIN_DELAY = 5;
+local GROUP_WATCH_DEBOUNCE = 2;
+
+function LootCouncil.InitGroupWatcher()
+    local inGroup;       -- nil until the first post-login check
+    local leaderSeenFor; -- "leader#id" of the session whose leader we've seen in our group
+    local pending = false;
+
+    local function sessionKey(Session)
+        return Util.stripRealm(Session.initiatorFqn or "?") .. "#" .. tostring(Session.id);
+    end
+
+    local function leaderInGroup()
+        local Session = LootCouncil.CurrentSession;
+        if (not Session or Session.initiatorIsMe) then return false; end
+        return FL.Sync.CouncilSessionDomain.InMyGroup(Util.stripRealm(Session.initiatorFqn or ""));
+    end
+
+    -- Remembers that this session's leader is (or was) in our group. Run on
+    -- every check and whenever a session starts or is imported, so a session
+    -- whose leader we never saw - a stale one from an earlier raid - is the
+    -- only kind that's never ended for "leader left".
+    local function noteLeader()
+        if (leaderInGroup()) then leaderSeenFor = sessionKey(LootCouncil.CurrentSession); end
+    end
+    LootCouncil.RegisterRosterChangedCallback(noteLeader);
+
+    local function check()
+        local now = IsInGroup();
+        local Session = LootCouncil.CurrentSession;
+        local active = Session ~= nil and Session.status == "active";
+
+        if (inGroup and not now and Session) then
+            if (Session.initiatorIsMe) then
+                if (active) then
+                    endSessionLocally("leaderLeft");
+                    print("|cff8865ffForeverLoot|r You left the group - your loot council session has ended.");
+                end
+            else
+                local wasActive = active and LootCouncil.IsSessionLive();
+                LootCouncil.DropSession("leftGroup");
+                if (wasActive) then
+                    print("|cff8865ffForeverLoot|r You left the group - the loot council session was closed. It will resync if you rejoin.");
+                end
+            end
+        elseif (now and active and not Session.initiatorIsMe and leaderSeenFor == sessionKey(Session)
+            and not leaderInGroup()) then
+            -- Only when the leader WAS in our group at the last check: a stale
+            -- session from an earlier raid must never be ended (and its ended
+            -- state then pushed back to that leader's raid by sync).
+            endSessionLocally("leaderLeft");
+            print(("|cff8865ffForeverLoot|r %s left the group - the loot council session has ended."):format(
+                Util.stripRealm(Session.initiatorFqn or "?")));
+        end
+
+        inGroup = now;
+        noteLeader();
+    end
+
+    local frame = CreateFrame("Frame");
+    frame:RegisterEvent("PLAYER_ENTERING_WORLD");
+    frame:RegisterEvent("GROUP_ROSTER_UPDATE");
+    frame:SetScript("OnEvent", function(self, event)
+        if (event == "PLAYER_ENTERING_WORLD") then
+            self:UnregisterEvent("PLAYER_ENTERING_WORLD"); -- later ones are zone changes
+            C_Timer.After(GROUP_WATCH_LOGIN_DELAY, function()
+                inGroup = IsInGroup();
+                noteLeader();
+            end);
+            return;
+        end
+        if (inGroup == nil or pending) then return; end
+        pending = true;
+        C_Timer.After(GROUP_WATCH_DEBOUNCE, function()
+            pending = false;
+            check();
+        end);
+    end);
+end
 
 --------------------------------------------------------------------------
 -- End session early (UI/AwardWindow.lua's title-bar trash button) - distinct
@@ -1478,6 +1807,7 @@ function LootCouncil.EndSessionEarly()
     end
 
     Session.status = "ended";
+    bump("endEarly");
     print(("|cff8865ffForeverLoot|r Session ended. %d unassigned item%s %s not awarded."):format(
         removedCount, removedCount == 1 and "" or "s", removedCount == 1 and "was" or "were"));
 
@@ -1521,9 +1851,10 @@ local function applySessionEndEarly(Message)
         end
     end
     Session.status = "ended";
+    bump("endEarly");
 
-    lcDebugPrint(("%s ended loot council session %d early (%d unassigned)"):format(
-        Message.senderName, content.sessionId, #content.removedSessions));
+    lcLog(1, "session #%d ended early by %s · %d items left unassigned",
+        content.sessionId, Message.senderName, #content.removedSessions);
     print(("|cff8865ffForeverLoot|r The loot session was ended by %s."):format(Message.senderName));
 
     if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
@@ -1537,3 +1868,100 @@ local function applySessionEndEarly(Message)
     end
 end
 LootCouncil.CommActions.sessionEndEarly = applySessionEndEarly;
+
+--------------------------------------------------------------------------
+-- Snapshot import (sync domain 2, Data/CouncilSessionDomain.lua)
+--------------------------------------------------------------------------
+
+--- Replaces CurrentSession wholesale with a session caught up from another
+--- raid member's snapshot (a late join, reload or disconnect). `plain` is
+--- the decoded snapshot - id, initiatorFqn, initiatorIsMe, startedAtServer,
+--- rev, status, endedAt, responses, and items carrying itemLink,
+--- awardedTo/At, awardCount, removedEarly, candidates and preVotes. Item
+--- entries are rebuilt through buildSessionItemEntry so their shape matches
+--- a live session exactly. `councilNames` becomes the session's council
+--- (the saved roster is never touched). The caller has already decided
+--- `plain` is newer than what we hold.
+---@param plain table
+---@param councilNames string[]|nil
+function LootCouncil.ReplaceSession(plain, councilNames)
+    local previous = LootCouncil.CurrentSession;
+    local isNewSession = not previous or previous.id ~= plain.id
+        or not Util.iEquals(previous.initiatorFqn, plain.initiatorFqn);
+
+    local items = {};
+    for i, src in ipairs(plain.items) do
+        local item = buildSessionItemEntry(src.itemLink, i);
+        item.awardedTo = src.awardedTo;
+        item.awardedAt = src.awardedAt;
+        item.awardCount = src.awardCount;
+        item.removedEarly = src.removedEarly;
+        item.candidates = src.candidates;
+        item.preVotes = src.preVotes;
+
+        -- arrivalIndex is local-only tie-breaking (see nextArrivalIndex);
+        -- respondedAt order is the closest thing to arrival order a
+        -- snapshot can offer.
+        local names = {};
+        for name in pairs(item.candidates) do table.insert(names, name); end
+        table.sort(names, function(a, b)
+            local ra, rb = item.candidates[a].respondedAt or 0, item.candidates[b].respondedAt or 0;
+            if (ra ~= rb) then return ra < rb; end
+            return a < b;
+        end);
+        for _, name in ipairs(names) do
+            nextArrivalIndex = nextArrivalIndex + 1;
+            item.candidates[name].arrivalIndex = nextArrivalIndex;
+        end
+        items[i] = item;
+    end
+
+    FL.DB.lootCouncil.session = {
+        id = plain.id,
+        initiatorFqn = plain.initiatorFqn,
+        initiatorIsMe = plain.initiatorIsMe == true,
+        startedAt = GetTime(),
+        startedAtServer = plain.startedAtServer,
+        status = plain.status,
+        endedAt = plain.endedAt,
+        items = items,
+        responses = plain.responses,
+        council = councilSet(councilNames),
+        rev = plain.rev,
+    };
+    LootCouncil.CurrentSession = FL.DB.lootCouncil.session;
+
+    -- Our own session coming back from a raider (SavedVariables lost to a
+    -- crash): don't let the next SendToRaid reuse its id.
+    local db = FL.DB.lootCouncil;
+    if (plain.initiatorIsMe and plain.id > (db.nextSessionId or 0)) then
+        db.nextSessionId = plain.id;
+    end
+
+    fireCouncilChanged();
+
+    lcLog(1, "session #%d replaced by a synced copy · %d items, %s", plain.id, #items, tostring(plain.status));
+
+    -- The synced copy may have a council we're no longer on.
+    closeAwardWindowIfNoAccess();
+
+    -- Only a session we didn't already have pops the windows, like a fresh
+    -- sessionStart would; catching up one we hold just repaints.
+    if (isNewSession and plain.status == "active") then
+        if (FL.UI.RespondWindow and FL.UI.RespondWindow.MaybeAutoShow) then
+            FL.UI.RespondWindow.MaybeAutoShow();
+        end
+        if (FL.UI.AwardWindow and FL.UI.AwardWindow.MaybeAutoShow) then
+            FL.UI.AwardWindow.MaybeAutoShow();
+        end
+    end
+    if (FL.UI.AwardWindow and FL.UI.AwardWindow.Refresh) then
+        FL.UI.AwardWindow.Refresh();
+    end
+    if (FL.UI.RespondWindow and FL.UI.RespondWindow.Refresh) then
+        FL.UI.RespondWindow.Refresh();
+    end
+    if (FL.UI.StartSessionWindow and FL.UI.StartSessionWindow.Refresh) then
+        FL.UI.StartSessionWindow.Refresh();
+    end
+end

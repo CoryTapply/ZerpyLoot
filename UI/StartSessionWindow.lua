@@ -112,65 +112,37 @@ local function handleCursorDrop()
 end
 
 --------------------------------------------------------------------------
--- Council button data - same council list/name matching as the Loot Council
--- settings page (UI/SettingsWindow/Pages/LootCouncil.lua): a raider counts
--- as "in raid" via LootCouncilRoster.BuildGroups(), and as council via
--- LootCouncil.IsCouncilMember(name), matched on the stripped "First Last"
--- name both sides already use.
+-- Council button data. With a session live, this is that session's council
+-- (Session.council - the same set LootCouncil.CanVote checks). Otherwise it
+-- previews the council a session started now would get:
+-- LootCouncil.SelectedCouncilNames(), i.e. the saved roster members in the
+-- group plus the viewer. Names are matched on the stripped "First Last" name
+-- both sides already use.
 --------------------------------------------------------------------------
 
--- Returns two alphabetical arrays: council members currently in the raid/
--- party ({ name, classFile, isLeader }), and the names of council members
--- who aren't.
---
--- With no session currently live, the viewer is about to start one and
--- always counts toward the council regardless of roster membership (the
--- old "isMe" shortcut). But once a session IS live (mode == "add" in
--- Refresh()), membership instead has to follow the same rule
--- LootCouncil.CanVote uses for that actual running session - a roster
--- member, or whoever actually started it (Session.initiatorFqn, who may not
--- be "me" and may not even be on the roster) - otherwise this tooltip could
--- both wrongly claim the viewer is on a council they have no vote in, and
--- miss the session's real initiator if they aren't a roster member.
+-- Returns two alphabetical arrays plus whether a session is live: council
+-- members currently in the raid/party ({ name, classFile, isLeader }), and
+-- the names of those who aren't - with a session live, council members who
+-- left the group; otherwise, saved roster members who won't be included.
 local function computeCouncilRaidInfo()
+    local isLive = FL.LootCouncil.IsSessionLive();
+    local councilNames = isLive and FL.LootCouncil.SessionCouncilNames() or FL.LootCouncil.SelectedCouncilNames();
+    local council = {};
+    for _, name in ipairs(councilNames) do council[name] = true; end
+
     local groupsResult = FL.LootCouncilRoster.BuildGroups();
     local inRaid = {};
     local inRaidNames = {};
-
-    local Session = FL.LootCouncil.CurrentSession;
-    local liveInitiatorFqn = (Session and Session.status == "active") and Session.initiatorFqn or nil;
-
-    if (not groupsResult.inRaid and not groupsResult.inParty) then
-        -- Solo/ungrouped: BuildGroups() returns no members at all.
-        local playerName = Util.UnitName("player");
-        local name = Util.stripRealm(playerName);
-        local isCouncil = FL.LootCouncil.IsCouncilMember(playerName);
-        local isLiveInitiator = liveInitiatorFqn ~= nil and Util.iEquals(name, Util.stripRealm(liveInitiatorFqn));
-        if (liveInitiatorFqn == nil or isCouncil or isLiveInitiator) then
-            inRaidNames[name] = true;
-            table.insert(inRaid, {
-                name = name,
-                classFile = select(2, UnitClass("player")),
-                isLeader = UnitIsGroupLeader("player"),
-            });
-        end
-    else
-        for _, group in pairs(groupsResult.groups) do
-            for _, member in ipairs(group.members) do
-                local isMe = UnitIsUnit(member.unit, "player");
-                local isCouncil = FL.LootCouncil.IsCouncilMember(member.name);
-                local isLiveInitiator = liveInitiatorFqn ~= nil
-                    and Util.iEquals(Util.stripRealm(member.name), Util.stripRealm(liveInitiatorFqn));
-                local onCouncil = (liveInitiatorFqn == nil) and (isMe or isCouncil) or (isCouncil or isLiveInitiator);
-                if (onCouncil) then
-                    local name = Util.stripRealm(member.name);
-                    inRaidNames[name] = true;
-                    table.insert(inRaid, {
-                        name = name,
-                        classFile = member.classFile,
-                        isLeader = UnitIsGroupLeader(member.unit),
-                    });
-                end
+    for _, group in pairs(groupsResult.groups) do
+        for _, member in ipairs(group.members) do
+            local name = Util.stripRealm(member.name);
+            if (council[name]) then
+                inRaidNames[name] = true;
+                table.insert(inRaid, {
+                    name = name,
+                    classFile = member.classFile,
+                    isLeader = UnitIsGroupLeader(member.unit),
+                });
             end
         end
     end
@@ -178,11 +150,12 @@ local function computeCouncilRaidInfo()
     table.sort(inRaid, function(a, b) return a.name < b.name; end);
 
     local notInRaid = {};
-    for _, name in ipairs(FL.LootCouncil.RosterNames()) do -- already alphabetical
+    local others = isLive and councilNames or FL.LootCouncil.RosterNames(); -- both already alphabetical
+    for _, name in ipairs(others) do
         if (not inRaidNames[name]) then table.insert(notInRaid, name); end
     end
 
-    return inRaid, notInRaid;
+    return inRaid, notInRaid, isLive;
 end
 
 -- Recomputes the button's count/color/width. Safe to call before the button
@@ -214,9 +187,9 @@ local function scheduleCouncilButtonUpdate()
     end);
 end
 
--- Registered once at load time - fires on every local edit or incoming sync
--- to the council roster (see LootCouncil.lua), regardless of whether this
--- window has ever been opened yet.
+-- Registered once at load time - fires on every saved roster edit, session
+-- start and session council update (see LootCouncil.lua), regardless of
+-- whether this window has ever been opened yet.
 FL.LootCouncil.RegisterRosterChangedCallback(function()
     if (frame and frame:IsVisible()) then updateCouncilButton(); end
 end);
@@ -339,8 +312,8 @@ local function createHeader()
     councilButton:HookScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT");
 
-        local inRaid, notInRaid = computeCouncilRaidInfo();
-        GameTooltip:AddDoubleLine("Loot Council", ("%d in raid"):format(#inRaid),
+        local inRaid, notInRaid, isLive = computeCouncilRaidInfo();
+        GameTooltip:AddDoubleLine(isLive and "Session Council" or "Loot Council", ("%d in raid"):format(#inRaid),
             Colors.gold[1], Colors.gold[2], Colors.gold[3],
             Colors.muted[1], Colors.muted[2], Colors.muted[3]);
 
@@ -359,14 +332,15 @@ local function createHeader()
 
         if (#notInRaid > 0) then
             GameTooltip:AddLine(" ");
-            GameTooltip:AddLine("Not in raid", unpack(Colors.controlHover));
+            GameTooltip:AddLine(isLive and "Not in raid" or "Not in raid (won't be included)", unpack(Colors.controlHover));
             for _, name in ipairs(notInRaid) do
                 GameTooltip:AddLine(name, unpack(Colors.disabledText));
             end
         end
 
         GameTooltip:AddLine(" ");
-        GameTooltip:AddLine("Click to add or remove council members", unpack(Colors.muted));
+        GameTooltip:AddLine(isLive and "Click to change the session's council"
+            or "Click to add or remove council members", unpack(Colors.muted));
         GameTooltip:Show();
     end);
     councilButton:HookScript("OnLeave", function() GameTooltip:Hide(); end);
@@ -969,7 +943,7 @@ function StartSessionWindow.Refresh()
     -- of starting a new one - only repaint text/width on an actual mode
     -- transition (mirrors AwardWindow.lua's nextButton.mode idiom).
     local Session = FL.LootCouncil.CurrentSession;
-    local mode = (Session and Session.status == "active") and "add" or "start";
+    local mode = FL.LootCouncil.IsSessionLive() and "add" or "start";
     if (startButton.mode ~= mode) then
         startButton.mode = mode;
         startButton.text:SetText(mode == "add" and "Add to Session" or "Start Session");

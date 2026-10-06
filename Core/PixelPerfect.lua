@@ -158,7 +158,12 @@ end
 -- OnShow hook covers opening/reopening a window bringing it to front too -
 -- and guarantees any two open windows land on distinct levels the moment
 -- each was last shown, fixing the at-rest tie as well as the click case.
+-- EnableMouse on the window itself makes its whole rect opaque to clicks:
+-- without it, padding/labels/backgrounds pass clicks straight through to
+-- whatever window (or the 3D world) is underneath, and since nothing
+-- mouse-enabled in this window was hit, SetToplevel doesn't raise it either.
 function Pixel.MakeToplevelWindow(frame)
+    frame:EnableMouse(true);
     frame:SetToplevel(true);
     frame:HookScript("OnShow", function() frame:Raise(); end);
 end

@@ -37,8 +37,8 @@ function HistoryDomain:Summary()
     local cutoffKey = cutoffMonthKey();
     local retention = FL.Sync.Constants.RETENTION_MONTHS;
 
-    FL.Sync.Debug.Log("DOMAIN", 2, "summary id=%d W=n:%d,x:%08X,s:%08X A=n:%d,x:%08X,s:%08X cutoff=%d ret=%d",
-        self.id, w.count, w.x, w.s, a.count, a.x, a.s, cutoffKey, retention);
+    FL.Sync.Debug.Log("DOMAIN", 2, "history summary · %d recent (hash %08X/%08X), %d archived (hash %08X/%08X), cutoff month %d, keep %d months",
+        w.count, w.x, w.s, a.count, a.x, a.s, cutoffKey, retention);
 
     return { w.count, w.x, w.s, a.count, a.x, a.s, cutoffKey, retention };
 end
@@ -59,6 +59,19 @@ function HistoryDomain:Compare(remote)
         return "same";
     end
     return "diverged";
+end
+
+--- "3398 recent, 120 archived" for log lines.
+function HistoryDomain:DescribeVersion(v)
+    if (type(v) ~= "table") then return "nothing"; end
+    return ("%d recent, %d archived"):format(v[1] or 0, v[4] or 0);
+end
+
+--- DescribeVersion of our own history, read straight from the digest
+--- (Summary() logs a line of its own on every call).
+function HistoryDomain:DescribeLocal()
+    local w, a = FL.Sync.Digest.Root("W"), FL.Sync.Digest.Root("A");
+    return self:DescribeVersion({ w.count, nil, nil, a.count });
 end
 
 --- "FL domains" row suffix (/fl sync domains, spec 7.7's "Adding another
@@ -172,6 +185,14 @@ end
 --- says which) through Store.Apply, same as Sync/Live.lua's receive side,
 --- with source="sync". Returns per-outcome counts for Sync/Session.lua's
 --- "[SESS] batch in" line.
+---
+--- Runs synchronously inside the comm handler, not through
+--- Scheduler.Enqueue as plan Phase 5 item 2 asked: a batch is capped at
+--- BATCH_ROW_CHUNK (40) entries, which stays well inside one frame, and
+--- Sync/Session.lua's batch-completion bookkeeping needs the counts right
+--- away. If plan Phase 6 step 5 (gameplay check) shows "[PERF] overrun"
+--- around batch arrivals, this is the place to slice. See
+--- docs/sync-deviations.md "Phase 6 review".
 function HistoryDomain:ApplyEntries(msgType, decoded, sender)
     local Codec = FL.Sync.Codec;
     local result = { added = 0, dup = 0, tombstoned = 0, expired = 0, rejected = 0, invalid = 0 };
@@ -186,7 +207,8 @@ function HistoryDomain:ApplyEntries(msgType, decoded, sender)
             local row, reason, field = Codec.DecodeRow(wireRow, players, types);
             if (not row) then
                 record("invalid");
-                FL.Sync.Debug.Log("CODEC", 2, "reject id=%s reason=%s%s", Codec.WireRowIdGuess(wireRow), reason, field and (" field=" .. field) or "");
+                FL.Sync.Debug.Log("CODEC", 2, "rejected row %s · %s%s", tostring(Codec.WireRowIdGuess(wireRow)), tostring(reason),
+                    field and (" (field " .. field .. ")") or "");
                 FL.Sync.Debug.Count("codec.rowRejects", 1);
             else
                 local applied, outcome = FL.Sync.Store.Apply({ kind = "R", id = row.id, row = row }, "sync");

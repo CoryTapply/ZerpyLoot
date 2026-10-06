@@ -60,20 +60,46 @@ function Roster.BuildGroups()
     return { inRaid = inRaid, inParty = inParty, groups = groups };
 end
 
---- guildName, guildRankName, guildRankIndex, isGuildLeader for a live unit
---- token (e.g. "raid3"), or nil if the unit doesn't exist, isn't in a guild,
---- or this client doesn't have GetGuildInfo.
+--- guildName, guildRankName, guildRankIndex for a raid-roster unit token
+--- (e.g. "raid3"), or nil if the unit doesn't exist or isn't in a guild we
+--- can see. GetGuildInfo(unit) only answers for units the client has loaded
+--- (nearby), so members of the player's OWN guild fall back to the guild
+--- roster cache (Sync/Permissions.lua), which covers them at any distance.
+--- Far-away members of other guilds still return nil.
 ---@param unit string
 function Roster.GuildInfoForUnit(unit)
-    if (type(GetGuildInfo) ~= "function" or not UnitExists(unit)) then return nil; end
-    return GetGuildInfo(unit);
+    if (not UnitExists(unit)) then return nil; end
+
+    if (type(GetGuildInfo) ~= "function") then return nil; end
+
+    local guildName, rankName, rankIndex = GetGuildInfo(unit);
+    if (guildName) then return guildName, rankName, rankIndex; end
+
+    local myGuildName = GetGuildInfo("player");
+    if (not myGuildName) then return nil; end
+
+    local name = Util.UnitName(unit);
+    local rankIndex = FL.Sync.Permissions.RankOf(name);
+    if (rankIndex == nil) then return nil; end
+    return myGuildName, FL.Sync.Permissions.RankNameOf(name), rankIndex;
+end
+
+--- Whether `unit` is an officer of the player's OWN guild, using the same
+--- officer-rank rules as history sync (Sync/Permissions.lua's
+--- IsOfficerRank: the guild's own officer-chat rank permission). Officers of
+--- other guilds never count.
+---@param unit string
+function Roster.IsGuildOfficer(unit)
+    local myGuildName = (type(GetGuildInfo) == "function") and GetGuildInfo("player") or nil;
+    if (not myGuildName) then return false; end
+    local guildName, _, rankIndex = Roster.GuildInfoForUnit(unit);
+    return guildName == myGuildName and FL.Sync.Permissions.IsOfficerRank(rankIndex);
 end
 
 --- Additive bulk-select for the Loot Council page's "Select Officers"
---- button: the raid leader, plus every grid member who shares the player's
---- own guild and whose guild rank index is at or below
---- Settings.GetOfficerRankThreshold(). Never removes anyone - council
---- membership stays independent of raid/guild rank as a general model (see
+--- button: every grid member who is an officer of the player's own guild
+--- (Roster.IsGuildOfficer) - nobody else, raid leader included. Never
+--- removes anyone - council membership stays independent of raid/guild rank as a general model (see
 --- docs/LOOT_COUNCIL_PLAN.md); this is just a one-time convenience seed the
 --- player can still freely edit afterward by clicking members.
 ---@param groupsResult table result of Roster.BuildGroups()
@@ -87,18 +113,10 @@ function Roster.SelectOfficers(groupsResult)
         end
     end
 
-    local myGuildName = (type(GetGuildInfo) == "function") and GetGuildInfo("player") or nil;
-    local threshold = FL.Settings.GetOfficerRankThreshold();
-
     for _, group in pairs(groupsResult.groups or {}) do
         for _, member in ipairs(group.members) do
-            if (UnitIsGroupLeader(member.unit)) then
+            if (Roster.IsGuildOfficer(member.unit)) then
                 add(member.name);
-            elseif (myGuildName) then
-                local guildName, _, rankIndex = Roster.GuildInfoForUnit(member.unit);
-                if (guildName == myGuildName and rankIndex and rankIndex <= threshold) then
-                    add(member.name);
-                end
             end
         end
     end

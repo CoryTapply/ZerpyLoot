@@ -37,7 +37,7 @@ function Scheduler.After(sec, jitter, fn, name)
     h = C_Timer.NewTimer(delay, function()
         handles[h] = nil;
         local late = math.max(0, (GetTime() - scheduledAt) * 1000);
-        FL.Sync.Debug.Log("SCHED", 2, "timer fire name=%s late=%dms", name or "?", late);
+        FL.Sync.Debug.Log("SCHED", 2, "timer %s fired · %dms late", name or "?", late);
         fn();
     end);
     handles[h] = true;
@@ -46,21 +46,34 @@ end
 
 -- Fires fn every sec seconds (± jitter, fixed once at creation). Returns a
 -- handle usable with Scheduler.Cancel.
+-- [handle] = GetTime() an Every() ticker fires next - see NextFireIn.
+local nextFireAt = {};
+
 function Scheduler.Every(sec, jitter, fn, name)
     local delay = jitteredDelay(sec, jitter);
     local h;
     h = C_Timer.NewTicker(delay, function()
-        FL.Sync.Debug.Log("SCHED", 2, "timer fire name=%s late=0ms", name or "?");
+        nextFireAt[h] = GetTime() + delay;
+        FL.Sync.Debug.Log("SCHED", 2, "timer %s fired · repeating", name or "?");
         fn();
     end);
     handles[h] = true;
+    nextFireAt[h] = GetTime() + delay;
     return h;
+end
+
+--- Seconds until an Every() ticker next fires, or nil for any other handle
+--- (or one already cancelled).
+function Scheduler.NextFireIn(h)
+    local at = h and handles[h] and nextFireAt[h];
+    return at and math.max(0, at - GetTime()) or nil;
 end
 
 function Scheduler.Cancel(h)
     if (not h) then return; end
     h:Cancel();
     handles[h] = nil;
+    nextFireAt[h] = nil;
 end
 
 -- Queues fn to run on a later frame, inside the per-frame time budget. Used
@@ -68,7 +81,7 @@ end
 function Scheduler.Enqueue(fn, name)
     table.insert(queue, { fn = fn, name = name });
     if (#queue > 10) then
-        FL.Sync.Debug.Log("SCHED", 2, "queue depth=%d", #queue);
+        FL.Sync.Debug.Log("SCHED", 2, "task queue growing · %d waiting", #queue);
     end
 end
 
@@ -93,10 +106,10 @@ function Scheduler.Init()
             local used = debugprofilestop() - taskStart;
 
             if (used > budget) then
-                FL.Sync.Debug.Warn("PERF", "overrun task=%s used=%.1fms budget=%dms", task.name or "?", used, budget);
+                FL.Sync.Debug.Warn("PERF", "task %s ran long · %.1fms, frame budget %dms", task.name or "?", used, budget);
             end
             if (not ok) then
-                FL.Sync.Debug.Warn("SCHED", "task error name=%s err=%s", task.name or "?", tostring(err));
+                FL.Sync.Debug.Warn("SCHED", "task %s threw an error · %s", task.name or "?", tostring(err));
             end
         end
     end);

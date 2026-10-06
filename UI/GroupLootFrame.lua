@@ -107,9 +107,9 @@ local confirmPopup;
 --------------------------------------------------------------------------
 
 local render, paintRow, closeRow, finishClose, removeFromOrder;
-local onOptionClick, onButtonEnter, onButtonLeave, updateOptionButton, showButtonTooltip;
+local onOptionClick, onButtonEnter, onButtonLeave, clearButtonHover, updateOptionButton, showButtonTooltip;
 local updateRowTimer, applyTimerVariant, updateTimers;
-local truncateToWidth, skinPanel, sizeButtonIcon, buildOptionButton, createGrip, createHeader, createIdle, createMoreBar, createRow;
+local truncateToWidth, fitNameText, skinPanel, sizeButtonIcon, buildOptionButton, createGrip, createHeader, createIdle, createMoreBar, createRow;
 local ensureFrame, ensureConfirmPopup, reapplyBorders;
 
 --------------------------------------------------------------------------
@@ -134,6 +134,30 @@ truncateToWidth = function(fontString, text, maxWidth)
         fontString:SetText(text:sub(1, len) .. "\226\128\166"); -- "..." (horizontal ellipsis)
         if (fontString:GetStringWidth() <= maxWidth) then return; end
     end
+end
+
+-- How many points the item name may shrink below the "body" font size
+-- before falling back to truncateToWidth's ellipsis.
+local NAME_MAX_SHRINK = 2;
+
+-- Fits a row's item name into `maxWidth`: tries the "body" font size, then
+-- one point smaller at a time (up to NAME_MAX_SHRINK), and only if it still
+-- doesn't fit truncates it with an ellipsis at the smallest size. Always
+-- starts back at "body" so a pooled row never keeps a previous roll's
+-- shrunken size.
+fitNameText = function(fontString, text, maxWidth)
+    SetFont(fontString, "body");
+    fontString:SetText(text);
+    if (maxWidth <= 0 or fontString:GetStringWidth() <= maxWidth) then return; end
+
+    local path, size, flags = fontString:GetFont();
+    for shrink = 1, NAME_MAX_SHRINK do
+        fontString:SetFont(path, size - shrink, flags);
+        fontString:SetText(text);
+        if (fontString:GetStringWidth() <= maxWidth) then return; end
+    end
+
+    truncateToWidth(fontString, text, maxWidth);
 end
 
 -- Solid panel chrome every piece of this stack shares: flat fill+border via
@@ -281,10 +305,14 @@ onButtonEnter = function(row, button)
     showButtonTooltip(button, roll, rollType, button.canUse, votes);
 end
 
-onButtonLeave = function(row, button)
-    if (hoveredButton == button) then hoveredRow, hoveredButton = nil, nil; end
+clearButtonHover = function(button)
     button:SetBackdropColor(0, 0, 0, 0);
     button:SetBackdropBorderColor(0, 0, 0, 0);
+end
+
+onButtonLeave = function(row, button)
+    if (hoveredButton == button) then hoveredRow, hoveredButton = nil, nil; end
+    clearButtonHover(button);
     GameTooltip:Hide();
 end
 
@@ -522,7 +550,9 @@ createRow = function()
     local blockHeight = nameLineHeight + Sizes.row.lineGap + barLineHeight;
     local barLineCenterY = -blockHeight / 2 + barLineHeight / 2;
 
-    nameText:SetPoint("TOPLEFT", middle, "LEFT", 0, blockHeight / 2);
+    -- Anchored by its vertical center (not its top) so a name shrunk by
+    -- fitNameText stays centered on the same line instead of riding high.
+    nameText:SetPoint("LEFT", middle, "LEFT", 0, blockHeight / 2 - nameLineHeight / 2);
 
     -- secondsLabel's own anchor pins the bar line's Y once; the bar's
     -- RIGHT point inherits that same Y by chaining off secondsLabel's LEFT
@@ -573,6 +603,15 @@ paintRow = function(row, rollID)
         row.timerBar:StopPulse();
         row.timerDanger = nil;
         row.secondsValue = nil;
+
+        -- Same for hover chrome: clicking an option hides the row before
+        -- OnLeave can fire, so the clicked button's dark hover backdrop
+        -- would otherwise still be showing when this slot is reused.
+        if (hoveredRow == row) then hoveredRow, hoveredButton = nil, nil; end
+        clearButtonHover(row.needButton);
+        clearButtonHover(row.greedButton);
+        clearButtonHover(row.transmogButton);
+        clearButtonHover(row.passButton);
     end
 
     row.icon:SetTexture(roll.itemIcon);
@@ -609,7 +648,7 @@ paintRow = function(row, rollID)
 
     local label = roll.itemName or "";
     if (roll.itemCount and roll.itemCount > 1) then label = label .. " x" .. roll.itemCount; end
-    truncateToWidth(row.nameText, label, nameMaxWidth);
+    fitNameText(row.nameText, label, nameMaxWidth);
     row.nameText:SetTextColor(qr, qg, qb);
 
     if (pillLabel) then

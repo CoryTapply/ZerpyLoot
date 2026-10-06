@@ -37,10 +37,9 @@ SoftRes.HardReserveDetailsByID = {}; -- idString -> {id, reservedFor, note}
 -- the fuzzy match may have paired the wrong two players.
 SoftRes.RenamedNames = {};
 
-local function debugPrint(msg)
-    if (Comm.debugEnabled) then
-        print("|cff8865ffForeverLoot|r " .. msg);
-    end
+--- Debug log line in the SOFTRES category (Sync/Debug.lua, /fl debug).
+local function srLog(fmt, ...)
+    FL.Sync.Debug.Log("SOFTRES", 1, fmt, ...);
 end
 
 local function capitalize(str)
@@ -257,6 +256,71 @@ function SoftRes.Parse(pastedString)
     return true, result, renamed;
 end
 
+-- How long to wait for hard-reserved items' info to load before announcing
+-- them anyway (an unknown/uncacheable item id would otherwise never fire
+-- its ContinueOnItemLoad callback).
+local HARD_RESERVE_LINK_TIMEOUT = 10;
+local HARD_RESERVES_PER_LINE = 4;
+local HARD_RESERVE_PREFIX = "Hard reserves: ";
+local MAX_CHAT_LENGTH = 255;
+
+-- Posts the import summary (soft-reserve count) followed by the hard
+-- reserves, up to 4 per line, with item links. They are held until every
+-- item's link is cached (or the timeout passes) so they go out together,
+-- in import order, with real links rather than blanks.
+local function announceImport(result, channel)
+    local softReserveCount = 0;
+    for _, entry in ipairs(result.SoftReserves) do
+        softReserveCount = softReserveCount + #entry.Items;
+    end
+
+    local hardReserves = result.HardReserves;
+    Util.SendChatMessageSafe(("Softres data was imported: %d soft reserves from %d players, %d hard reserves"):format(
+        softReserveCount, #result.SoftReserves, #hardReserves), channel);
+
+    if (#hardReserves == 0) then return; end
+
+    local sent = false;
+    local function sendHardReserves()
+        if (sent) then return; end
+        sent = true;
+
+        local line = {};
+        local lineLength = #HARD_RESERVE_PREFIX;
+        local function flush()
+            if (#line == 0) then return; end
+            Util.SendChatMessageSafe(HARD_RESERVE_PREFIX .. table.concat(line, ", "), channel);
+            line = {};
+            lineLength = #HARD_RESERVE_PREFIX;
+        end
+
+        for _, entry in ipairs(hardReserves) do
+            local _, itemLink = Util.GetItemInfo(entry.id);
+            local text = itemLink or ("item " .. entry.id);
+            if (entry["for"] ~= "") then text = text .. " for " .. entry["for"]; end
+            if (entry.note ~= "") then text = text .. " (" .. entry.note .. ")"; end
+
+            -- Item link escape codes count toward the 255-byte chat limit,
+            -- so wrap early rather than let a full line get rejected.
+            if (#line > 0 and lineLength + 2 + #text > MAX_CHAT_LENGTH) then flush(); end
+            table.insert(line, text);
+            lineLength = lineLength + (#line > 1 and 2 or 0) + #text;
+            if (#line == HARD_RESERVES_PER_LINE) then flush(); end
+        end
+        flush();
+    end
+
+    local pending = #hardReserves;
+    for _, entry in ipairs(hardReserves) do
+        Item:CreateFromItemID(entry.id):ContinueOnItemLoad(function()
+            pending = pending - 1;
+            if (pending == 0) then sendHardReserves(); end
+        end);
+    end
+
+    C_Timer.After(HARD_RESERVE_LINK_TIMEOUT, sendHardReserves);
+end
+
 --- Import a softres.it "Gargul Export" string (base64/zlib/JSON blob).
 ---@param pastedString string
 ---@param isFromBroadcast boolean|nil True when called from the broadcastSoftRes
@@ -288,16 +352,14 @@ function SoftRes.Import(pastedString, isFromBroadcast, skipPersist)
         FL.DB.softRes.importString = pastedString;
     end
 
-    debugPrint(("SoftRes imported: %d player entries, %d hard reserves"):format(
-        #result.SoftReserves, #result.HardReserves
-    ));
+    srLog("imported softres · %d player entries, %d hard reserves", #result.SoftReserves, #result.HardReserves);
 
     if (not isFromBroadcast) then
         SoftRes.Broadcast();
 
         local channel = Util.GroupChatChannel();
         if (channel and FL.Settings.GetRaidChatSoftresImportedEnabled()) then
-            Util.SendChatMessageSafe("Softres data was imported", channel);
+            announceImport(result, channel);
         end
     end
 
@@ -319,7 +381,7 @@ function SoftRes.Clear()
         FL.DB.softRes.importString = nil;
     end
 
-    debugPrint("SoftRes data cleared");
+    srLog("cleared softres data");
 end
 
 --------------------------------------------------------------------------
@@ -335,7 +397,7 @@ function SoftRes.Broadcast()
     end
 
     Comm.Send(Constants.Actions.broadcastSoftRes, SoftRes.ImportString, "GROUP");
-    debugPrint("Broadcast SoftRes data to group");
+    srLog("shared softres data with the group");
     return true;
 end
 
@@ -359,7 +421,7 @@ Comm.Actions[Constants.Actions.broadcastSoftRes] = function(Message)
             FL.UI.SoftResImportWindow.SyncExternalImport();
         end
     else
-        debugPrint("Failed to import SoftRes broadcast from " .. tostring(Message.senderFqn) .. ": " .. tostring(err));
+        srLog("couldn't import softres shared by %s · %s", tostring(Message.senderName or Message.senderFqn), tostring(err));
     end
 end
 
@@ -579,6 +641,6 @@ function SoftRes.Init()
 
     local ok, err = SoftRes.Import(saved, true, true);
     if (not ok) then
-        debugPrint("Failed to load saved SoftRes data from DB: " .. tostring(err));
+        srLog("couldn't load saved softres data · %s", tostring(err));
     end
 end

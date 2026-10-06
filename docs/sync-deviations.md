@@ -204,7 +204,12 @@ so it was never going to be able to own that debug line regardless of
 
 ## Phase 2: GUILD-distribution addon messages don't relay on this server - WHISPER fan-out workaround
 
-**Status: open, workaround in place.** This is the one Phase 2 item that
+**Update 2026-10-04: resolved server-side.** Retested with
+`/fl debug guilddirect on`: GUILD addon messages relay now. GUILD sends go
+out as one real GUILD message by default. The WHISPER fan-out below is kept
+as a fallback (`/fl debug guilddirect off`, until /reload).
+
+**Original status: open, workaround in place.** This is the one Phase 2 item that
 isn't really "done," just unblocked - read this whole section before
 touching `Net/Transport.lua`'s `Send` or `Sync/Live.lua` again.
 
@@ -457,6 +462,15 @@ continuous span, so it still means "how much real work this took" despite
 now spanning several real-world frames.
 
 ## Phase 5: per-target send serialization
+
+> **Correction (Phase 6 review):** the collision explanation below is
+> probably wrong. AceComm hands every chunk to ChatThrottleLib with
+> `queueName = prefix`, and CTL keeps one FIFO pipe per queue name per
+> priority, so two same-priority messages on one prefix can't interleave
+> their chunks, whatever the target. Plain chunk *loss* explains the
+> failures just as well. The serialization is kept: it costs little, and it
+> still guards the one real collision case (different priorities on the
+> same prefix to the same target). See "Phase 6 review" at the end.
 
 Not a protocol deviation - a transport-layer bug fix in `Net/Transport.lua`,
 found while diagnosing why batching `DAYS` (the entry directly above this
@@ -1118,6 +1132,69 @@ caches it off `myEntries`/`myIdMode`, both of which `sendHashesForBucket`
 rebuilds from scratch every time it runs, so a stale cached lookup from an
 earlier call could otherwise survive a resend.
 
+## Phase 6: WHISPER-distributed addon messages show the same "confirmed sent, never delivered" pattern HELLO did - testing paused
+
+> **Superseded in part (Phase 6 review):** the "no remaining client-side
+> lever" conclusion below doesn't hold. Much of the observed delay is local:
+> ChatThrottleLib has one FIFO per prefix per priority shared by every
+> target, and the GUILD->WHISPER fan-out put one HELLO per online guild
+> member into it. Neither `hello out` (logged at enqueue) nor `dur=` (CTL
+> part only) could see that wait. Genuine loss may still exist; measure it
+> with `/fl debug probe` before contacting the server operator. See
+> "Phase 6 review" at the end.
+
+**Status: open question for the server operator, same as the Phase 2 GUILD-relay
+entry above. Live testing paused as of 2026-10-02 pending that answer - not
+something further client-side tuning can fix.**
+
+While chasing why a 2-client discovery handshake kept getting zero
+responders for 15+ minutes across many attempts (`HELLO_COLLECT_WINDOW`
+already raised to 12s earlier this same session), the actual mechanism was
+pinned down concretely rather than left as a guess:
+
+- One client's own outgoing `HELLO` took roughly 14 seconds of one-way
+  transit to reach the other peer - arriving 2 seconds AFTER the sender's
+  own 12-second collection window had already closed and given up. The
+  round trip needed for that peer to then reply and have the reply arrive
+  back is obviously well beyond any collection window short of making
+  discovery painfully slow even when the connection is healthy.
+- Separately, in the same investigation: a peer's `HELLO_ACK` was confirmed
+  `sent` by AceComm/ChatThrottleLib's own callback (`dur=0.0s`, `didSend`
+  true - this is the HONEST callback value, per the Phase 5 fix to
+  `Net/Transport.lua`'s `sendOne`, not the old always-true bug) and simply
+  never arrived at the other client at all - no trace, no decode warning,
+  nothing.
+- **Critically, the user confirmed everything else in-game felt completely
+  normal at the time** - movement, chat, looting, no general lag. This
+  rules out ordinary network/server congestion as the explanation and
+  points specifically at this server's handling of `CHAT_MSG_ADDON`
+  traffic - separate from whatever path normal chat and gameplay packets
+  take.
+
+This is the same CATEGORY of finding as the Phase 2 entry above ("GUILD-
+distribution addon messages don't relay on this server at all") - that one
+proved GUILD distribution specifically was broken while WHISPER worked;
+this session's evidence suggests WHISPER distribution itself isn't fully
+reliable either, at least intermittently, for small single-chunk control
+messages (`HELLO`/`HELLO_ACK`), not just the already-known bulk-data loss
+rate documented throughout Phase 5. Given the sending client's own
+honest-by-design confirmation (AceComm/CTL's real `didSend`) says a message
+went out fine and it still doesn't arrive, there is no remaining lever on
+the addon side - pacing, retries, collection-window size, priority - that
+can distinguish or fix this; the discrepancy exists entirely between the
+client's send call and whatever the server actually does with it.
+
+**What's needed before resuming:** ask whoever runs/administers "WoW
+Forever" whether there's a known rate limit, anti-spam measure, or relay
+quirk specifically affecting `CHAT_MSG_ADDON` traffic - both the
+already-confirmed GUILD-distribution gap (Phase 2) and this newer WHISPER-
+distribution unreliability are worth asking about together, since they may
+share a root cause in the server's addon-message handling. Until there's an
+answer (or a fix on the server side), further live Phase 6 testing is
+expected to keep hitting this same wall regardless of any client-side
+constant tuning - continuing to chase it with retries/window-size changes
+would just be re-discovering the same ceiling repeatedly.
+
 ## Phase 4: addon version string source
 
 Spec section 6 lists "addon version" as a `HELLO`/`HELLO_ACK` field but
@@ -1129,3 +1206,711 @@ acts on the value yet - comparing it against the local version and showing
 the "a newer ForeverLoot is available" hint is Phase 8's job (spec section
 8's rollout list item 1); this phase only carries the field over the wire
 and stores whatever a peer reports in `/fl sync peers`' `ver=` column.
+
+## Phase 6 review (Oct 2, 2026): fixes and deviations
+
+A review of the Phase 6 build against the spec, the plan and the bundled
+libraries found the items below. Code comments carry the details; this is
+the record of *what* deviates and *why*.
+
+### ChatThrottleLib's per-prefix FIFO explains much of the "server latency"
+
+AceComm calls ChatThrottleLib with `queueName = prefix`
+(`Libs/AceComm-3.0/AceComm-3.0.lua`, `SendCommMessage`). CTL keeps one FIFO
+pipe per queue name, per priority, and splits its ~800 B/s evenly across
+the priorities that have something queued (`ChatThrottleLib.lua`,
+`OnUpdate`). So every NORMAL message on `FLoot` (HELLO, HELLO_ACK and all
+session control, for every peer) waits in **one queue**, at roughly 400 B/s
+while BULK sync data is moving. Consequences, each fixed below:
+
+- The GUILD->WHISPER fan-out queued one HELLO per online guild member,
+  including people without the addon. The last recipient can wait 10 s or
+  more, which is likely the "~14 s one-way HELLO".
+- Retry timers started at enqueue, so a message still waiting in that queue
+  was "retried", adding more traffic to the same queue.
+- Logs couldn't show any of this: `hello out` is logged at enqueue, and
+  `[COMM] sent ... dur=` only measures the CTL part.
+
+### Known-user fan-out (`Net/Transport.lua`, `opts.fanout`)
+
+Every sender whose message decodes cleanly is recorded in
+`ForeverLootDB.syncKnownUsers` (forgotten after 30 days). `fanout = "known"`
+whispers only those names, still filtered by who is online now. Login and
+`forcehello` HELLOs, and every 4th periodic one (`Coordinator`'s
+`FULL_FANOUT_EVERY`), still go to everyone, which is how a new addon user is
+found. Periodic, instance-exit and notify HELLOs, and all `LIVE_*`, use
+"known". Anyone missed by a live broadcast is repaired by sync, as spec 7.1
+step 5 already allows.
+
+### Retries are armed from send confirmation (`Session.lua`, `sendControl`)
+
+The HASHES, WANT, compare and DONE retry timers start from the message's
+own `onSent`/`onFail`, not from enqueue. A retry now means "sent, and no
+answer for 8 s", not "still queued locally".
+
+### Send timeout scaled by size; a timeout isn't "sent" (`Transport`, `Session`)
+
+`SEND_QUEUE_TIMEOUT` is now `max(10, chunks * 3)` seconds. A timeout calls
+`onFail("timeout")`, and if the real callback arrives later it calls the new
+`onLate(ok)`. `drainOutgoing` keeps the prefix marked busy after a timeout
+until `onLate` fires, or for at most 30 s (`BATCH_LATE_GRACE`). Before
+this, a slow BULK batch hitting the 10 s timeout freed its prefix, and
+`trySessionComplete` could send DONE (NORMAL priority) ahead of it.
+
+### DONE_ACK (new message type 16)
+
+Spec section 6 has no acknowledgement for DONE, and spec 7.3 step 6 just
+closes. With this server's message loss, "every give batch confirmed sent"
+doesn't mean "arrived", and the server's own WANT retry for a lost batch
+died the moment DONE closed its session. A full-mode opener now enters
+state `FINISHING` and sends DONE. The server replies
+`DONE_ACK{token, flat tree,key list}` naming buckets it still wants data for,
+and only closes when the list is empty. The opener re-sends those buckets
+(from the stored `bucket.peerWantEntries`, chunked the same way so
+batch indices line up) and sends DONE again. The total is bounded at 4 DONE
+sends, after which the opener closes with a `done unacked` warning, so the
+behaviour is no worse than before. A server that just closed answers a
+repeated DONE for that token with an empty ack (`recentlyDone`). Pull
+sessions don't wait for an ack, because a pull server never wants anything.
+
+### PING keepalive (new message type 15)
+
+While a primary session waits on its secondaries, nothing may pass between
+it and the primary peer, and both sides used to hit
+`SESSION_IDLE_TIMEOUT`. Pull-session traffic now also resets the parent's
+idle timer (`touchSession`), and the parent sends `PING{token}` to the
+primary every 15 s until no secondary is outstanding. The server just resets
+its idle timer.
+
+### Reclaimed buckets and the secondary top-up (spec 7.4 steps 3–4)
+
+- **Reclaim:** handing a failed secondary's bucket back to the primary used
+  to do nothing when the primary hadn't reached that bucket yet, which is the
+  normal case with only 3 buckets in flight. The queue entry stayed
+  delegated and the bucket was never pulled. Now the bucket is marked in
+  `session.reclaimed`, and `advanceBuckets` treats it as an ordinary bucket.
+- **Top-up (beyond the spec):** spec 7.4 assumes a secondary holds
+  everything the primary does. It doesn't have to, since secondaries are
+  picked for *differing* from us. When any secondary finishes, every bucket
+  it was assigned is checked against the primary's saved hash list (the
+  primary exchanges HASHES for every bucket anyway, for the push direction).
+  Whatever is still missing is requested from the primary
+  (`[SESS] topup ...`). The comparison uses current digest entries, not the
+  list captured when HASHES was first sent.
+
+### A lost empty WANT no longer stalls a bucket
+
+The opener's HASHES retry used to stop once the peer's HASHES arrived. An
+empty WANT is never retried by its sender, so when one was lost the
+opener's give side never resolved and the bucket held an in-flight slot
+until the session idled out. The retry now continues until the peer's WANT
+has arrived too (pull-mode openers only need the HASHES). The existing
+`isRetry` reply already resends both.
+
+### Smaller spec items restored
+
+- An `urgent` HELLO doubles the reply probability on receive (spec 7.2
+  step 5). The flag was sent but never read.
+- The periodic HELLO is skipped while any session is open
+  (`hello skip reason=sessionActive`, spec 7.5).
+- When the primary refuses OPEN, the first secondary is promoted
+  (`[SESS] promote ...`, spec 7.3 step 1). Retrying the same peer after
+  `retryAfter` remains only for when there's no other candidate. Refusals
+  now log `reason=busy` or `reason=refused` correctly.
+- The HELLO "free session slots" field carries `MAX_SERVE` minus the
+  sessions being served (closes the Phase 4 placeholder entry).
+- A `LIVE_*` recipient whose send came back failed is retried once through
+  the live gate (spec 8, "Send failures").
+
+### Documented rather than changed
+
+- `HistoryDomain:ApplyEntries` runs synchronously in the comm handler. Plan
+  Phase 5 item 2 says to use `Scheduler.Enqueue`, but batches are capped at
+  40 entries and the session's completion bookkeeping needs the counts
+  immediately. Revisit if plan Phase 6 step 5 shows `[PERF] overrun` near
+  batch arrivals.
+- `PROTO_VERSION` stays 1 despite the two new message types: every client
+  is on a development build. It goes on the Phase 8 release checklist.
+
+### New diagnostics
+
+- `/fl debug probe <name|PARTY|RAID|GUILD> <n> <perSec> [main|s1|s2|s3|rot]
+  [prio] [bytes]` and `/fl debug probestats` (`Sync/Probe.lua`). They send
+  numbered messages that skip Transport's own queue. The receiver reports
+  one-way loss; the sender reports echo loss and round-trip time. Run a rate
+  and size matrix to tell a hidden server throttle (loss rises with rate)
+  from baseline loss (flat).
+- `/fl debug rawsend [GUILD|PARTY|CHANNEL]`: adds a hidden custom channel as
+  a candidate replacement for the GUILD relay. The receiving client now logs
+  `[COMM] rawsend diag received ...`.
+- `[COMM] sent ... wait=` (total time since `Transport.Send` was called),
+  `[COMM] fanout done ...`, and `knownAddonUsers=` in `/fl sync status`.
+
+### Follow-up, first live test after the review: duplicate sessions and runaway WANT retries
+
+When A and C logged in together, both sent HELLO, heard each other's
+HELLO_ACK and each opened a full session with the other. Spec 7.5 step 2
+assumes only the HELLO sender opens, but when both sides send HELLO, both
+open. Full mode is symmetric, so the two sessions moved every row twice (C
+received ~4000 rows for a 1505-row history) and competed for the same
+prefixes and queues.
+
+- **One full session per pair.** `Session.Open` skips a peer we're already
+  serving a full session (`reason=alreadyServingPeer`). If OPENs cross in
+  flight, `onOpen` applies one rule on both clients: the session opened by
+  the alphabetically lower name survives. The other side refuses with
+  `OPEN_REPLY(..., "dup")` or aborts its own opener with `reason=dup`. A
+  `dup` refusal just closes, with no secondary promotion and no retry.
+- **WANT retries wait for the peer to go quiet.** The peer answers buckets in
+  order, so a bucket can wait longer than 8 s while other buckets' data is
+  still arriving. Each retry made the peer queue the whole answer again,
+  slowing everything (bucket after bucket hit "want retry exhausted"). A
+  retry now only counts when no ROWS/MARKS arrived on the session for 8 s.
+- **Completion by content.** A bucket's want also counts as satisfied once
+  every entry it asked for is in the store, however it arrived. This sits
+  alongside the all-batch-indices check, so slow or duplicate answers can't
+  leave a bucket stuck after its data has landed.
+
+### Root cause found: the server reorders addon messages, and AceComm's reassembly can't cope
+
+Measured with the new diagnostics (Oct 2, 2026, A -> C over WHISPER):
+
+| Test | Result |
+| --- | --- |
+| 20 single-piece messages sent at once | 20/20 arrived, round trip 0.70 s each |
+| 20 two-piece (~500 B) messages at 1/s | 18/20 arrived; the 2 lost vanished with no decode warning |
+| `rawbytes`: 15 strings with `\|` codes, high, control and DEL bytes | all 15 arrived byte-for-byte unchanged, so the server doesn't filter by content |
+| 30 single-piece messages sent at once | 30/30 arrived, **9 out of order**, all delivered at the same moment |
+
+The server delivers messages in batches (about 0.7 s apart) and doesn't keep
+their order within a batch. AceComm splits a long message into FIRST, NEXT
+and LAST pieces sent back to back, and its reassembly assumes they arrive in
+order:
+
+- LAST before FIRST: LAST is dropped and the message silently vanishes (the
+  probe's 10%, and likely Phase 6's "HELLO_ACK confirmed sent, never
+  delivered").
+- LAST before a NEXT: the pieces are joined in the wrong order, giving
+  `decode fail step=decompress|deserialize` (the DAYS failures since Phase
+  5).
+
+This replaces every earlier explanation in this file: random per-chunk
+loss, the AceComm spool collision, a burst throttle, and server-side GUILD
+relay as the cause of loss. GUILD relay itself is still broken, which is a
+separate finding.
+
+**Fix (`Net/Transport.lua`, "Order-tolerant framing"):** Transport no longer
+gives AceComm anything longer than one piece. Every message goes out as
+pieces of at most 255 bytes, `"~!"..payload` (whole message) or
+`"~id:i:n:"..slice`. The receiver collects pieces by sender and message id
+in any order and decodes when all `n` are present. A message still missing
+pieces after 30 s is dropped and logged as `[COMM] WARN incomplete ...
+got=x/n`, so a real lost piece shows as a count instead of silence. This is
+a wire-format change; `PROTO_VERSION` stays 1 because only dev builds exist,
+and it goes on the Phase 8 release checklist.
+
+The Phase 5 per-target serialization and the 0.3 s gap stay as pacing. The
+retries, batch-index completeness checks and generation tags all stay too:
+they still guard against a genuinely lost piece, which should now be rare.
+
+Also fixed: debug-log timestamps glued `date()`'s seconds to `GetTime()`'s
+fraction, so the milliseconds could run backwards and cross-client
+comparisons could be off by up to 1 s. They now use a single wall-clock
+offset. Treat sub-second cross-client timings quoted in earlier entries as
+approximate.
+
+### Throughput: latency-bound, not bandwidth-bound (first 3-client run)
+
+First successful 3-client parallel backfill (B purged; primary C, secondary
+A, 121 buckets split 61/60): digests matched on all three. Throughput was
+1491 rows in 2m50s, about 526 rows/min against about 320 rows/min for a
+comparable single-peer run (`kIGW`, 944 rows in 2m55s). That's about 1.6×,
+short of the plan's 2-3×. Each session used only 0.20-0.25 KB/s of a
+~0.6 KB/s budget.
+
+The time goes on round trips: about 3 per bucket at the server's ~0.7 s
+delivery tick, plus Transport's 0.3 s pause before every message to the
+same peer. The primary exchanges HASHES for every bucket, so it is the slowest session.
+
+- `SEND_QUEUE_GAP` is now 0. The burst loss it guarded against turned out to
+  be reordering, which the framing now handles.
+- `BUCKETS_IN_FLIGHT` is 6 instead of spec's 3, to keep more round trips in
+  flight.
+
+If the primary is still the slowest session after this, the next step is
+sending HASHES for several buckets in one message.
+
+### The primary skips push exchanges for delegated buckets that are empty locally
+
+Spec 7.4 step 3 has the primary exchange HASHES for every bucket so that it
+can learn what it's missing from the opener. When the opener's own copy of a
+delegated bucket is empty (the normal case in a fresh-member backfill),
+there is nothing to learn, and the exchange is pure overhead: 60 of the
+primary's 121 buckets in the first 3-client run. `advanceBuckets` now marks
+such buckets finished without sending anything (`skip push localEmpty
+delegated`, level 2).
+
+The skipped exchange was also where the primary would have filled in rows
+the secondary lacked. So when a secondary reports in,
+`reassignBucketToPrimary` compares each skipped bucket's current local
+aggregate with the primary's aggregate from the compare phase
+(`session.remoteAgg`, built from its DAYS / archive-MONTHS reply). If they're
+equal, the secondary delivered exactly what the primary holds. If they
+differ, the bucket is queued again for a normal exchange with the primary.
+That covers a failed secondary (local still empty, primary's aggregate not)
+and an incomplete one alike.
+
+Note: removing the 0.3 s gap and raising `BUCKETS_IN_FLIGHT` to 6 did not
+change the timings at all (2m18s/2m51s against 2m17s/2m50s), so neither was
+the bottleneck. A fixed per-sender message rate limit (spec 2's "1 message/s
+per prefix" throttle, enforced by the server) is the leading suspect. Check
+the send-latency `dur` values during a sync before changing anything else.
+
+### Measured: the limit is one client's total send rate, not each prefix
+
+Two probes from A to C, each a burst of 40 messages of ~500 B, one on a single
+sync prefix and one rotating across all three: both arrived **40/40, none
+lost, in order**, over about 27.5 s each. That is about 0.7 KB/s per sender
+either way, which is ChatThrottleLib's overall cap (`MAX_CPS = 800` minus
+per-message overhead). This server shows no per-prefix throttle, so spec
+section 2's "1 message/s per prefix", and the reason for rotating across
+`FLootS1`-`S3`, don't apply here. Rotation is harmless and stays. The
+earlier "echoLoss=45%" was a probe bug: the sender reported a fixed 15 s
+after sending. It now reports 15 s after the last echo.
+
+Implications: a backfill speeds up by adding senders (secondaries), not
+prefixes. A sync session averages about 0.25 KB/s per sender over its
+whole duration (compare phase, round trips, control traffic, which gets an
+equal share of bandwidth while queued), against the ~0.7 KB/s ceiling.
+Raising ChatThrottleLib's cap is not recommended: spec 2 warns that
+exceeding the server's global limit can disconnect.
+
+### Primary reload mid-backfill: dead session kept, never timed out, no prompt retry
+
+Live test: the **primary** (C) was `/reload`ed during a 3-client backfill.
+The secondary's pull session finished, but B ended up about 500 rows short,
+with nothing restarting. Three bugs combined:
+
+1. **The duplicate-session rule kept a dead session.** After reloading, C
+   opened a fresh full session to B. B still had its own session with C
+   (`ZJAk`, which C no longer knew about) and refused C's new one as a `dup`.
+   **Fix:** if our session with a peer is past OPENING (the peer accepted
+   it), and the peer now sends a fresh OPEN, and we've heard nothing from
+   them on our session for `PEER_RESET_SILENCE` (5 s), they lost it. We abort
+   ours (`reason=peerReset`) and accept theirs. A live peer that is serving
+   us never sends OPEN, because `Session.Open` skips a peer it's serving.
+   So the name tie-break now only decides the genuine simultaneous-open race.
+2. **The dead primary never timed out.** Traffic on a secondary's pull session
+   resets the parent's idle timer (`touchSession`, added earlier in this
+   review), which hid the dead primary. **Fix:** handlers for messages that
+   really arrive from the peer now set `session.lastHeardAt` (`heardFrom`).
+   The server answers every PING. While waiting on secondaries, the parent
+   aborts with `reason=timeout` once the primary has been silent for
+   `SESSION_IDLE_TIMEOUT`.
+3. **Recovery waited for the 12-minute periodic check** (spec 8: "the next
+   HELLO"). **Fix:** when an opener's full session aborts for any reason
+   except `gate` or `dup`, a rediscovery runs about 30 s later (trigger
+   `retry`, known-user fan-out). If sessions are still running, for example
+   the aborted primary's secondary, it waits for them to finish first.
+
+## Phase 7: council-session snapshot domain
+
+`Data/CouncilSessionDomain.lua` registers the running council session as
+domain 2 (snapshot, RAID, live gate). The repair path (`SNAP_GET` / `SNAP`)
+and the RAID triggers live in `Sync/Coordinator.lua`; `Sync/Peers.lua` gained
+RAID-scope HELLOs. The live council messages on `ForeverLootLC` are unchanged
+on the wire.
+
+### Where `rev` is bumped, and why non-leaders bump too
+
+Spec 7.7 says "single writer: only the session leader changes it". In this
+codebase every client applies every change itself (responses and votes come
+from raiders, and the leader only learns them from the same GROUP broadcast
+everyone else gets). If only the leader counted `rev`, a raider following
+along live would sit at rev 0 and import on every HELLO. So every client
+counts each change once, where it actually applies it: the network apply
+handlers (`applySessionStart`, `applySessionAddItems`, `applyResponse`,
+`applyVote`, `applyAward`, `applySessionEnd`, `applySessionEndEarly`,
+`applyCouncilSettingsSync`), plus the leader's optimistic paths whose echo
+is ignored (`AwardItem`, `DisenchantItem`, `EndSession`, `EndSessionEarly`).
+A raider's own optimistic `SubmitResponse`/`ToggleVote` is not counted; its
+echo is, as on every other client. Members who saw the same messages hold
+the same rev; one who missed some is lower and imports.
+
+### The leader's copy wins for its own session
+
+Revs can still drift upward on a non-leader (a live message re-applied after
+an import already contained it). For the same session, `Compare` therefore
+reports `localNewer` on the leader and `remoteNewer` when the remote is the
+leader, whatever the revs say, and the leader never imports its own session
+from someone else. `Compare(remote, remoteName)` takes the sender as an
+optional second argument for this (`HistoryDomain` ignores it).
+
+### The summary carries the leader, and startedAt is server time
+
+Summary is `{sessionId, startedAt, rev, ended, leader}`. `leader` is
+appended: `sessionId` is each leader's own counter, so two leaders' "session
+3" would compare as the same session, and the authority rule needs the
+leader's name. `startedAt` is `GetServerTime()` when this client first saw
+the session (the existing `Session.startedAt` is `GetTime()`, which isn't
+comparable across clients). Live followers stamp their own receive time; it
+only matters when comparing different sessions.
+
+### Only sessions whose leader is in our group are advertised or imported
+
+Not in the spec. A member carrying an old session in SavedVariables
+(including an "active" one the leader never ended) would otherwise push it
+into an unrelated raid as `localNewer`. `Summary()` returns nil unless the
+leader is us or in our group, and `Import` rejects a snapshot whose leader or
+sender isn't (`result=invalid reason=leaderNotInGroup|senderNotInGroup`).
+`SNAP_GET` is only answered for group members.
+
+### A HELLO with no summaries still goes out, and absence means "nothing"
+
+Spec 7.7 says domains whose `Summary()` is nil are left out of HELLO, and
+receivers compare the domains in it. A late joiner has no session, so its
+RAID HELLO carries nothing and nobody would compare anything. Two changes in
+`Peers`: a HELLO is skipped only when every domain in the scope has its gate
+closed (not when every summary is nil), and a receiver treats a missing
+snapshot domain as `Compare(nil)`, which is `localNewer` when it holds a
+session. Set domains keep the old rule; history's summary is never nil.
+`hello out ... domains=` now lists domain ids (`2`, or `-` when none) rather
+than a count, matching the plan's sample line; for GUILD it still reads `1`.
+
+### Ended sessions aren't advertised (no SESSION_END_TTL)
+
+Spec 7.7 keeps advertising an ended session for `SESSION_END_TTL` (10
+minutes) so late joiners learn it ended. Dropped at the user's request: a
+late joiner has no use for a finished session. `Summary()` returns nil the
+moment a session ends (`[SNAP] ended d2 session=6 advertise=no`, then
+`summary d2 none reason=ended` once). `SESSION_END_TTL` is now unused.
+
+Two rules keep a member who missed the end from reviving it:
+
+- **Ended is terminal.** For the same session, ended beats active before
+  rev or leader are considered, and an active snapshot of a session we hold
+  as ended is `stale`.
+- **Correction only.** When a peer advertises our ended session as still
+  active, `Compare` reports `localNewer` and `SummaryFor()` puts the ended
+  version in our HELLO_ACK (Peers now passes the HELLO's summaries to the
+  ack builder), so that peer pulls it. The straggler's own login, reload or
+  join trigger is what starts this. `Export` therefore works for ended
+  sessions; it is only reached from that correction.
+
+Plan Phase 7 checklist step 5 changes accordingly: after A ends the session,
+a new joiner imports nothing, and a member who was offline for the end and
+rejoins imports it with `ended=yes`.
+
+### Smaller items
+
+- **Reply gate per domain.** `decideAckReply` checks the gate of the
+  differing domains instead of always `CanSync()`, so RAID HELLOs are
+  answered inside instances.
+- **A duplicate `sessionStart` is ignored** (same leader, id and item-list
+  prefix). Before, a repeat re-created the session; now a snapshot can arrive
+  before its own `sessionStart`, and re-creating would wipe what it carried.
+- **One SNAP_GET retry**, 15 s after the request is confirmed sent, then a
+  `WARN ... unanswered`. Spec 8 says sync messages aren't retried, but this
+  server still loses an occasional message and the next trigger may be 12
+  minutes away.
+- **RAID discovery runs one at a time** (`reason=inProgress` at level 2):
+  Peers keeps one collection window per scope and the RAID triggers overlap.
+- **Triggers:** first `PLAYER_ENTERING_WORLD` in a raid or party (`login`,
+  or `reloadInGroup` on a reload), `GROUP_ROSTER_UPDATE` turning
+  `IsInGroup()` true (`joinGroup`), a periodic RAID check while grouped, and the leader's
+  `notify` 5 s after starting a session. Each waits a few jittered seconds
+  and runs through `Gate.QueueLive`, so during an encounter it logs
+  `[GATE] group queued` and runs after `ENCOUNTER_END`. RAID HELLOs use PARTY
+  distribution in a 5-man group.
+- **Equipped gear travels as item strings** and is rebuilt into a link when
+  the item is cached, else kept as a bare `item:...` string (which the Award
+  window's icon, quality and tooltip code all accept). Session item links
+  travel whole, since they end up in history rows and chat.
+- **Known, accepted:** a live `sessionAddItems` the leader sent just before
+  exporting, delivered to the late joiner just after its import, is appended
+  twice. Duplicate items are legal by design, so it can't be told apart.
+- `/fl debug roundtrip snap` covers the payload (spec 7.7 step 4), and
+  `/fl debug forcehello raid` sends a RAID HELLO now.
+
+## Phase 8: hardening and release
+
+### `PROTO_VERSION` is 2
+
+The wire format changed several times during development (order-tolerant
+framing, `PING`, `DONE_ACK`, the extra `HASHES`/`WANT`/`ROWS`/`DAYS` fields),
+always under proto 1, because only development builds existed. The release
+moves to 2, so a stale development build left on someone's machine is
+ignored instead of half-understood. The `HELLO`/`HELLO_ACK` header
+(`PROTO_VERSION, MSG_TYPE, scope, addon version`) is now fixed for good:
+it's how a client learns a foreign-proto peer's addon version.
+
+### Foreign-proto messages: quiet drop, version still read
+
+`Codec.DecodeMessage` used to fail a foreign-proto message with a `[CODEC]
+WARN decode fail step=version` line. In a guild mid-update that would be a
+warning for every message from every old client. It now returns the body as
+a third value; `Transport` drops it with a level-2 `[COMM] recv ignored
+reason=proto` line and a `comm.protoMismatch` counter, and hands a
+`HELLO`/`HELLO_ACK` to `Peers.NoteForeignProto`, which reads only the fixed
+header slots. Such peers aren't recorded as known and nothing is compared
+(spec 13: peers on another proto ignore each other).
+
+### Version line and update hint
+
+`[PEERS] version peer=... addon=... proto=... newer=yes|no` is logged the
+first time a peer is seen and again if its version changes, not on every
+`HELLO`. "Newer" compares dotted version numbers; if either version doesn't
+parse, a higher `PROTO_VERSION` counts as newer. The hint is one normal chat
+line per login, as the plan says, naming the peer and both versions, plus a
+level-1 `[PEERS] update available ...` debug line. It is the only sync
+message printed to chat outside the debug log; everything else that isn't
+a reply to a typed command goes to the debug log only.
+
+### Oversize line names the prefix, not the type
+
+The plan's sample line is `[COMM] WARN oversize from=... type=ROWS
+bytes=...`. The type lives inside the compressed payload, and the point of
+the check is not to decode it, so the line carries `prefix=` instead
+(`FLootS1`-`S3` means bulk data). The check runs on the first piece seen,
+from its piece count, so a sender can't make us buffer 64 KB first; the
+exact length is checked again after reassembly. It replaces the old
+300-piece frame cap.
+
+### Rate-limit warnings are summed
+
+Drops are counted per (sender, type) and reported as one `WARN ratelimit
+... dropped=N` line 5 seconds after the first drop, so a flood costs one
+line. The limit is a sliding 60-second window, applied after decoding (the
+type isn't known before), before the handler and before the sender is
+recorded as a known addon user.
+
+### Locked test tools
+
+A refused command logs `[TEST] refused cmd=... reason=testdataOff` as the
+plan says, to the debug log only. `spamhello` takes an optional name: `/fl debug
+spamhello <n> [name]` whispers one peer; without a name it uses the
+known-user fan-out. `probe`, `rawsend` and `rawbytes` are not locked (not
+in the plan's list); they send diagnostics only, never data.
+
+### Old-release safety: no prefix rename needed
+
+The plan asks what the previous release does with unknown messages on its
+own prefixes. There is no public release yet (0.2.0 is the first pre-release build
+with sync; 1.0 will be the first public one), so no released client exists
+to break. For any older private build: every new message goes on `FLoot`
+and `FLootS1`-`S3`, which builds before the sync system never registered,
+so the client never delivers them there. The prefixes an older build does listen to are
+unchanged on the wire: `ForeverLootLC` (its handler ignores unknown
+actions: `CommActions[action]` is looked up and skipped when nil),
+`ForeverLootRS` and `GargulComm2`. Phase 1's `historyDelete`/`historyPin`
+actions on `ForeverLootLC` were removed in Phase 2 and never released.
+Plan Phase 8 checklist step 1 therefore can't use "the previous public
+release". Two substitutes:
+
+- **Old dev build (proto 1, 0.1.0) on B, 0.2.0 on A:** B shows no Lua
+  errors, only its own old `[CODEC] WARN decode fail step=version` lines
+  for A's messages. A logs `version peer="B" addon=0.1.0 proto=1 newer=no`
+  and no warnings. Neither shows the hint: B's old code has none, and A
+  is the newer one.
+- **The hint itself:** both clients on this build, with B's TOC
+  temporarily set to 0.2.1. A logs `newer=yes` and prints the hint once;
+  B logs `newer=no`.
+
+### `/fl sync status` layout
+
+Follows the plan's final sample, then keeps the lines earlier phases added
+(`config`, `perm`, `comm`/`scheduler`). The domains line shows a snapshot
+domain's session (or `none`) and a set domain's compare result against the
+most recently heard peer that compared it (`same-as-last-peer`,
+`diverged-from-last-peer`, `incompatible-with-last-peer`, `no-peer-yet`).
+`debug:` also shows the level and test-data mode.
+
+### First real prune
+
+`first=yes` is remembered in `FL.DB.lootCouncil.firstRealPruneAt`, set by
+the first prune run with `PRUNE_REAL` on, even if it removes nothing. Like
+every level-1 line, it's only buffered while debug is on, so turn debug on
+before the first login with the release build if you want the count.
+
+## Sync settings page (Oct 3, 2026)
+
+Not in the spec or plan. A **Sync** page in the settings window
+(`UI/SettingsWindow/Pages/Sync.lua`) with the player's own switches and a
+live view of sync. Numbers that no sync module kept already come from the
+new `Sync/Stats.lua`.
+
+### Player switches are gate reasons
+
+`FL.DB.settings.sync.autoSync` (default on) and `pausedThisLogin` become two
+new `Gate` reasons, `disabled` and `paused`, ranked right under `override`.
+They close **sync only**: live broadcasts follow the environment reason
+underneath them, so new awards still go out and come in, and the RAID-scope
+council session (live gate) keeps working. Toggling either fires
+`Gate.OnChange`, so open sessions abort with `reason=gate` as for any other
+gate close. `pausedThisLogin` is cleared in Gate's `PLAYER_ENTERING_WORLD`
+handler when `isInitialLogin` is true. That covers a disconnect relog but
+not a `/reload`.
+
+### Stopped clients are silent
+
+While stopped, the client sends no GUILD HELLO and no HELLO_ACK (gate
+closed, existing paths). An incoming `OPEN` is now dropped with **no**
+`OPEN_REPLY` (`[SESS] <token> ignore ... reason=userStopped`) instead of
+the usual gate refusal, so a stopped client looks the same as one without
+the addon. The opener's idle timeout cleans up its side. Incoming HELLOs are
+still recorded (passive), so the page can still list who has sync on.
+
+### Resume HELLO
+
+Turning sync back on sets a pending flag in `Coordinator`. The next time the
+sync gate is open (straight away, or after combat or an instance), a
+`trigger=resume` GUILD HELLO goes out with "all" fan-out, unless the login
+HELLO hasn't gone out yet (it is still waiting for the gate and covers it).
+
+### Session bookkeeping added for the page
+
+- `session.endReason` is set by `abortSession` and by both `OPEN_REPLY`
+  refusal paths (`dup`, `busy`, `refused`). `nil` means it finished
+  normally.
+- `session.rootsMatch` is kept from the final `done` line.
+- `Session.OnEnded(cb)` runs from `cleanupSession`, which every close path
+  goes through.
+- `session.startLocalCount`/`startRemoteCount`: both window counts when the
+  session started (the peer's from the OPEN plan, or its last HELLO on the
+  server side), for the page's progress bar and rows-to-go estimate.
+- `Stats` keeps the last 20 sessions in `FL.DB.syncLog` (survives logins)
+  and skips `dup` endings. A full (non-helper) session that ends with
+  matching digests calls `Peers.MarkMatched`. This only touches the
+  display-only `compares` table, so the peer shows "In sync" without waiting
+  for its next HELLO.
+- Rows-to-go estimates use window root counts, which include delete and pin
+  marks, so the page shows them with a "~".
+
+### Exact final digest check (DONE / DONE_ACK)
+
+The settings page showed "Partial" for syncs that ended with identical
+digests. The cause was the loose `rootsMatch` described in Phase 5: each
+side compared its final roots with the peer's roots from the **start** of
+the session, so the check read "no" whenever rows flowed both ways.
+
+Now each side sends its final roots at the end, as six trailing fields
+(W count/x/s, A count/x/s). PROTO_VERSION is unchanged, because an older
+build ignores the extra fields:
+
+- `DONE` body[6..11]: the opener's roots when it sends that DONE (full
+  mode only).
+- `DONE_ACK` body[5..10]: the server's roots, only on the empty ack that
+  closes the session (not on the `recentlyDone` re-ack).
+
+The server compares on the final `DONE`, the opener on the empty
+`DONE_ACK`. Without the fields (no ack, pull mode, older build), the loose
+check is still logged, marked `rootsMatch=no (loose)`. The page then shows
+"Complete" rather than guessing. Only an exact mismatch shows "Partial", and
+only an exact match marks the peer as in sync.
+
+### Peer status check (STATUS / STATUS_ACK)
+
+The page's Peers table went stale once histories matched. A HELLO_ACK is
+only sent when something differs, the periodic HELLO is skipped after a
+matching root is heard, and `MarkMatched` only covers the peer we ran a
+full session with. A peer that caught up through someone else kept showing
+"Different (n rows)" from its first HELLO.
+
+Two new messages, `STATUS` (17) and `STATUS_ACK` (18), not in spec 6:
+
+- Same body as HELLO (header + domain/summary pairs, GUILD scope).
+- `Peers.SendStatus` sends a GUILD STATUS ("known" fan-out) at most every
+  `STATUS_INTERVAL` (30s), and only while the Sync page is visible (its
+  `OnUpdate`/`OnShow`).
+- Every receiver records the sender and compares (`[PEERS] status in`),
+  then **always** whispers a STATUS_ACK after 0..`HELLO_REPLY_JITTER`
+  seconds, even when everything matches. The sender compares it
+  (`status ack in`), which updates `compares`/`summaries` and "last heard".
+- Gate closed (stopped, combat, instance...) means no STATUS and no reply,
+  same as HELLO.
+- Display only: never feeds a discovery window, never opens a session. A
+  STATUS reply that shows a difference doesn't start a sync. All-match
+  replies do count for the periodic-HELLO skip (`markMatchHeard`), since
+  they are real matching roots.
+- Rate limit 4 STATUS per sender per 60s.
+- PROTO_VERSION unchanged: an older proto-2 build has no handler for
+  17/18 and drops them.
+
+### Autopin rides in LIVE_ROW
+
+A key-item autopin used to go out as its own `LIVE_PIN` right after the
+`LIVE_ROW`. Receivers treated it like a manual pin, so it was dropped
+whenever the awarder wasn't an officer (`reason=notOfficer`). It could also
+arrive before its row, since this server reorders messages. The pin then
+only spread at the next sync.
+
+Now the awarding client puts the pin in the `LIVE_ROW` itself:
+
+- `LIVE_ROW` body[6] is the pin, encoded with `Codec.EncodeMark` (id,
+  rowTime, at, byIdx into the message's own player list). It's absent when
+  the row isn't a key item.
+- The receiver applies it after the row when the row came back `added` or
+  `dup` (raid members already have the row from the council award
+  broadcast), and only if its id matches the row's. Log:
+  `in LIVE_ROW ... autopin=added|dup|rejected|skipped|-`.
+- Same trust as the row: `LIVE_ROW` has no permission check, and the
+  awarding client decided the pin from `KEY_ITEMS` (spec 10.5). Manual pins
+  still use `LIVE_PIN` with the officer check.
+- PROTO_VERSION unchanged: an older build ignores body[6] and gets the pin
+  by sync.
+
+### Marks in the sync counts
+
+Recent syncs and the transfer line counted rows only, so a sync that moved
+just a pin or delete read "received 0, sent 0". Sessions now keep
+`marksAdded` (pins + deletes that changed something on receive) next to the
+existing `marksSent`. Both are stored in `FL.DB.syncLog` and shown as
+"0 (+1 mark)". Older log records have neither field and read as 0.
+
+### RAID replies: raid-scoped peer count, leader always answers
+
+A raider who was offline when the leader ended a session logs back in still
+holding it as active. Their RAID HELLO carries that session, and the
+correction (Compare localNewer, SummaryFor's ended version in the
+HELLO_ACK) only happens if someone answers. Two things made that unlikely:
+
+- `decideAckReply` took p = TARGET_RESPONDERS / knownPeers from the
+  guild-wide peer count, even for a RAID HELLO only group members can
+  answer. Two people raiding with 20 known guild peers each replied 15% of
+  the time. `KnownPeerCount(scope)` now counts only group members for RAID.
+- The leader is the one peer certain to hold the right version, but rolled
+  like everyone else. A domain may now define `MustReply(remote, name)`;
+  when it returns true for a differing domain, p = 1.
+  `CouncilSessionDomain:MustReply` is true when we lead the session the
+  sender holds and their copy is behind ours.
+
+### RAID login and join triggers fire in a party too
+
+The login/reload and join triggers checked `IsInRaid()`, so a player in a
+5-man party who missed a session end sent no HELLO on login and stayed stuck
+until the periodic check (12 +- 3 min). They now check `IsInGroup()`, and
+the trigger labels are `reloadInGroup` and `joinGroup` (were `reloadInRaid`
+and `joinRaid`). Turning a party into a raid no longer counts as a join:
+everyone in it already holds the session.
+
+### Council session sync uses a "group" gate (no guild needed)
+
+Spec 7.7 puts the council session on the live gate, and live is `blocked`
+when the player isn't in a guild (`noguild`). So a guildless pug who missed
+a session end could never send or answer the RAID HELLO, and their stale
+session stayed active. RAID-scope traffic only goes to our own raid/party
+(PARTY/RAID HELLOs, whispers for HELLO_ACK/SNAP_GET/SNAP), so the guild
+requirement buys nothing there.
+
+- `Gate` now also tracks `group`: the live state worked out with the guild
+  check skipped. The override still applies unchanged. Encounters and
+  loading screens still queue it.
+- `Gate.CanGroup()` and `Gate.QueueGroup(fn, label)`. The queue is shared
+  with `QueueLive`. Each entry records its gate, and a flush runs only the
+  entries whose gate is open. A guildless client therefore keeps its live
+  entries queued while its group entries go out.
+- `CouncilSessionDomain.gate = "group"`. Coordinator's RAID HELLO and its
+  SNAP_GET/SNAP sends queue on the domain's gate, and Peers and Session
+  resolve `"group"` to `CanGroup()`.
+- Log lines: `[GATE] state ... group=<state>`, `[GATE] group queued ...`,
+  and `live flushed n=.. kept=..`. `/fl sync status` shows `group=`.

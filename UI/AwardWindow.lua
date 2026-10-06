@@ -1890,7 +1890,7 @@ function AwardWindow.Show()
     if (not LootCouncil.CanAccessReviewWindow()) then return; end
     -- Once a session is ended (see LootCouncil.EndSession) this window can't
     -- be reopened for it - not via the chat "reopen" link, Debug's Toggle, or
-    -- a later councilSettingsSync auto-show - until a new sessionStart
+    -- a later sessionCouncilUpdate auto-show - until a new sessionStart
     -- replaces Session with a fresh, active one.
     local Session = getSession();
     if (Session and Session.status ~= "active") then return; end
