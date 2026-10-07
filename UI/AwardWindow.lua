@@ -69,7 +69,6 @@ local headerBadge, headerBadgeText, disenchantButton, prevButton, nextButton;
 local tableHeaderRow;
 local rightScroll, rightScrollChild;
 local rowPool = {};
-local rowOrder = {}; -- names in the order BuildCandidateList returned this refresh
 
 local footer, footerHintIcon, footerHintText, footerMiddleHintIcon, footerMiddleHintText, jumpCheckboxRow;
 

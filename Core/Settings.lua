@@ -6,7 +6,6 @@ resolving correctly even if another addon changes what that key points to.
 
 local FL = ForeverLoot;
 local Settings = FL.Settings;
-local LSM = LibStub("LibSharedMedia-3.0");
 
 function Settings.Init()
     -- Forward-looking safety net for future saved-variable migrations - no

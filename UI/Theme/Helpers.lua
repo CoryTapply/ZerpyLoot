@@ -38,15 +38,6 @@ function Helpers.SetFlatBackdrop(frame, fillColor, borderColor, thicknessPx)
     frame:SetBackdropBorderColor(unpack(borderColor));
 end
 
---- Mixes `color` ({ r, g, b, ... }) with white: strength 0 = white (no tint),
---- 1 = `color`. Returns r, g, b for SetVertexColor.
-function Helpers.MixWithWhite(color, strength)
-    strength = math.max(0, math.min(1, strength or 0));
-    return 1 + (color[1] - 1) * strength,
-        1 + (color[2] - 1) * strength,
-        1 + (color[3] - 1) * strength;
-end
-
 --- Wires an eased mouse-wheel scroll onto `scrollFrame` (any ScrollFrame,
 --- typically one built off UIPanelScrollFrameTemplate). Replaces the
 --- template's default OnMouseWheel (which jumps SetVerticalScroll by a huge

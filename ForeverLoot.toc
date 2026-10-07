@@ -4,7 +4,7 @@
 ## Author: Zerpy
 ## X-License: MIT
 ## X-Curse-Project-ID: 1731392
-## Version: 0.2.2
+## Version: 0.2.2-beta1
 ## IconTexture: Interface\AddOns\ForeverLoot\Media\Icons\ForeverLootCrown64.tga
 ## SavedVariables: ForeverLootDB
 ## DefaultState: enabled

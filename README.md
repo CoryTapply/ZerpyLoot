@@ -52,10 +52,4 @@ Pushing a version tag releases automatically (`.github/workflows/release.yml`):
 
 The workflow checks that the tag matches the TOC version and that the changelog has a section for it. It then builds the zip with `tools/package.sh`, uploads it to CurseForge with that changelog section, and creates a GitHub Release. Versions containing `alpha` or `beta` (e.g. `0.2.3-beta1`) upload as Alpha or Beta and are marked as prereleases on GitHub.
 
-One-time setup:
-
-- `## X-Curse-Project-ID` in `ForeverLoot.toc` (already set: 1731392).
-- Repo secret `CF_API_KEY`, a token from https://legacy.curseforge.com/account/api-tokens: `gh secret set CF_API_KEY`
-- Repo variable `CF_GAME_VERSIONS`, a comma-separated list of CurseForge game version ids. Find them with `curl -s -H "X-Api-Token: $TOKEN" https://wow.curseforge.com/api/game/versions`, then run `gh variable set CF_GAME_VERSIONS -b "<id>"`.
-
 To release by hand instead, run `tools/package.sh`, then either `CF_API_KEY=... CF_GAME_VERSIONS=... tools/upload-curseforge.sh dist/ForeverLoot-<version>.zip <version>` or upload the zip on the CurseForge site.
