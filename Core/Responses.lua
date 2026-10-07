@@ -1,15 +1,17 @@
 --[[
 The loot leader's configurable set of response buttons raiders see on the
 Respond popup (UI/RespondWindow.lua) - replaces the old hard-coded
-Constants.LOOT_COUNCIL_RESPONSES table. This module owns FL.DB.responses.list
-(the leader's live, editable list - built by UI/SettingsWindow/Pages/
-LootResponses.lua) plus every rule around it: how many of each kind are
-allowed, id allocation, and how a SESSION's snapshot (a filtered copy taken
+Constants.LOOT_COUNCIL_RESPONSES table. This module owns FL.DB.responses -
+{ active = name, profiles = { [name] = { list = {...} } } } - where the active
+profile's list is the leader's live, editable list (built by UI/
+SettingsWindow/Pages/LootResponses.lua) - plus every rule around it: how
+many of each kind are allowed, id allocation, and how a SESSION's snapshot (a filtered copy taken
 when a session starts - see Responses.SessionSnapshot) and a HISTORY copy (an
 immutable {label,color,kind} record - see Responses.HistoryCopy) are built
-from it. UI code should never read/write FL.DB.responses.list directly -
-always through the functions here, so every validation rule lives in one
-place.
+from it. UI code should never read/write FL.DB.responses directly - always
+through the functions here, so every validation rule lives in one
+place. Profiles are account-wide; "Default" always exists and can't be
+deleted.
 
 Ids are only unique WITHIN a list, are never sent/stored outside that list's
 own lifetime (a session snapshot, or - never - history), and get reused after
@@ -31,6 +33,11 @@ local MIN_TEXT_RESPONSES = Responses.MIN_TEXT_RESPONSES;
 local MAX_TEXT_RESPONSES = Responses.MAX_TEXT_RESPONSES;
 local MIN_LABEL_LENGTH = 1;
 local MAX_LABEL_LENGTH = Responses.MAX_LABEL_LENGTH;
+
+Responses.PROFILE_DEFAULT = "Default";
+Responses.MAX_PROFILE_NAME_LENGTH = 24;
+local PROFILE_DEFAULT = Responses.PROFILE_DEFAULT;
+local MAX_PROFILE_NAME_LENGTH = Responses.MAX_PROFILE_NAME_LENGTH;
 
 -- Same 12 presets the settings page's color palette popover shows - kept
 -- here (not only in UI/SettingsWindow/Colors.lua) so Responses.AddText can
@@ -70,35 +77,55 @@ function Responses.CloneList(list)
     return copy;
 end
 
-function Responses.Init()
-    FL.DB.responses = FL.DB.responses or { list = Responses.CloneList(Responses.DEFAULT_LIST) };
-
-    -- Migration: saved lists from before the "pvp" kind existed won't have
-    -- one - insert it (ahead of Transmog/Pass, whichever comes first, so it
-    -- lands in the same default position a fresh DEFAULT_LIST gives it) so
-    -- upgraders get it without losing any of their own customizations to
-    -- the rest of the list. Runs every login but is a no-op once the entry
-    -- exists.
-    local list = FL.DB.responses.list;
-    local hasPvp = false;
+--- Inserts a "pvp" entry into `list` if it doesn't have one. Saved lists
+--- from before the "pvp" kind existed won't have one - inserted ahead of
+--- Transmog/Pass (whichever comes first) so it lands in the same default
+--- position a fresh DEFAULT_LIST gives it, without losing any of the
+--- player's own customizations to the rest of the list.
+local function backfillPvp(list)
     for _, entry in ipairs(list) do
-        if (entry.kind == "pvp") then hasPvp = true; break; end
+        if (entry.kind == "pvp") then return; end
     end
-    if (not hasPvp) then
-        local insertAt = #list + 1;
-        for i, entry in ipairs(list) do
-            if (entry.kind == "mog" or entry.kind == "pass") then insertAt = i; break; end
-        end
-        table.insert(list, insertAt, {
-            id = Responses.NextId(list), kind = "pvp", label = "PvP", color = "e6c229", enabled = true,
-        });
+    local insertAt = #list + 1;
+    for i, entry in ipairs(list) do
+        if (entry.kind == "mog" or entry.kind == "pass") then insertAt = i; break; end
+    end
+    table.insert(list, insertAt, {
+        id = Responses.NextId(list), kind = "pvp", label = "PvP", color = "e6c229", enabled = true,
+    });
+end
+
+function Responses.Init()
+    local db = FL.DB.responses or {};
+    FL.DB.responses = db;
+
+    -- Migration: before profiles existed the saved shape was just
+    -- { list = {...} } - that list becomes the Default profile so upgraders
+    -- keep their customizations.
+    if (not db.profiles) then
+        db.profiles = {
+            [PROFILE_DEFAULT] = { list = db.list or Responses.CloneList(Responses.DEFAULT_LIST) },
+        };
+        db.list = nil;
+    end
+    if (not db.profiles[PROFILE_DEFAULT]) then
+        db.profiles[PROFILE_DEFAULT] = { list = Responses.CloneList(Responses.DEFAULT_LIST) };
+    end
+    if (not db.active or not db.profiles[db.active]) then
+        db.active = PROFILE_DEFAULT;
+    end
+
+    -- Runs every login but is a no-op once each profile has its entry.
+    for _, profile in pairs(db.profiles) do
+        backfillPvp(profile.list);
     end
 end
 
 --- The live, editable list - the settings page mutates this (via the
 --- functions below) in place.
 function Responses.GetList()
-    return FL.DB.responses.list;
+    local db = FL.DB.responses;
+    return db.profiles[db.active].list;
 end
 
 function Responses.GetById(list, id)
@@ -286,8 +313,87 @@ function Responses.MoveDown(list, id)
     return true;
 end
 
+--- Resets only the active profile's list.
 function Responses.ResetToDefaults()
-    FL.DB.responses.list = Responses.CloneList(Responses.DEFAULT_LIST);
+    local db = FL.DB.responses;
+    db.profiles[db.active].list = Responses.CloneList(Responses.DEFAULT_LIST);
+end
+
+--------------------------------------------------------------------------
+-- Profiles - named, account-wide copies of the response list. Exactly one
+-- is active; GetList() (and so every session snapshot) reads from it.
+--------------------------------------------------------------------------
+
+function Responses.GetActiveProfile()
+    return FL.DB.responses.active;
+end
+
+--- Sorted case-insensitively, with Default always first.
+function Responses.GetProfileNames()
+    local names = {};
+    for name in pairs(FL.DB.responses.profiles) do
+        if (name ~= PROFILE_DEFAULT) then table.insert(names, name); end
+    end
+    table.sort(names, function(a, b) return a:lower() < b:lower(); end);
+    table.insert(names, 1, PROFILE_DEFAULT);
+    return names;
+end
+
+--- Returns ok, errorMessage, trimmedName.
+function Responses.ValidateProfileName(name)
+    local trimmed = Util.Trim(name or "");
+    if (#trimmed < 1) then
+        return false, "Every profile needs a name.";
+    end
+    if (#trimmed > MAX_PROFILE_NAME_LENGTH) then
+        return false, ("Profile names can be up to %d characters."):format(MAX_PROFILE_NAME_LENGTH);
+    end
+    for existing in pairs(FL.DB.responses.profiles) do
+        if (Util.iEquals(existing, trimmed)) then
+            return false, "A profile with that name already exists.";
+        end
+    end
+    return true, nil, trimmed;
+end
+
+--- `base`, or "base 2"/"base 3"... - the first name not already taken.
+function Responses.UniqueProfileName(base)
+    local name = base;
+    local suffix = 1;
+    while (not Responses.ValidateProfileName(name)) do
+        suffix = suffix + 1;
+        name = base .. " " .. suffix;
+    end
+    return name;
+end
+
+--- Creates a profile from a copy of `sourceList` (DEFAULT_LIST when nil) and
+--- makes it active. Returns ok, errorMessage, trimmedName.
+function Responses.CreateProfile(name, sourceList)
+    local ok, err, trimmed = Responses.ValidateProfileName(name);
+    if (not ok) then return false, err; end
+
+    local db = FL.DB.responses;
+    db.profiles[trimmed] = { list = Responses.CloneList(sourceList or Responses.DEFAULT_LIST) };
+    db.active = trimmed;
+    return true, nil, trimmed;
+end
+
+function Responses.SetActiveProfile(name)
+    local db = FL.DB.responses;
+    if (not db.profiles[name]) then return false; end
+    db.active = name;
+    return true;
+end
+
+--- Refuses Default. Deleting the active profile switches back to Default.
+function Responses.DeleteProfile(name)
+    local db = FL.DB.responses;
+    if (name == PROFILE_DEFAULT) then return false, "The Default profile can't be deleted."; end
+    if (not db.profiles[name]) then return false, "Unknown profile."; end
+    db.profiles[name] = nil;
+    if (db.active == name) then db.active = PROFILE_DEFAULT; end
+    return true;
 end
 
 --------------------------------------------------------------------------

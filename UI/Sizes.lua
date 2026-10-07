@@ -522,6 +522,7 @@ FL.UI.Sizes = {
         return {
             window = { width = 930, height = 533 },
             titleBarHeight = 32,
+            guildPickerWidth = 170, -- title bar, far left: view another guild's history (Data/Buckets.lua)
 
             column = {
                 date = 110, players = 150, items = 200,

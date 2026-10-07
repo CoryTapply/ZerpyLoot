@@ -126,6 +126,7 @@ function Buckets.Select(key)
             parked()[key] = nil;
         end
         db.historyGuild = key;
+        db.historyGuildLabel = GetGuildInfo("player") or (extra and extra.label);
         ready = true;
         FL.Sync.Debug.Log("STORE", 1, "history bucket: %s claimed the saved history · %d rows", key, #db.history);
         announceAdopted(key, #db.history);
@@ -140,7 +141,7 @@ function Buckets.Select(key)
 
     local all = parked();
     if (current and hasData(db.history, db.tombstones, db.pins)) then
-        all[current] = { history = db.history, tombstones = db.tombstones, pins = db.pins };
+        all[current] = { history = db.history, tombstones = db.tombstones, pins = db.pins, label = db.historyGuildLabel };
     end
 
     local nextBucket, adopted = all[key], false;
@@ -155,6 +156,7 @@ function Buckets.Select(key)
     db.tombstones = nextBucket.tombstones or {};
     db.pins = nextBucket.pins or {};
     db.historyGuild = key;
+    db.historyGuildLabel = (isGuildKey(key) and GetGuildInfo("player")) or nextBucket.label;
     FL.LootCouncil.History = db.history;
     FL.LootCouncil.RebuildHistoryIndex();
     ready = true;
@@ -166,8 +168,8 @@ function Buckets.Select(key)
     -- (guild changed mid-session) prune + rebuild it for the new bucket.
     if (initDone) then
         FL.Sync.Retention.Prune(); -- finishes with Digest.Rebuild()
-        if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.Refresh) then
-            FL.UI.LootHistoryWindow.Refresh();
+        if (FL.UI.LootHistoryWindow and FL.UI.LootHistoryWindow.ResetView) then
+            FL.UI.LootHistoryWindow.ResetView(); -- back to the new active guild, and repaint
         end
     end
 end
@@ -206,6 +208,7 @@ function Buckets.ForeignKeyForSession(Session)
     local key = Buckets.KeyForGuild(guildName, guildRealm);
     if (key) then
         Session.historyGuildKey = key;
+        Session.historyGuildLabel = guildName;
         return (key ~= active) and key or nil;
     end
 
@@ -222,8 +225,9 @@ end
 --- Stores `row` in the parked bucket `key` without touching the active
 --- bucket, the digest or the network. A re-award replaces the row with the
 --- same itemKey, like LootCouncil.RecordHistory does for the active bucket.
-function Buckets.ApplyRowToBucket(key, row)
+function Buckets.ApplyRowToBucket(key, row, label)
     local bucket = bucketFor(key);
+    bucket.label = bucket.label or label;
     local history = bucket.history;
     for i = #history, 1, -1 do
         local existing = history[i];
@@ -237,6 +241,36 @@ function Buckets.ApplyRowToBucket(key, row)
     table.insert(history, row);
     FL.Sync.Debug.Log("STORE", 1, "award %s from another guild's raid · kept in %s's history, not synced", tostring(row.itemLink or row.id), key);
     return true;
+end
+
+local SPECIAL_LABELS = { [LEGACY] = "Older history", [OTHER] = "Other guilds", [NONE] = "No guild" };
+
+--- The name to show for bucket `key`: its guild's name when known.
+function Buckets.LabelOf(key)
+    if (key == FL.DB.lootCouncil.historyGuild) then
+        return GetGuildInfo("player") or FL.DB.lootCouncil.historyGuildLabel or SPECIAL_LABELS[key] or key;
+    end
+    local bucket = parked()[key];
+    return (bucket and bucket.label) or SPECIAL_LABELS[key] or key;
+end
+
+--- Every parked bucket with rows in it, as { key, label, rows }, sorted by
+--- label - the History window's guild picker.
+function Buckets.List()
+    local out = {};
+    for key, bucket in pairs(parked()) do
+        if (#(bucket.history or {}) > 0) then
+            table.insert(out, { key = key, label = Buckets.LabelOf(key), rows = #bucket.history });
+        end
+    end
+    table.sort(out, function(a, b) return a.label:lower() < b.label:lower(); end);
+    return out;
+end
+
+--- A parked bucket { history, tombstones, pins, label }, or nil. Read-only
+--- for callers: nothing outside this file writes to parked buckets.
+function Buckets.Get(key)
+    return parked()[key];
 end
 
 --- Runs after Store.Init (which ensures tombstones/pins exist) and before

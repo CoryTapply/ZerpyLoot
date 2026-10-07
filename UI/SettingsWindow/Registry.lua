@@ -21,9 +21,9 @@ local Registry = {};
 FL.UI.SettingsRegistry = Registry;
 
 local NAV_BUTTON_HEIGHT = Sizes.controls.navRow;
--- The spec asks for exactly one fixed divider (before Profiles) - not a
--- general "insert a divider here" feature, since nothing else needs one.
-local DIVIDER_BEFORE_ID = "profiles";
+-- Exactly one fixed divider (before About) - not a general "insert a
+-- divider here" feature, since nothing else needs one.
+local DIVIDER_BEFORE_ID = "about";
 
 local pageEntries = {}; -- array of { id, label, buildFunc, order, footerOpt, page, footerFrame, built }
 local pagesById = {};
@@ -34,12 +34,12 @@ local contentFrame; -- the scroll child every page's frame is anchored into
 local footerRowFrame; -- the footer container's button row; each page gets its own subframe of this
 
 -- Sidebar search (see Registry.ApplySearch/Registry.Build below). While a
--- query is active, the nav button list (navButtonsById + profileDivider) is
+-- query is active, the nav button list (navButtonsById + navDivider) is
 -- swapped out for resultsContainer, a flat cross-page list of matching
 -- settings built from every page's own searchEntries (see Widgets.lua's
 -- addSearchEntry) the first time it's actually needed.
 local searchBoxRef; -- the sidebar EditBox itself (Init.lua's `topAnchor`) - cleared on a result click so the nav list reappears
-local profileDivider; -- the one fixed divider before "Profiles" (DIVIDER_BEFORE_ID) - hidden alongside the nav buttons during a search
+local navDivider; -- the one fixed divider before "About" (DIVIDER_BEFORE_ID) - hidden alongside the nav buttons during a search
 local resultsContainer;
 local resultButtons = {}; -- pooled result-row buttons, reused across searches/keystrokes
 local searchIndex; -- built lazily, once, on first non-empty query: array of { label, labelLower, frame, pageId, pageLabel }
@@ -125,7 +125,7 @@ end
 
 local function setNavChromeShown(shown)
     for _, button in pairs(navButtonsById) do button:SetShown(shown); end
-    if (profileDivider) then profileDivider:SetShown(shown); end
+    if (navDivider) then navDivider:SetShown(shown); end
 end
 
 --- Forces every page to build (see ensurePageBuilt) so each one's
@@ -396,7 +396,7 @@ function Registry.Build(sidebar, content, topAnchor, footerRow)
     -- width as the search box above them, not edge to edge (an inset pill
     -- when selected/hovered, not a full-width bar) - only the vertical
     -- stacking comes from prevAnchor. The gap above each depends on what
-    -- it's stacking under: the search box (searchNavGap), the Profiles
+    -- it's stacking under: the search box (searchNavGap), the About
     -- divider (navDividerGap, both above AND below it), or another nav
     -- item (navItemGap).
     local prevAnchor = topAnchor;
@@ -411,7 +411,7 @@ function Registry.Build(sidebar, content, topAnchor, footerRow)
             divider:SetHeight(FL.Pixel.PixelSize(1));
             prevAnchor = divider;
             prevWasDivider = true;
-            profileDivider = divider;
+            navDivider = divider;
         end
 
         local gapAbove;

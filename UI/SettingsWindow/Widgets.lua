@@ -691,7 +691,7 @@ function Widgets.BuildDefaultFooter(footerFrame, page)
     saveText:SetTextColor(unpack(Colors.muted));
 end
 
---- Used by the 3 stub pages (Announcements/Profiles/About).
+--- Used by the stub pages.
 function PageMethods:ComingSoon()
     local text = self.frame:CreateFontString(nil, "OVERLAY");
     SetFont(text, "body");

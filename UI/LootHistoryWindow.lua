@@ -76,6 +76,16 @@ local hasAppliedFilter = false;
 local deleteModeActive = false;
 local lockButton;
 
+-- Another guild's history on this account being viewed (Data/Buckets.lua's
+-- parked buckets), or nil for this character's own guild. Viewing another
+-- guild is read-only: no Add Entry, no delete/pin, and no live updates.
+-- Always reset to nil when the window opens.
+local viewKey;
+local ACTIVE_VIEW = "__active"; -- the guild picker's value for our own guild
+local guildPicker, guildPickerSignature;
+local windowTitle, titleBarFrame;
+local WINDOW_TITLE = "ForeverLoot - Loot History";
+
 -- Debounces GET_ITEM_INFO_RECEIVED-triggered refreshes (see ensureFrame) -
 -- a cold cache on first open can answer dozens of items in a burst, and
 -- each one firing its own full Refresh() would re-run rebuildIndexes() that
@@ -150,8 +160,22 @@ end
 -- never scanned per frame. See §1 of the design spec.
 --------------------------------------------------------------------------
 
+-- The rows the window shows: our own guild's history, or the parked bucket
+-- being viewed. Parked buckets are never pruned, so rows our own view would
+-- already have pruned (older than the cutoff, unpinned) are left out.
+local function viewEntries()
+    if (not viewKey) then return LootCouncil.History or {}; end
+    local bucket = FL.Sync.Buckets.Get(viewKey);
+    if (not bucket) then return {}; end
+    local cutoff, pins, out = FL.Sync.Retention.Cutoff(), bucket.pins or {}, {};
+    for _, row in ipairs(bucket.history or {}) do
+        if ((row.awardedAt or 0) >= cutoff or pins[row.id]) then table.insert(out, row); end
+    end
+    return out;
+end
+
 local function rebuildIndexes()
-    local history = LootCouncil.History or {};
+    local history = viewEntries();
     allEntries = {};
     for i, entry in ipairs(history) do allEntries[i] = entry; end
     table.sort(allEntries, function(a, b) return (a.awardedAt or 0) > (b.awardedAt or 0); end);
@@ -1666,7 +1690,7 @@ local function paintLockButton()
     if (not lockButton) then return; end
     -- Re-checked on every repaint (window show, hover-leave, creation) since
     -- guild rank can change while the window stays open across logins.
-    lockButton:SetShown(FL.Sync.Permissions.CanDelete(Util.UnitName("player")));
+    lockButton:SetShown(viewKey == nil and FL.Sync.Permissions.CanDelete(Util.UnitName("player")));
     if (deleteModeActive) then
         Theme.Helpers.SetFlatBackdrop(lockButton, Colors.sessionDeleteHoverBg, Colors.skinCloseBorder, 1);
         lockButton.icon:SetVertexColor(unpack(Colors.sessionDeleteHoverIcon));
@@ -1725,6 +1749,81 @@ end
 local function doPin(entry)
     if (not FL.Sync.Live.Pin(entry.id)) then return; end
     layoutResultRows(currentResults);
+end
+
+--------------------------------------------------------------------------
+-- Guild picker - view another guild's history on this account, read-only
+-- (Data/Buckets.lua). Shown at the far left of the title bar, only when
+-- another guild's history exists. The first option is this character's own guild, by name.
+--------------------------------------------------------------------------
+
+local function pickerOptions()
+    local Buckets = FL.Sync.Buckets;
+    local options = { { value = ACTIVE_VIEW, label = Buckets.LabelOf(Buckets.ActiveKey()) } };
+    for _, bucket in ipairs(Buckets.List()) do
+        table.insert(options, { value = bucket.key, label = bucket.label });
+    end
+    return options;
+end
+
+-- Skin.Dropdown builds its rows once, from the options it was given, so a
+-- changed guild list gets a fresh dropdown (rare: a new guild's history
+-- appears, or a guild is renamed).
+local function ensureGuildPicker(options)
+    local parts = {};
+    for _, opt in ipairs(options) do table.insert(parts, opt.value .. "=" .. opt.label); end
+    local signature = table.concat(parts, "\n");
+    if (guildPicker and signature == guildPickerSignature) then return; end
+
+    if (guildPicker) then guildPicker.button:Hide(); end
+    guildPickerSignature = signature;
+    guildPicker = Skin.Dropdown(titleBarFrame, {
+        width = Sizes.guildPickerWidth,
+        height = RootSizes.controls.close, -- same height as the close/lock buttons beside the title
+        options = options,
+        getValue = function() return viewKey or ACTIVE_VIEW; end,
+        onSelect = function(value) LootHistoryWindow.SetView(value ~= ACTIVE_VIEW and value or nil); end,
+    });
+end
+
+-- Title, Add Entry, lock button and guild picker for the current view.
+local function paintViewControls()
+    local viewing = viewKey ~= nil;
+    addEntryButton:SetShown(not viewing);
+    paintLockButton();
+    windowTitle:SetText(viewing
+        and ("%s \194\183 %s (view only)"):format(WINDOW_TITLE, FL.Sync.Buckets.LabelOf(viewKey))
+        or WINDOW_TITLE);
+
+    local options = pickerOptions();
+    if (#options < 2) then
+        if (guildPicker) then guildPicker.button:Hide(); end
+        return;
+    end
+    ensureGuildPicker(options);
+    guildPicker.button:ClearAllPoints();
+    guildPicker.button:SetPoint("LEFT", titleBarFrame, "LEFT", 8, 0);
+    guildPicker.button:Show();
+    guildPicker.Refresh();
+end
+
+--- Shows `key`'s parked history read-only, or our own guild's for nil.
+function LootHistoryWindow.SetView(key)
+    viewKey = key;
+    deleteModeActive = false;
+    paintViewControls();
+    rebuildIndexes();
+    dateColumn.refresh();
+    playersColumn.refresh();
+    itemsColumn.refresh();
+    applyFilter(nil);
+end
+
+--- Back to our own guild's history, e.g. after the active bucket changed
+--- (Data/Buckets.lua's Select). Repaints if the window is open.
+function LootHistoryWindow.ResetView()
+    viewKey = nil;
+    LootHistoryWindow.Refresh();
 end
 
 --------------------------------------------------------------------------
@@ -2526,7 +2625,9 @@ local function createTitleBar()
     local title = titleBar:CreateFontString(nil, "OVERLAY");
     SetFont(title, "windowTitle");
     title:SetPoint("CENTER", titleBar, "CENTER", 0, 0);
-    title:SetText("ForeverLoot - Loot History");
+    title:SetText(WINDOW_TITLE);
+    windowTitle = title;
+    titleBarFrame = titleBar; -- the guild picker's parent (paintViewControls)
     title:SetTextColor(unpack(Colors.titlePurple));
 
     local divider = titleBar:CreateTexture(nil, "ARTWORK");
@@ -2709,7 +2810,8 @@ end
 function LootHistoryWindow.Show()
     ensureFrame();
     deleteModeActive = false;
-    paintLockButton();
+    viewKey = nil;
+    paintViewControls();
     rebuildIndexes();
     dateColumn.refresh();
     playersColumn.refresh();
@@ -2735,6 +2837,8 @@ end
 --- that mattered.
 function LootHistoryWindow.Refresh()
     if (not frame or not frame:IsShown()) then return; end
+    if (viewKey and not FL.Sync.Buckets.Get(viewKey)) then viewKey = nil; end
+    paintViewControls();
     rebuildIndexes();
     dateColumn.refresh();
     playersColumn.refresh();
@@ -2768,6 +2872,8 @@ end
 ---@param result string the fixed outcome word Store:Apply returned (see Data/Store.lua)
 local function onEntryApplied(_event, appliedEntry, source, result)
     if (not frame or not frame:IsShown()) then return; end
+    -- Live/sync changes are to our own guild's history, not the one being viewed.
+    if (viewKey) then return; end
 
     if (appliedEntry.kind == "R" and result == "added") then
         if (appliedEntry.replacedRow) then removeEntryFromIndexes(appliedEntry.replacedRow); end

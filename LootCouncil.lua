@@ -1338,7 +1338,7 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         responses = responses,
     };
     if (foreignKey) then
-        FL.Sync.Buckets.ApplyRowToBucket(foreignKey, newEntry);
+        FL.Sync.Buckets.ApplyRowToBucket(foreignKey, newEntry, Session.historyGuildLabel);
         return;
     end
     -- Routed through Store so every write - a local award, a received award,

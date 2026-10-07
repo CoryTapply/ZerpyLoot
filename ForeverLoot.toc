@@ -2,7 +2,7 @@
 ## Title: ForeverLoot
 ## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
 ## Author: Zerpy
-## Version: 0.2.1
+## Version: 0.2.2
 ## IconTexture: Interface\AddOns\ForeverLoot\Media\Icons\ForeverLootCrown64.tga
 ## SavedVariables: ForeverLootDB
 ## DefaultState: enabled
@@ -91,7 +91,6 @@ UI\SettingsWindow\Pages\LootCouncil.lua
 UI\SettingsWindow\Pages\LootResponses.lua
 UI\SettingsWindow\Pages\Announcements.lua
 UI\SettingsWindow\Pages\Sync.lua
-UI\SettingsWindow\Pages\Profiles.lua
 UI\SettingsWindow\Pages\About.lua
 UI\OptionsPanel.lua
 UI\RollWindow.lua

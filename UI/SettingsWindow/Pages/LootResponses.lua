@@ -60,6 +60,7 @@ local HOW_IT_WORKS_BULLETS = {
     "Transmog, PvP, and Pass are icon-only. Transmog and PvP can go anywhere in the order or be hidden. Pass is always last.",
     "The color is the dot on the raider's button, the fill when it's picked, and the pill the council sees.",
     "Changes apply to the next session you start. A session already running keeps the buttons it started with.",
+    "Profiles save different button sets. The active profile is the one your next session sends.",
 };
 
 -- Forward declarations - referenced by closures built well before their own
@@ -567,34 +568,227 @@ ClearStatus = function(page)
 end
 
 --------------------------------------------------------------------------
--- Footer: "Reset to Defaults" (left) + "Changes save automatically" (right).
+-- Footer: "Reset to Defaults" (left) + the profile switcher (right):
+-- "Profile:" [dropdown] [New] [Duplicate] [Delete].
 --------------------------------------------------------------------------
+
+local PROFILE_DROPDOWN_WIDTH = 150;
+local PROFILE_BUTTON_WIDTH = 70;
+local PROFILE_BUTTON_GAP = 6;
+local PROFILE_NAME_BOX_HEIGHT = 22;
+
+local function getConfirmPopup(page)
+    if (not page._confirmPopup) then
+        page._confirmPopup = Skin.ConfirmPopup(page.frame, {});
+    end
+    return page._confirmPopup;
+end
+
+local RebuildProfileControls;
+
+--- Everything a profile switch/create/delete has to refresh: the list +
+--- preview, the dropdown (rebuilt - see RebuildProfileControls), and the
+--- Delete button's enabled state.
+local function afterProfileChange(page)
+    if (page._palette) then page._palette:Close(); end
+    ClearStatus(page);
+    RebuildProfileControls(page);
+    RebuildList(page);
+end
+
+--- Skin.Dropdown builds its popup rows once, on first open, from a fixed
+--- options table - so a create/delete swaps in a brand new dropdown rather
+--- than trying to patch the old one's rows.
+RebuildProfileControls = function(page)
+    local footer = page._profileFooter;
+    if (page._profileDropdown) then
+        page._profileDropdown.button:Hide();
+        page._profileDropdown.button:SetParent(nil);
+    end
+
+    local options = {};
+    for _, name in ipairs(Responses.GetProfileNames()) do
+        table.insert(options, { value = name, label = name });
+    end
+
+    local dropdown = Skin.Dropdown(footer, {
+        width = PROFILE_DROPDOWN_WIDTH,
+        height = Sizes.controls.button,
+        options = options,
+        getValue = Responses.GetActiveProfile,
+        onSelect = function(value)
+            if (value == Responses.GetActiveProfile()) then return; end
+            Responses.SetActiveProfile(value);
+            afterProfileChange(page);
+        end,
+    });
+    dropdown.button:SetPoint("RIGHT", page._profileNewButton, "LEFT", -PROFILE_BUTTON_GAP, 0);
+    page._profileDropdown = dropdown;
+    page._profileLabel:ClearAllPoints();
+    page._profileLabel:SetPoint("RIGHT", dropdown.button, "LEFT", -PROFILE_BUTTON_GAP, 0);
+
+    page._profileDeleteButton:SetEnabled(Responses.GetActiveProfile() ~= Responses.PROFILE_DEFAULT);
+end
+
+--- The single-EditBox content for the New/Duplicate name prompt - built once
+--- into the shared confirm popup's dialog, re-anchored on every open.
+local function ensureNameBox(page, popup)
+    if (page._profileNameBox) then return page._profileNameBox, page._profileNameError; end
+    local dialog = popup.dialog;
+
+    local editBox = CreateFrame("EditBox", nil, dialog, "BackdropTemplate");
+    editBox:SetHeight(PROFILE_NAME_BOX_HEIGHT);
+    Theme.Helpers.SetFlatBackdrop(editBox, Colors.lrEditBoxBg, Colors.lrEditBoxBorder, 1);
+    SetFont(editBox, "body");
+    editBox:SetTextColor(unpack(Colors.text));
+    editBox:SetTextInsets(6, 6, 0, 0);
+    editBox:SetAutoFocus(false);
+    editBox:SetMaxLetters(Responses.MAX_PROFILE_NAME_LENGTH);
+    editBox:SetScript("OnEditFocusGained", function(self) updateEditBoxBorder(self, true); end);
+    editBox:SetScript("OnEditFocusLost", function(self) updateEditBoxBorder(self, false); end);
+
+    local errorText = dialog:CreateFontString(nil, "OVERLAY");
+    SetFont(errorText, "small");
+    errorText:SetTextColor(unpack(Colors.lrErrorText));
+    errorText:SetJustifyH("LEFT");
+
+    editBox:SetScript("OnTextChanged", function(self)
+        local ok, err = Responses.ValidateProfileName(self:GetText());
+        popup:SetConfirmEnabled(ok);
+        -- An empty box just disables Create - no need to shout about it.
+        errorText:SetText((not ok and Util.Trim(self:GetText()) ~= "") and err or "");
+    end);
+    editBox:SetScript("OnEnterPressed", function()
+        if (popup.confirmButton:IsEnabled()) then popup:Confirm(); end
+    end);
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus();
+        popup:Hide();
+    end);
+
+    page._profileNameBox, page._profileNameError = editBox, errorText;
+    return editBox, errorText;
+end
+
+--- New (sourceList nil -> default responses) or Duplicate (sourceList = the
+--- active profile's list) - same name prompt, different seed.
+local function promptNewProfile(page, title, suggestedName, sourceList)
+    local popup = getConfirmPopup(page);
+    local editBox, errorText = ensureNameBox(page, popup);
+
+    popup.dialog.title:SetText(title);
+    popup:SetButtons("Cancel", "Create", function()
+        editBox:ClearFocus();
+        local ok, err, name = Responses.CreateProfile(editBox:GetText(), sourceList);
+        if (not ok) then SetStatus(page, "error", err); return; end
+        afterProfileChange(page);
+        SetStatus(page, "success", ("Switched to new profile \"%s\""):format(name));
+    end, function() editBox:ClearFocus(); end);
+    Skin.SetButtonVariant(popup.confirmButton, "primary");
+    Skin.SetButtonVariant(popup.cancelButton, "default");
+
+    popup:Show(function(dialog, y)
+        local pad = popup.opts.padding;
+        editBox:ClearAllPoints();
+        editBox:SetPoint("TOPLEFT", dialog, "TOPLEFT", pad, y);
+        editBox:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -pad, y);
+        editBox:Show();
+        y = y - PROFILE_NAME_BOX_HEIGHT - 4;
+
+        errorText:ClearAllPoints();
+        errorText:SetPoint("TOPLEFT", dialog, "TOPLEFT", pad, y);
+        errorText:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -pad, y);
+        errorText:SetText("");
+        errorText:Show();
+        return y - 14 - popup.opts.sectionGap;
+    end);
+
+    -- After Show() - it re-enables the confirm button itself, and SetText
+    -- fires OnTextChanged, which sets the real enabled state.
+    editBox:SetText(suggestedName);
+    editBox:SetFocus();
+    editBox:HighlightText();
+end
+
+--- The name box/error line live in the shared popup's dialog - hide them
+--- whenever that popup is reused for a plain confirm (Reset/Delete).
+local function hideNameBox(page)
+    if (page._profileNameBox) then
+        page._profileNameBox:Hide();
+        page._profileNameError:Hide();
+    end
+end
+
+local function showDangerConfirm(page, title, confirmText, onConfirm)
+    local popup = getConfirmPopup(page);
+    hideNameBox(page);
+    popup.dialog.title:SetText(title);
+    popup:SetButtons("Cancel", confirmText, onConfirm);
+    Skin.SetButtonVariant(popup.confirmButton, "danger");
+    Skin.SetButtonVariant(popup.cancelButton, "primary");
+    popup:Show();
+end
 
 local function buildFooter(footerFrame, page)
     local resetButton = Widgets.CreateFlatButton(footerFrame, "Reset to Defaults");
     resetButton:SetSize(150, Sizes.controls.button);
     resetButton:SetPoint("LEFT", footerFrame, "LEFT", 0, 0);
     resetButton:SetScript("OnClick", function()
-        local popup = page._confirmPopup;
-        if (not popup) then
-            popup = Skin.ConfirmPopup(page.frame, {});
-            page._confirmPopup = popup;
-        end
-        popup.dialog.title:SetText("Reset all response buttons to the defaults?");
-        popup:SetButtons("Cancel", "Reset", function()
+        showDangerConfirm(page, ("Reset \"%s\" to the default buttons?"):format(Responses.GetActiveProfile()), "Reset", function()
             Responses.ResetToDefaults();
             RebuildList(page);
         end);
-        Skin.SetButtonVariant(popup.confirmButton, "danger");
-        Skin.SetButtonVariant(popup.cancelButton, "primary");
-        popup:Show();
     end);
 
-    local saveText = footerFrame:CreateFontString(nil, "OVERLAY");
-    SetFont(saveText, "small");
-    saveText:SetTextColor(unpack(Colors.muted));
-    saveText:SetPoint("RIGHT", footerFrame, "RIGHT", 0, 0);
-    saveText:SetText("Changes save automatically");
+    page._profileFooter = footerFrame;
+
+    local deleteButton = Widgets.CreateFlatButton(footerFrame, "Delete");
+    deleteButton:SetSize(PROFILE_BUTTON_WIDTH, Sizes.controls.button);
+    deleteButton:SetPoint("RIGHT", footerFrame, "RIGHT", 0, 0);
+    deleteButton:SetMotionScriptsWhileDisabled(true);
+    deleteButton:HookScript("OnEnter", function(self)
+        if (self:IsEnabled()) then return; end
+        GameTooltip:SetOwner(self, "ANCHOR_TOP");
+        GameTooltip:AddLine("The Default profile can't be deleted");
+        GameTooltip:Show();
+    end);
+    deleteButton:HookScript("OnLeave", function(self)
+        if (GameTooltip:IsOwned(self)) then GameTooltip:Hide(); end
+    end);
+    deleteButton:SetScript("OnClick", function()
+        local name = Responses.GetActiveProfile();
+        showDangerConfirm(page, ("Delete the \"%s\" profile?"):format(name), "Delete", function()
+            local ok, err = Responses.DeleteProfile(name);
+            if (not ok) then SetStatus(page, "error", err); return; end
+            afterProfileChange(page);
+            SetStatus(page, "info", ("Deleted \"%s\" - switched to %s"):format(name, Responses.GetActiveProfile()));
+        end);
+    end);
+    page._profileDeleteButton = deleteButton;
+
+    local duplicateButton = Widgets.CreateFlatButton(footerFrame, "Duplicate");
+    duplicateButton:SetSize(PROFILE_BUTTON_WIDTH, Sizes.controls.button);
+    duplicateButton:SetPoint("RIGHT", deleteButton, "LEFT", -PROFILE_BUTTON_GAP, 0);
+    duplicateButton:SetScript("OnClick", function()
+        local active = Responses.GetActiveProfile();
+        promptNewProfile(page, "Duplicate Profile", Responses.UniqueProfileName(active .. " Copy"), Responses.GetList());
+    end);
+
+    local newButton = Widgets.CreateFlatButton(footerFrame, "New");
+    newButton:SetSize(PROFILE_BUTTON_WIDTH, Sizes.controls.button);
+    newButton:SetPoint("RIGHT", duplicateButton, "LEFT", -PROFILE_BUTTON_GAP, 0);
+    newButton:SetScript("OnClick", function()
+        promptNewProfile(page, "New Profile", Responses.UniqueProfileName("New Profile"), nil);
+    end);
+    page._profileNewButton = newButton;
+
+    local profileLabel = footerFrame:CreateFontString(nil, "OVERLAY");
+    SetFont(profileLabel, "small");
+    profileLabel:SetTextColor(unpack(Colors.muted));
+    profileLabel:SetText("Profile:");
+    page._profileLabel = profileLabel;
+
+    RebuildProfileControls(page);
 end
 
 --------------------------------------------------------------------------
