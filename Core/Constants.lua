@@ -102,11 +102,8 @@ Constants.AUTO_ROLL_RULE_VERB = { need = "Needing", greed = "Greeding", pass = "
 -- option list by hand (see General.lua) since LSM itself has no record of it.
 Constants.SOUND_RAID_WARNING_KEY = "Blizzard Raid Warning";
 
--- Our one bundled sound file (Media/Sounds/SonicRing.ogg), registered with
--- LSM below so it's Fetchable like any other sound key and shows up in both
--- dropdowns' option lists.
-Constants.SOUND_SONIC_RING_KEY = "ForeverLoot: Sonic Ring";
-
-local LSM = LibStub("LibSharedMedia-3.0");
-LSM:Register(LSM.MediaType.SOUND, Constants.SOUND_SONIC_RING_KEY,
-    "Interface\\AddOns\\ForeverLoot\\Media\\Sounds\\SonicRing.ogg");
+-- Same kind of sentinel, for the soft-reserve alert dropdown's default:
+-- Blizzard's Battle.net toast (sound kit 18019, ui-bnettoast), played with
+-- PlaySound rather than fetched from LSM.
+Constants.SOUND_BNET_TOAST_KEY = "Blizzard Battle.net Toast";
+Constants.SOUND_BNET_TOAST_KIT = 18019;

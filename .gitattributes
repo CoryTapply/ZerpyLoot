@@ -1,0 +1,8 @@
+# Left out of release zips built by tools/package.sh (git archive).
+docs/ export-ignore
+tools/ export-ignore
+.vscode/ export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+README.md export-ignore
+.github/ export-ignore

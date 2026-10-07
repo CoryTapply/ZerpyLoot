@@ -1,0 +1,50 @@
+# Pushing a version tag (v<TOC version>, e.g. v0.2.3 or v0.2.3-beta1) builds
+# the zip with tools/package.sh, uploads it to CurseForge, and creates a
+# GitHub Release. Needs the CF_API_KEY secret and the CF_GAME_VERSIONS
+# variable (see README.md, "Releasing").
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches TOC version
+        id: version
+        run: |
+          version=$(sed -n 's/^## Version: *//p' ForeverLoot.toc | tr -d '\r')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match ForeverLoot.toc's ## Version ($version). Expected tag v$version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check changelog has a section for this version
+        run: tools/changelog-section.sh "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
+
+      - name: Build zip
+        run: tools/package.sh
+
+      - name: Upload to CurseForge
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_GAME_VERSIONS: ${{ vars.CF_GAME_VERSIONS }}
+        run: tools/upload-curseforge.sh "dist/ForeverLoot-${{ steps.version.outputs.version }}.zip" "${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "${{ steps.version.outputs.version }}" in *alpha*|*beta*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" "dist/ForeverLoot-${{ steps.version.outputs.version }}.zip" \
+            --title "ForeverLoot ${{ steps.version.outputs.version }}" \
+            --notes-file "$RUNNER_TEMP/notes.md" $prerelease

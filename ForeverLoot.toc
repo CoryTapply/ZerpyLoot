@@ -1,7 +1,9 @@
 ## Interface: 16001
 ## Title: ForeverLoot
-## Notes: Gargul-compatible roll-off and SoftRes tracking companion addon.
+## Notes: Loot council, roll tracking, soft-reserves and synced guild loot history. Works alongside Gargul.
 ## Author: Zerpy
+## X-License: MIT
+## X-Curse-Project-ID: 1731392
 ## Version: 0.2.2
 ## IconTexture: Interface\AddOns\ForeverLoot\Media\Icons\ForeverLootCrown64.tga
 ## SavedVariables: ForeverLootDB

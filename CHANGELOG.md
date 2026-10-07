@@ -1,12 +1,25 @@
 # Changelog
 
+## 0.2.2
+
+### Loot history
+
+- If your account has history for another guild, the History window shows a guild picker at the left of its title bar. It lists your current guild by name first, then the others. Picking another guild shows its history read-only: no Add Entry, deleting or pinning, and it's never synced. Reopening the window goes back to your own guild.
+
+### Loot responses
+
+- Response sets are now saved as named profiles shared by every character on your account. "Default" always exists and can't be deleted. Profiles are managed on the Loot Responses settings page, and the separate Profiles page is gone.
+
+### Sounds
+
+- The default soft-reserve alert is now Blizzard's Battle.net toast. The bundled Sonic Ring sound was removed, and anyone who had it selected moves to the new default.
+
 ## 0.2.1 (pre-release)
 
 ### Loot history sync
 
 - **Each guild now has its own loot history.** Before, every character on an account shared one history, so a raider whose alt was in another guild using ForeverLoot brought that guild's history back into yours and sync spread it to everyone. Now each guild's history is kept separately, and only your current guild's history is shown and synced.
 - Your existing history belongs to the first guild you log into after updating (one chat line says so). Log your main first.
-- If your account has history for another guild, the History window shows a guild picker at the left of its title bar. It lists your current guild by name first, then the others. Picking another guild shows its history read-only: no Add Entry, deleting or pinning, and it's never synced. Reopening the window goes back to your own guild.
 - Awards from a loot council run by another guild's raid leader are kept in that guild's history on your client, not in your guild's, and never synced.
 - History sync and live award updates are only accepted from members of your own guild.
 - Sync protocol bumped: 0.2.0 clients and 0.2.1 clients no longer sync with each other. Everyone in the guild needs to update.

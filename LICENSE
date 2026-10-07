@@ -1,0 +1,36 @@
+MIT License
+
+Copyright (c) 2026 Zerpy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Third-party components
+
+The files under Libs/ and Media/Fonts/ are not covered by the license above.
+Each keeps its own license:
+
+- LibStub - public domain
+- CallbackHandler-1.0, AceComm-3.0 - Ace3 license (BSD-style)
+- ChatThrottleLib - public domain
+- LibSharedMedia-3.0 - LGPL v2.1
+- LibDeflate - zlib license, (c) 2018-2020 Haoqian He
+- LibSerialize - MIT, (c) 2020 Ross Nichols
+- Expressway font (Media/Fonts/Expressway.ttf) - Typodermic Fonts; see the
+  Typodermic desktop license

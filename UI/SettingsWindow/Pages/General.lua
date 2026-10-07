@@ -31,10 +31,10 @@ local COLUMN_GAP = 21;
 -- whenever it's the taller one - see that function's own comment).
 local ROW_SPACING = Sizes.layout.rowGap;
 
--- `sentinelKey`, when given, is prepended as its own row so the raid-warning
--- dropdown can offer Blizzard's built-in chime (FL.Constants.SOUND_RAID_WARNING_KEY -
--- a sentinel Util.playConfiguredSound special-cases, not a real LSM entry)
--- above every real LSM:List("sound") key.
+-- `sentinelKey`, when given, is prepended as its own row so a dropdown can
+-- offer a Blizzard built-in sound (FL.Constants.SOUND_RAID_WARNING_KEY or
+-- SOUND_BNET_TOAST_KEY - sentinels Util.playConfiguredSound special-cases,
+-- not real LSM entries) above every real LSM:List("sound") key.
 local function soundOptions(sentinelKey, sentinelLabel)
     local options = {};
     if (sentinelKey) then
@@ -173,8 +173,8 @@ FL.UI.SettingsWindow.RegisterPage("general", "General", function(page)
     rightSection:Dropdown{
         key = "sounds.selfSRSound",
         label = "Soft-reserve alert sound",
-        options = soundOptions(),
-        default = FL.Constants.SOUND_SONIC_RING_KEY,
+        options = soundOptions(FL.Constants.SOUND_BNET_TOAST_KEY, "Battle.net Toast (Blizzard default)"),
+        default = FL.Constants.SOUND_BNET_TOAST_KEY,
         rowHeight = 20,
         maxVisibleRows = 12,
         onPreview = previewSound,

@@ -61,13 +61,16 @@ function Settings.Init()
 
     -- General settings page > "Sounds" section. Both events default on, and
     -- default to the sound each played before this section had per-event
-    -- LSM pickers (see FL.Constants.SOUND_RAID_WARNING_KEY/SOUND_SONIC_RING_KEY).
+    -- LSM pickers (see FL.Constants.SOUND_RAID_WARNING_KEY/SOUND_BNET_TOAST_KEY).
     s.sounds = s.sounds or {};
     local snd = s.sounds;
     snd.raidWarning = (snd.raidWarning == nil) and true or (snd.raidWarning == true);
     snd.selfSR = (snd.selfSR == nil) and true or (snd.selfSR == true);
     snd.raidWarningSound = snd.raidWarningSound or FL.Constants.SOUND_RAID_WARNING_KEY;
-    snd.selfSRSound = snd.selfSRSound or FL.Constants.SOUND_SONIC_RING_KEY;
+    -- The bundled "ForeverLoot: Sonic Ring" sound was removed in 0.2.2;
+    -- anyone still on it moves to the new Blizzard default.
+    if (snd.selfSRSound == "ForeverLoot: Sonic Ring") then snd.selfSRSound = nil; end
+    snd.selfSRSound = snd.selfSRSound or FL.Constants.SOUND_BNET_TOAST_KEY;
 
     -- General settings page > "Trade Queue" section (BagHighlight.lua).
     -- On by default; has no effect without EllesmereUI Bags or Baganator loaded.
@@ -229,11 +232,12 @@ function Settings.SetSoundSelfSREnabled(enabled)
     FL.DB.settings.sounds.selfSR = enabled and true or false;
 end
 
--- Which sound plays for the event above - an LSM "sound" key (defaults to
--- our own bundled FL.Constants.SOUND_SONIC_RING_KEY).
+-- Which sound plays for the event above - an LSM "sound" key, or
+-- FL.Constants.SOUND_BNET_TOAST_KEY (the default) for Blizzard's Battle.net
+-- toast.
 function Settings.GetSoundSelfSRKey()
     local key = FL.DB and FL.DB.settings and FL.DB.settings.sounds and FL.DB.settings.sounds.selfSRSound;
-    return key or FL.Constants.SOUND_SONIC_RING_KEY;
+    return key or FL.Constants.SOUND_BNET_TOAST_KEY;
 end
 
 function Settings.SetSoundSelfSRKey(key)

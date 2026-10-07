@@ -478,15 +478,20 @@ end
 -- Plays a saved LibSharedMedia "sound" key - RollTracker.lua's roll-off
 -- start, keyed by whatever the user picked in the General settings page's
 -- Sounds section dropdowns (UI/SettingsWindow/Pages/General.lua). `key` ==
--- Constants.SOUND_RAID_WARNING_KEY is a sentinel (see that constant's own
--- comment) for Blizzard's built-in raid warning SOUNDKIT rather than a real
--- LSM-registered file; anything else is resolved through LSM:Fetch and
--- played as a file, so any sound key registered by any installed addon
--- (including our own FL.Constants.SOUND_SONIC_RING_KEY) works here.
+-- Constants.SOUND_RAID_WARNING_KEY and SOUND_BNET_TOAST_KEY are sentinels
+-- (see those constants' own comments) for Blizzard's built-in sound kits
+-- rather than real LSM-registered files; anything else is resolved through
+-- LSM:Fetch and played as a file, so any sound key registered by any
+-- installed addon works here.
 local LSM = LibStub("LibSharedMedia-3.0");
+local SENTINEL_SOUND_KITS = {
+    [FL.Constants.SOUND_RAID_WARNING_KEY] = SOUNDKIT.RAID_WARNING,
+    [FL.Constants.SOUND_BNET_TOAST_KEY] = FL.Constants.SOUND_BNET_TOAST_KIT,
+};
 function Util.playConfiguredSound(key, channel)
-    if (key == FL.Constants.SOUND_RAID_WARNING_KEY) then
-        Util.playSound(SOUNDKIT.RAID_WARNING, channel);
+    local soundKit = SENTINEL_SOUND_KITS[key];
+    if (soundKit) then
+        Util.playSound(soundKit, channel);
         return;
     end
 
