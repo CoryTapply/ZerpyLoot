@@ -55,6 +55,7 @@ FL.Sync.Debug = FL.Sync.Debug or {};
 FL.Sync.Scheduler = FL.Sync.Scheduler or {};
 FL.Sync.Gate = FL.Sync.Gate or {};
 FL.Sync.Store = FL.Sync.Store or {};
+FL.Sync.Buckets = FL.Sync.Buckets or {};
 FL.Sync.Digest = FL.Sync.Digest or {};
 FL.Sync.Retention = FL.Sync.Retention or {};
 FL.Sync.Permissions = FL.Sync.Permissions or {};
@@ -108,6 +109,9 @@ bootstrapFrame:SetScript("OnEvent", function(_, event, addonName)
             -- historyDelete/historyPin, since removed) - but still needs
             -- Store's schema migration to have already run first.
             { "Store", FL.Sync.Store },
+            -- Picks this guild's history bucket (Data/Buckets.lua) before
+            -- Retention builds the digest from it.
+            { "Buckets", FL.Sync.Buckets },
             -- Retention.Init() prunes/pins/rebuilds the digest off
             -- FL.LootCouncil.History and FL.DB.lootCouncil.pins/tombstones,
             -- so it must run after Store's schema migration too, same as Live.

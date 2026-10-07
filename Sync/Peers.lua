@@ -493,8 +493,17 @@ local function decideAckReply(scope, senderName, diffIds, urgent, remoteSummarie
     end, "helloAckDelay");
 end
 
+-- GUILD-scope discovery only with our own guild: another guild's member
+-- reaching us by whisper must not compare or sync history with us.
+local function otherGuildHello(scope, senderName, what)
+    if (scope ~= "GUILD" or FL.Sync.Permissions.IsGuildPeer(senderName)) then return false; end
+    Debug.Log("PEERS", 2, "ignored %s from %s · not in our guild", what, senderName);
+    return true;
+end
+
 local function handleIncomingHello(body, senderName)
     local scope, addonVersion = body[3], body[4];
+    if (otherGuildHello(scope, senderName, "hello")) then return; end
     recordPeerHeard(senderName, addonVersion);
     local pairs_ = parseDomainPairs(body);
     local diffIds = compareAndLog(scope, senderName, pairs_, "hello", false);
@@ -505,6 +514,7 @@ end
 
 local function handleIncomingHelloAck(body, senderName)
     local scope, addonVersion = body[3], body[4];
+    if (otherGuildHello(scope, senderName, "reply")) then return; end
     recordPeerHeard(senderName, addonVersion);
     local pairs_ = parseDomainPairs(body);
     local entry = collecting[scope];

@@ -237,7 +237,18 @@ end
 -- Receive side
 --------------------------------------------------------------------------
 
+-- Live history updates only count from our own guild. Another guild's
+-- member can still reach us (a whisper from someone we raided with), and
+-- their awards belong to their guild's history, not ours.
+local function fromOtherGuild(senderName, what)
+    if (FL.Sync.Permissions.IsGuildPeer(senderName)) then return false; end
+    FL.Sync.Debug.Log("LIVE", 1, "ignored %s from %s · not in our guild", what, senderName);
+    FL.Sync.Debug.Count("store.apply.foreignguild", 1);
+    return true;
+end
+
 local function onLiveRow(body, senderName)
+    if (fromOtherGuild(senderName, "award")) then return; end
     local players, types, wireRow = body[3], body[4], body[5];
     local t0 = debugprofilestop();
     local row, reason, field = Codec.DecodeRow(wireRow, players, types);
@@ -314,6 +325,7 @@ end
 
 local function onLiveMark(msgType, kind, checkFn)
     return function(body, senderName)
+        if (fromOtherGuild(senderName, markWord(msgType))) then return; end
         local players, wireMark = body[3], body[4];
         local t0 = debugprofilestop();
         local mark, reason = Codec.DecodeMark(wireMark, players);

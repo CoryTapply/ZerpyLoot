@@ -1615,6 +1615,13 @@ local function onOpen(body, senderName)
         return;
     end
 
+    -- Another guild's member asking for our guild's history: stay silent,
+    -- the same as for a client without the addon.
+    if (domain and domain.scope == "GUILD" and not FL.Sync.Permissions.IsGuildPeer(peer)) then
+        FL.Sync.Debug.Log("SESS", 1, "%s: ignored request · not in our guild", labelFor(token, peer));
+        return;
+    end
+
     if (not domain or domain.strategy ~= "set" or (mode ~= "full" and mode ~= "pull")) then
         local encoded = Codec.EncodeMessage({ Constants.PROTO_VERSION, MSG.OPEN_REPLY, token, 0, 0 });
         Transport.Send(MSG.OPEN_REPLY, encoded, "WHISPER", peer, { prio = "NORMAL" });

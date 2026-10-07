@@ -1914,3 +1914,37 @@ requirement buys nothing there.
   resolve `"group"` to `CanGroup()`.
 - Log lines: `[GATE] state ... group=<state>`, `[GATE] group queued ...`,
   and `live flushed n=.. kept=..`. `/fl sync status` shows `group=`.
+
+## Per-guild history buckets (Oct 6, 2026)
+
+The spec assumes one history per client. `ForeverLootDB` is account-wide, so
+a raider with characters in two guilds merged both guilds' history into one
+store, and GUILD sync then spread the other guild's rows. Awards seen in
+another guild's loot council run also landed in the raider's own guild
+history.
+
+- `Data/Buckets.lua`: one `{ history, tombstones, pins }` bucket per guild,
+  keyed `"<guild>-<realm>"` lowercased. The active bucket stays in
+  `FL.DB.lootCouncil.history/tombstones/pins`, so Store, Digest, Retention,
+  HistoryDomain, Live and the History UI are unchanged. Other buckets are
+  parked in `FL.DB.historyBuckets[key]` and never synced.
+  `FL.DB.lootCouncil.historyGuild` names the active bucket's guild.
+- History saved before this is bucket `_legacy`; the first real guild a
+  character logs into claims it. Guildless characters use `_none`.
+- `Gate` reports `noguild` until this login's bucket is selected
+  (`Buckets.IsReady()`), so login discovery can't sync the wrong bucket.
+  The guild events re-run `Buckets.Resolve()`, which also handles a guild
+  change mid-session.
+- `LootCouncil.RecordHistory` asks `Buckets.ForeignKeyForSession` whether
+  the session leader is in another guild (our roster cache, then
+  `GetGuildInfo(unit)`, then `_other` once the roster has loaded). Such
+  awards go into that guild's parked bucket via `Buckets.ApplyRowToBucket`,
+  with no Store apply, digest change or LIVE_ROW.
+- GUILD-scope HELLO/HELLO_ACK, history OPEN, LIVE_* and ROWS/MARKS applies
+  are ignored from senders not in our guild roster
+  (`Permissions.IsGuildPeer`; allowed while the roster hasn't loaded).
+  Counted as `store.apply.foreignguild`.
+- `PROTO_VERSION` 2 -> 3, so 0.2.0 clients (which still merge guilds) are
+  ignored.
+- Rows from other guilds that reached a history before this are left in
+  place.

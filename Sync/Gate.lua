@@ -66,7 +66,9 @@ end
 -- updates follow. `ignoreGuild` drops the noguild check: the "group"
 -- gate below, for traffic that only goes to our own raid/party.
 local function environmentReason(ignoreGuild)
-    if (not ignoreGuild and not state.inGuild) then return "noguild"; end
+    -- Also "noguild" until this login's guild history bucket is chosen
+    -- (Data/Buckets.lua), so nothing syncs into the wrong guild's history.
+    if (not ignoreGuild and not (state.inGuild and FL.Sync.Buckets.IsReady())) then return "noguild"; end
     if (state.inEncounter) then return "encounter"; end
     if (state.loading) then return "loading"; end
     if (state.inInstance) then return "instance"; end
@@ -227,6 +229,13 @@ function Gate.UserStopped()
     return userReason() ~= nil;
 end
 
+--- Recomputes after Data/Buckets.lua selects this login's history bucket
+--- (Gate.Init runs before that, so it starts out reporting noguild).
+function Gate.RefreshGuild()
+    state.inGuild = IsInGuild();
+    recomputeAndMaybeLog("historyBucket");
+end
+
 --- Re-reads the player's sync setting after the Sync settings page changes
 --- it. Fires OnChange like any other transition, so open sessions abort
 --- with reason=gate.
@@ -273,6 +282,7 @@ local function onEvent(_, event, ...)
         state.inInstance = IsInInstance();
     elseif (event == "PLAYER_GUILD_UPDATE" or event == "GUILD_ROSTER_UPDATE") then
         state.inGuild = IsInGuild();
+        FL.Sync.Buckets.Resolve(); -- the guild name may only now be known, or it changed
     end
 
     recomputeAndMaybeLog(event);

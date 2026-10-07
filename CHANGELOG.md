@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 (pre-release)
+
+### Loot history sync
+
+- **Each guild now has its own loot history.** Before, every character on an account shared one history, so a raider whose alt was in another guild using ForeverLoot brought that guild's history back into yours and sync spread it to everyone. Now each guild's history is kept separately, and only your current guild's history is shown and synced.
+- Your existing history belongs to the first guild you log into after updating (one chat line says so). Log your main first.
+- Awards from a loot council run by another guild's raid leader are kept in that guild's history on your client, not in your guild's, and never synced.
+- History sync and live award updates are only accepted from members of your own guild.
+- Sync protocol bumped: 0.2.0 clients and 0.2.1 clients no longer sync with each other. Everyone in the guild needs to update.
+- Rows from other guilds that already reached your history are not removed. Officers can delete them from the History window.
+
 ## 0.2.0 (pre-release)
 
 ### Trade Queue

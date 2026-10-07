@@ -101,6 +101,19 @@ function Permissions.CanPin(name)
     return Permissions.CanDelete(name);
 end
 
+--- Whether the guild roster cache has loaded at all.
+function Permissions.HasRoster()
+    return next(rankByName) ~= nil;
+end
+
+--- Whether `name` is in our guild, for refusing GUILD-scope history traffic
+--- from anyone else (another guild's member reaching us by whisper). True
+--- while the roster hasn't loaded, so a cold cache never blocks sync.
+function Permissions.IsGuildPeer(name)
+    if (not Permissions.HasRoster()) then return true; end
+    return rankByName[Util.stripRealm(name or "")] ~= nil;
+end
+
 --- Bare names of every currently-cached guild member - used by Data/Store.lua's
 --- test-row generator to pick realistic responders.
 function Permissions.GuildMemberNames()

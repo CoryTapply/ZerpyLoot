@@ -201,6 +201,16 @@ function HistoryDomain:ApplyEntries(msgType, decoded, sender)
         result[outcome] = (result[outcome] or 0) + 1;
     end
 
+    -- Session.lua already refuses sessions with other guilds' members; this
+    -- is the last stop before anything reaches our history.
+    if (not FL.Sync.Permissions.IsGuildPeer(sender)) then
+        local n = (msgType == MSG.ROWS) and #(decoded[7] or {}) or math.floor(#(decoded[6] or {}) / 5);
+        result.rejected = n;
+        FL.Sync.Debug.Log("STORE", 1, "rejected %d entries from %s · not in our guild", n, tostring(sender));
+        FL.Sync.Debug.Count("store.apply.foreignguild", n);
+        return result;
+    end
+
     if (msgType == MSG.ROWS) then
         local players, types, wireRows = decoded[5], decoded[6], decoded[7];
         for _, wireRow in ipairs(wireRows) do

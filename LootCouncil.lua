@@ -1245,6 +1245,10 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     -- exists per itemKey, so HistoryItemIndex points straight at the exact
     -- row to replace instead of scanning for an id-prefix match.
     local itemKey = ("%s-%d-%d"):format(initiatorKey, Session.id, itemSession);
+    -- A session led by another guild's raid leader: the award goes to that
+    -- guild's parked history bucket (Data/Buckets.lua) instead, never into
+    -- ours and never onto the network - see the end of this function.
+    local foreignKey = FL.Sync.Buckets.ForeignKeyForSession(Session);
     -- Session-internal reassignment, not a user-facing delete: every client
     -- derives the exact same replacement deterministically from its own copy
     -- of the session state, so this stays a direct local removal rather than
@@ -1254,7 +1258,7 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
     -- incrementally drop it from its own indexes, same as before.
     local oldId = LootCouncil.HistoryItemIndex[itemKey];
     local replacedEntry;
-    if (oldId) then
+    if (oldId and not foreignKey) then
         replacedEntry = LootCouncil.RemoveHistoryEntry(oldId);
     end
 
@@ -1333,6 +1337,10 @@ function LootCouncil.RecordHistory(Session, itemSession, playerName, awardedBy, 
         itemSession = itemSession,
         responses = responses,
     };
+    if (foreignKey) then
+        FL.Sync.Buckets.ApplyRowToBucket(foreignKey, newEntry);
+        return;
+    end
     -- Routed through Store so every write - a local award, a received award,
     -- the manual "Add Entry" row, and later phases' synced rows - shares one
     -- apply path (test-data guarding, itemString population, and the

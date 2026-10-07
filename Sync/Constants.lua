@@ -23,7 +23,10 @@ local Constants = FL.Sync.Constants;
 -- (PROTO_VERSION, msgType, scope, addon version): a client reads the addon
 -- version from a peer on ANOTHER proto from those fixed slots, to show the
 -- "update available" debug line (Sync/Peers.lua's NoteForeignProto).
-Constants.PROTO_VERSION          = 2;          -- guild-wide: wire format version
+-- 3 since 0.2.1: per-guild history (Data/Buckets.lua). Proto-2 clients still
+-- merge every guild's history into one, so they're ignored rather than
+-- allowed to keep spreading other guilds' rows.
+Constants.PROTO_VERSION          = 3;          -- guild-wide: wire format version
 Constants.RETENTION_MONTHS       = 4;          -- guild-wide: window length (spec section 10)
 Constants.PREFIX_MAIN            = "FLoot";    -- guild-wide: live + control messages
 Constants.PREFIX_SYNC            = { "FLootS1", "FLootS2", "FLootS3" }; -- guild-wide: bulk ROWS/MARKS

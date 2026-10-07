@@ -231,4 +231,5 @@ function Retention.Init()
     Retention.Prune();         -- finishes with its own Digest.Rebuild() (see above)
 
     FL.Sync.Scheduler.Every(3600, 60, checkCutoffMoved, "retentionCutoff");
+    FL.Sync.Buckets.MarkInitDone(); -- later bucket swaps rebuild the digest themselves
 end
