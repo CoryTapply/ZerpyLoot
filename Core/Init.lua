@@ -42,7 +42,6 @@ FL.UI.LootHistoryWindow = FL.UI.LootHistoryWindow or {};
 FL.UI.OptionsPanel = FL.UI.OptionsPanel or {};
 FL.UI.SettingsWindow = FL.UI.SettingsWindow or {};
 FL.UI.DebugLogWindow = FL.UI.DebugLogWindow or {};
-FL.UI.SyncStatusWindow = FL.UI.SyncStatusWindow or {};
 FL.UI.MinimapButton = FL.UI.MinimapButton or {};
 FL.Vendor = FL.Vendor or {};
 

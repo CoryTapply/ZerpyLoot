@@ -17,7 +17,7 @@ Loot council, roll tracking, soft-reserves and synced guild loot history. It spe
 | --- | --- |
 | `/fl` | Open settings |
 | `/fl history` (`/fl h`) | Loot history window |
-| `/fl roll` | Roll tracker window |
+| `/fl roll [item link]` | Start a roll-off for that item |
 | `/fl softres` | SoftRes import window |
 | `/fl tradequeue` | Trade queue window |
 | `/fl autoroll` | Automatic Rolls popup for your current raid or dungeon |

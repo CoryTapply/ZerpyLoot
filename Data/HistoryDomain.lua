@@ -74,13 +74,6 @@ function HistoryDomain:DescribeLocal()
     return self:DescribeVersion({ w.count, nil, nil, a.count });
 end
 
---- "FL domains" row suffix (/fl sync domains, spec 7.7's "Adding another
---- domain" step 5) - matches the plan's own sample line.
-function HistoryDomain:DebugLine()
-    local w, a = FL.Sync.Digest.Root("W"), FL.Sync.Digest.Root("A");
-    return ("W n=%d x=%08X  A n=%d"):format(w.count, w.x, a.count);
-end
-
 --------------------------------------------------------------------------
 -- Set-strategy repair methods (spec 7.7's "set" row in its strategy table;
 -- the actual HASHES/WANT/ROWS/MARKS exchange lives in Sync/Session.lua,
@@ -207,7 +200,6 @@ function HistoryDomain:ApplyEntries(msgType, decoded, sender)
         local n = (msgType == MSG.ROWS) and #(decoded[7] or {}) or math.floor(#(decoded[6] or {}) / 5);
         result.rejected = n;
         FL.Sync.Debug.Log("STORE", 1, "rejected %d entries from %s · not in our guild", n, tostring(sender));
-        FL.Sync.Debug.Count("store.apply.foreignguild", n);
         return result;
     end
 
@@ -219,7 +211,6 @@ function HistoryDomain:ApplyEntries(msgType, decoded, sender)
                 record("invalid");
                 FL.Sync.Debug.Log("CODEC", 2, "rejected row %s · %s%s", tostring(Codec.WireRowIdGuess(wireRow)), tostring(reason),
                     field and (" (field " .. field .. ")") or "");
-                FL.Sync.Debug.Count("codec.rowRejects", 1);
             else
                 local applied, outcome = FL.Sync.Store.Apply({ kind = "R", id = row.id, row = row }, "sync");
                 record(outcome);
@@ -237,7 +228,6 @@ function HistoryDomain:ApplyEntries(msgType, decoded, sender)
             local mark, reason = Codec.DecodeMark({ idEncoded, rowTime, at, byIdx }, players);
             if (not mark) then
                 record("invalid");
-                FL.Sync.Debug.Count("codec.rowRejects", 1);
             else
                 local applied, outcome = FL.Sync.Store.Apply({ kind = kind, id = mark.id, rowTime = mark.rowTime, at = mark.at, by = mark.by }, "sync");
                 record(outcome);

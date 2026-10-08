@@ -38,7 +38,6 @@ local function addonVersionString()
 end
 Peers.AddonVersion = addonVersionString;
 
-local lastHelloOutAt; -- GetTime() of the last HELLO actually sent, any scope (/fl sync status)
 local helloOutAt = {}; -- [scope] = GetTime() of the last HELLO sent in that scope - reply timing in the log
 
 local Debug = FL.Sync.Debug;
@@ -193,7 +192,7 @@ local function pruneExpiredPeers()
     end
 end
 
---- Every known peer, most-recently-heard first - backs /fl sync peers.
+--- Every known peer, most-recently-heard first.
 function Peers.All()
     local now = GetTime();
     local out = {};
@@ -223,11 +222,6 @@ end
 function Peers.LastMatchAgo(scope)
     local heardAt = lastMatchHeardAt[scope];
     return heardAt and (GetTime() - heardAt) or nil;
-end
-
---- Seconds since this client last sent a HELLO (any scope), or nil.
-function Peers.LastHelloOutAgo()
-    return lastHelloOutAt and (GetTime() - lastHelloOutAt) or nil;
 end
 
 local function markMatchHeard(scope)
@@ -324,8 +318,7 @@ local function sendHelloOut(scope, trigger, urgent, fanout)
 
     local encoded = FL.Sync.Codec.EncodeMessage(body);
     FL.Sync.Transport.Send(MSG.HELLO, encoded, dist, nil, { prio = "NORMAL", fanout = fanout });
-    lastHelloOutAt = GetTime();
-    helloOutAt[scope] = lastHelloOutAt;
+    helloOutAt[scope] = GetTime();
     local carrying = {};
     for _, id in ipairs(domainIds) do
         local domain = FL.Sync.Domains.Get(id);
@@ -644,33 +637,6 @@ local function handleIncomingStatusAck(body, senderName)
     local scope, addonVersion = body[3], body[4];
     recordPeerHeard(senderName, addonVersion);
     compareAndLog(scope, senderName, parseDomainPairs(body), "statusAck", true);
-end
-
---- /fl debug spamhello <n> [name] (plan Phase 8, test mode only): sends `n`
---- GUILD HELLOs back to back - to `name` alone, or to every known addon
---- user - so the receiver's rate limit can be watched. No collection window
---- and no retries: replies are handled like any other HELLO_ACK.
-function Peers.SpamHello(n, target)
-    n = math.floor(tonumber(n) or 0);
-    if (n < 1) then
-        FL.Sync.Debug.Log("TEST", 1, "spamhello: need a count · /fl debug spamhello <n> [name]");
-        return;
-    end
-    local body = buildHelloBody(MSG.HELLO, "GUILD", false);
-    if (not body) then
-        FL.Sync.Debug.Log("TEST", 1, "spamhello: skipped · gate closed");
-        return;
-    end
-    local encoded = FL.Sync.Codec.EncodeMessage(body);
-    for _ = 1, n do
-        if (target and target ~= "") then
-            FL.Sync.Transport.Send(MSG.HELLO, encoded, "WHISPER", target, { prio = "NORMAL" });
-        else
-            FL.Sync.Transport.Send(MSG.HELLO, encoded, "GUILD", nil, { prio = "NORMAL", fanout = "known" });
-        end
-    end
-    FL.Sync.Debug.Log("TEST", 1, "spamhello: sent %d HELLOs to %s · %s each", n,
-        (target and target ~= "") and target or "known guild peers", Debug.FormatBytes(#encoded));
 end
 
 function Peers.Init()

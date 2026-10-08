@@ -250,15 +250,6 @@ function CouncilSessionDomain:DescribeLocal()
     return self:DescribeVersion(localVersion());
 end
 
---- /fl sync domains row suffix.
-function CouncilSessionDomain:DebugLine()
-    local s = session();
-    if (not s or not s.id) then return "none"; end
-    local summary = self:Summary();
-    return ("session=%d rev=%d ended=%s%s"):format(s.id, s.rev or 0,
-        (s.status ~= "active") and "yes" or "no", summary and "" or " (not advertised)");
-end
-
 --------------------------------------------------------------------------
 -- Export
 --
@@ -526,42 +517,6 @@ function CouncilSessionDomain:Import(version, payload, sender)
     plain.initiatorIsMe = leaderIsMe;
     FL.LootCouncil.ReplaceSession(plain, councilOrReason);
     return "applied", oldRev, newRev;
-end
-
---- /fl debug roundtrip council (spec 7.7 "Adding another domain" step 4):
---- exports the current session, runs it through the real message pipeline,
---- decodes it back and compares item/candidate/vote counts.
-function CouncilSessionDomain:Roundtrip()
-    local version, payload, info = self:Export();
-    if (not version) then
-        FL.Sync.Debug.Log("TEST", 1, "roundtrip council: skipped · no session to export");
-        return;
-    end
-    local Codec = FL.Sync.Codec;
-    local encoded, stats = Codec.EncodeMessage({ Constants.PROTO_VERSION, Constants.MSG.SNAP, self.id, version, payload });
-    local body = Codec.DecodeMessage(encoded);
-    local plain, reason = decodePayload(body and body[5]);
-    if (not plain) then
-        FL.Sync.Debug.Log("TEST", 1, "roundtrip council: FAILED to decode · %s", tostring(reason));
-        return;
-    end
-
-    local function counts(items)
-        local cands, votes = 0, 0;
-        for _, item in ipairs(items) do
-            for _, c in pairs(item.candidates) do
-                cands = cands + 1;
-                votes = votes + Util.tcount(c.approvals);
-            end
-        end
-        return cands, votes;
-    end
-    local s = session();
-    local c1, v1 = counts(s.items);
-    local c2, v2 = counts(plain.items);
-    local ok = (#plain.items == #s.items and c1 == c2 and v1 == v2);
-    FL.Sync.Debug.Log("TEST", 1, "roundtrip council: %s · rev %d, items %d/%d, candidates %d/%d, votes %d/%d, %s",
-        ok and "ok" or "MISMATCH", info.rev, #s.items, #plain.items, c1, c2, v1, v2, FL.Sync.Debug.FormatBytes(stats.enc));
 end
 
 --- Registered from Init (not at file load - see Sync/Domains.lua's header).

@@ -1,5 +1,5 @@
 --[[
-Addon-message loss/latency probe (/fl debug probe, /fl debug probestats).
+Addon-message loss/latency probe (/fl debug probe).
 Debug-only: nothing here sends anything unless a tester types the command.
 
 Why it exists (docs/sync-deviations.md "Phase 6 review"): live testing kept
@@ -144,14 +144,6 @@ function Probe.Start(arg)
     end;
     local lastDelay = (perSec > 0) and ((n - 1) / perSec) or 0;
     run.armReport(lastDelay + REPORT_GRACE);
-end
-
---- /fl debug probestats: every run this client sent or received since login.
-function Probe.PrintStats()
-    local any = false;
-    for _, run in pairs(outRuns) do reportOut(run); any = true; end
-    for _, t in pairs(inRuns) do reportIn(t); any = true; end
-    if (not any) then say("probe: no runs yet"); end
 end
 
 local function onProbe(body, senderName, distribution)

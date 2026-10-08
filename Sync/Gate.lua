@@ -11,7 +11,7 @@ Reason precedence (not specified by the spec - derived here so a single
 `reason` value can explain the sync, award-updates and group columns even when several
 conditions are true at once):
 
-    override > disabled > paused > noguild > encounter > loading > instance > combat > none
+    disabled > paused > noguild > encounter > loading > instance > combat > none
 
 `disabled`/`paused` are the player's own setting (see userReason below) and
 close sync only; award updates follow the environment reason underneath them.
@@ -41,7 +41,6 @@ local FL = ForeverLoot;
 local Gate = FL.Sync.Gate;
 
 local state = { inInstance = false, inCombat = false, inEncounter = false, loading = false, inGuild = true };
-local override = "auto"; -- "auto" | "open" | "closed"
 local lastReason, lastSync, lastAwardUpdates, lastGroup = nil, nil, nil, nil;
 local heldQueue = {}; -- FIFO of { fn, label, queuedAt, gate = "awardUpdates"|"group" }
 local onChangeCallbacks = {};
@@ -62,7 +61,7 @@ local function userReason()
     return nil;
 end
 
--- Everything except the override and the player's own setting - what award
+-- Everything except the player's own setting - what award
 -- updates follow. `ignoreGuild` drops the noguild check: the "group"
 -- gate below, for traffic that only goes to our own raid/party.
 local function environmentReason(ignoreGuild)
@@ -77,7 +76,6 @@ local function environmentReason(ignoreGuild)
 end
 
 local function computeReason()
-    if (override ~= "auto") then return "override"; end
     return userReason() or environmentReason();
 end
 
@@ -85,10 +83,6 @@ local SYNC_BY_REASON = { noguild = "closed", encounter = "closed", loading = "cl
 local AWARD_UPDATES_BY_REASON = { noguild = "blocked", encounter = "queued", loading = "queued", instance = "open", combat = "open", none = "open" };
 
 local function computeSyncAndAwardUpdates(reason)
-    if (reason == "override") then
-        if (override == "closed") then return "closed", "blocked"; end
-        return "open", "open"; -- override == "open"
-    end
     local env = environmentReason();
     if (reason == "disabled" or reason == "paused") then
         return "closed", AWARD_UPDATES_BY_REASON[env];
@@ -99,9 +93,8 @@ end
 -- The "group" gate: awardUpdates, except that not being in a guild doesn't
 -- block it. RAID-scope sync (the council session catch-up) only talks to our own
 -- raid/party, so a guildless pug can catch up too. Encounters and loading
--- screens still queue it, like awardUpdates. The override applies unchanged.
-local function computeGroup(awardUpdates)
-    if (override ~= "auto") then return awardUpdates; end
+-- screens still queue it, like awardUpdates.
+local function computeGroup()
     return AWARD_UPDATES_BY_REASON[environmentReason(true)];
 end
 
@@ -109,7 +102,7 @@ end
 local REASON_WORDS = {
     none = "all clear", instance = "in an instance", combat = "in combat", encounter = "in a boss fight",
     loading = "on a loading screen", noguild = "not in a guild", disabled = "sync turned off in settings",
-    paused = "sync paused until next login", override = "debug override",
+    paused = "sync paused until next login",
 };
 local STATE_WORDS = { open = "on", closed = "off", queued = "held", blocked = "off" };
 
@@ -122,7 +115,7 @@ end
 local function recomputeAndMaybeLog(triggerEvent)
     local reason = computeReason();
     local sync, awardUpdates = computeSyncAndAwardUpdates(reason);
-    local group = computeGroup(awardUpdates);
+    local group = computeGroup();
     local changed = (reason ~= lastReason) or (sync ~= lastSync) or (awardUpdates ~= lastAwardUpdates) or (group ~= lastGroup);
     lastReason, lastSync, lastAwardUpdates, lastGroup = reason, sync, awardUpdates, group;
 
@@ -209,17 +202,8 @@ function Gate.OnChange(cb)
     table.insert(onChangeCallbacks, cb);
 end
 
-function Gate.SetOverride(newOverride)
-    newOverride = newOverride or "auto";
-    if (newOverride ~= "auto" and newOverride ~= "open" and newOverride ~= "closed") then
-        return;
-    end
-    override = newOverride;
-    recomputeAndMaybeLog("override");
-end
-
 function Gate.Status()
-    return { sync = lastSync, awardUpdates = lastAwardUpdates, group = lastGroup, reason = lastReason, override = override };
+    return { sync = lastSync, awardUpdates = lastAwardUpdates, group = lastGroup, reason = lastReason };
 end
 
 --- True while the player has automatic sync turned off or paused. Such a
@@ -250,7 +234,7 @@ end
 function Gate.LogCurrentState()
     local reason = computeReason();
     local sync, awardUpdates = computeSyncAndAwardUpdates(reason);
-    FL.Sync.Debug.Log("GATE", 1, "%s", describeState(reason, sync, awardUpdates, computeGroup(awardUpdates)));
+    FL.Sync.Debug.Log("GATE", 1, "%s", describeState(reason, sync, awardUpdates, computeGroup()));
 end
 
 local function onEvent(_, event, ...)

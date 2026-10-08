@@ -122,16 +122,6 @@ function Permissions.GuildMemberNames()
     return names;
 end
 
-function Permissions.Status()
-    local me = Util.UnitName("player");
-    return {
-        policy = FL.Sync.Constants.DELETE_POLICY,
-        me = me,
-        rank = Permissions.RankOf(me),
-        canDelete = Permissions.CanDelete(me),
-    };
-end
-
 function Permissions.Init()
     local frame = CreateFrame("Frame");
     frame:RegisterEvent("GUILD_ROSTER_UPDATE");

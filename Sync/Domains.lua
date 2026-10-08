@@ -46,15 +46,6 @@ function Domains.InScope(scope)
     return out;
 end
 
---- Every registered domain, in registration order - backs /fl sync domains.
-function Domains.All()
-    local out = {};
-    for _, id in ipairs(registryOrder) do
-        table.insert(out, registry[id]);
-    end
-    return out;
-end
-
 --- Lets a domain ask for an early HELLO on its own scope (spec 7.7: "right
 --- after a leader starts a session"). Not used by HistoryDomain this phase -
 --- wired for the Phase 7 council-session domain, which will call this from

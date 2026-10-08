@@ -85,12 +85,6 @@ function Scheduler.Enqueue(fn, name)
     end
 end
 
-function Scheduler.Status()
-    local count = 0;
-    for _ in pairs(handles) do count = count + 1; end
-    return { timers = count, queue = #queue };
-end
-
 function Scheduler.Init()
     workFrame = CreateFrame("Frame");
     workFrame:SetScript("OnUpdate", function()

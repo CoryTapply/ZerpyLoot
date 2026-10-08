@@ -32,9 +32,8 @@ Store.callbacks = LibStub("CallbackHandler-1.0"):New(Store);
 local function itemStringFromLink(link)
     return type(link) == "string" and link:match("|Hitem:([^|]+)|h") or nil;
 end
--- Exported for Net/Codec.lua's /fl debug roundtrip compare (Phase 2), so the
--- "what's the item string for this link" rule stays defined in exactly one
--- place.
+-- Exported so the "what's the item string for this link" rule stays
+-- defined in exactly one place.
 Store.ItemStringFromLink = itemStringFromLink;
 
 local function isTestId(id)
@@ -42,16 +41,11 @@ local function isTestId(id)
 end
 Store.IsTestId = isTestId;
 
--- Counted under the fixed outcome word regardless of entry kind, so
--- Sync/Debug.lua's PrintSyncStats (/fl sync stats, phase 2) can report one
--- added/dup/tombstoned/expired/rejected total across rows, tombstones and
--- pins alike, matching the plan's sample output.
 local KIND_WORDS = { R = "row", D = "delete", P = "pin" };
 
 local function logApply(kind, id, source, result, reason)
     FL.Sync.Debug.Log("STORE", 3, "%s %s from %s · %s%s",
         KIND_WORDS[kind] or tostring(kind), id, source, result, reason and (" (" .. reason .. ")") or "");
-    FL.Sync.Debug.Count("store.apply." .. result, 1);
 end
 
 local function applyRow(entry, source)
@@ -168,23 +162,6 @@ function Store.Apply(entry, source)
     end
 end
 
-function Store.Status()
-    local db = FL.DB.lootCouncil;
-    local test, missing = 0, 0;
-    for _, row in ipairs(FL.LootCouncil.History) do
-        if (isTestId(row.id)) then test = test + 1; end
-        if (row.itemString == nil) then missing = missing + 1; end
-    end
-    return {
-        schema = db.schema,
-        rows = #FL.LootCouncil.History,
-        tombstones = Util.tcount(db.tombstones),
-        pins = Util.tcount(db.pins),
-        test = test,
-        missingItemString = missing,
-    };
-end
-
 local function printField(key, value, indent)
     if (type(value) == "table") then
         print(("%s%s:"):format(indent, tostring(key)));
@@ -194,39 +171,6 @@ local function printField(key, value, indent)
     else
         print(("%s%s = %s"):format(indent, tostring(key), tostring(value)));
     end
-end
-
---- Prints every field of the stored row, tombstone or pin for `id` (whatever
---- kind is found first). Backs /fl sync dump <id>.
-function Store.Dump(id)
-    if (not id or id == "") then
-        print("|cff8865ffForeverLoot|r Usage: /fl sync dump <id>");
-        return;
-    end
-
-    local db = FL.DB.lootCouncil;
-    local index = FL.LootCouncil.HistoryIndex[id];
-    if (index) then
-        print(("FL dump row id=%s"):format(id));
-        for k, v in pairs(FL.LootCouncil.History[index]) do printField(k, v, "  "); end
-        return;
-    end
-
-    local tombstone = db.tombstones[id];
-    if (tombstone) then
-        print(("FL dump tombstone id=%s"):format(id));
-        for k, v in pairs(tombstone) do printField(k, v, "  "); end
-        return;
-    end
-
-    local pin = db.pins[id];
-    if (pin) then
-        print(("FL dump pin id=%s"):format(id));
-        for k, v in pairs(pin) do printField(k, v, "  "); end
-        return;
-    end
-
-    print(("|cff8865ffForeverLoot|r No stored entry for id %s"):format(id));
 end
 
 --------------------------------------------------------------------------

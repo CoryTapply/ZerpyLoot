@@ -99,7 +99,6 @@ local WAIT_REASON_TEXT = {
     encounter = "boss encounter",
     loading = "loading screen",
     noguild = "not in a guild",
-    override = "debug override",
 };
 
 local STATE_TEXT = {

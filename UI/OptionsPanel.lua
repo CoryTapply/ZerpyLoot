@@ -130,8 +130,3 @@ local category = Settings.RegisterCanvasLayoutCategory(panel, panel.name);
 Settings.RegisterAddOnCategory(category);
 
 FL.UI.OptionsPanel.frame = panel;
-
-function FL.UI.OptionsPanel.Open()
-    Settings.OpenToCategory(category:GetID());
-    Settings.OpenToCategory(category:GetID());
-end

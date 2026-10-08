@@ -2,8 +2,8 @@
 Sync sessions with one primary peer (spec sections 7.3, 12.3): turns
 Sync/Coordinator.lua's Phase 4 dry-run plan into a real session that
 transfers whatever two clients' loot-history stores disagree on. After this
-phase, the plan's own success test applies: `/fl sync digest` prints
-identical roots on both clients once a session completes.
+phase, the plan's own success test applies: both clients' digest roots
+match once a session completes.
 
 Phase 5 only opens full-mode sessions with a domain's single primary
 responder (plan's own build list: "secondaries are ignored until phase 6"),
@@ -196,14 +196,13 @@ local TWO32 = 4294967296;
 
 local sessions = {};       -- [token] = session
 local servingCount = 0;    -- active role=="server" sessions
-local maxServeOverride;    -- /fl debug maxserve <n>, nil = use Constants.MAX_SERVE
 local BUSY_RETRY_AFTER = 60; -- seconds suggested to a refused opener (spec 7.6: MAX_SERVE refusal)
 
 -- [peerName] = { recvAdded, recvOther, sent } - lifetime (since login) row
 -- totals per peer, independent of any single session's own counters (which
--- disappear once that session closes). Exists purely to back UI/
--- SyncStatusWindow.lua's "how many rows am I getting from each peer" view -
--- nothing in the protocol itself reads this.
+-- disappear once that session closes). Exists purely to back the settings
+-- Sync page's per-peer row counts - nothing in the protocol itself reads
+-- this.
 local peerTotals = {};
 
 local function notePeerRecv(peer, added, other)
@@ -234,7 +233,7 @@ local function newToken()
 end
 
 local function maxServe()
-    return maxServeOverride or Constants.MAX_SERVE;
+    return Constants.MAX_SERVE;
 end
 
 --- "sync with Bolvar (#a3F9)" - how every session line names its session.
@@ -2127,24 +2126,7 @@ function Session.FreeSlots()
     return math.max(0, maxServe() - servingCount);
 end
 
---- /fl debug maxserve <n>: in-memory override for testing OPEN_REPLY
---- refusals (plan Phase 5). nil restores the real Constants.MAX_SERVE.
-function Session.SetMaxServeOverride(n)
-    maxServeOverride = tonumber(n);
-    FL.Sync.Debug.Log("TEST", 1, "maxserve: serve limit set to %s", maxServeOverride and tostring(maxServeOverride) or "default");
-end
-
---- (outCount, inCount) of currently active sessions - backs /fl sync
---- sessions' header line.
-function Session.Counts()
-    local out, inCount = 0, 0;
-    for _, s in pairs(sessions) do
-        if (s.role == "opener") then out = out + 1; else inCount = inCount + 1; end
-    end
-    return out, inCount;
-end
-
---- Every active session as a plain snapshot table - backs /fl sync sessions.
+--- Every active session as a plain snapshot table.
 function Session.All()
     local out = {};
     for token, s in pairs(sessions) do
@@ -2162,12 +2144,8 @@ function Session.All()
     return out;
 end
 
-function Session.MaxServe()
-    return maxServe();
-end
-
 --- Every peer we've exchanged ROWS/MARKS with since login, lifetime totals -
---- backs UI/SyncStatusWindow.lua's per-peer row view (survives individual
+--- backs the settings Sync page's per-peer row counts (survives individual
 --- sessions opening/closing, unlike Session.All()'s per-session counters).
 function Session.PeerTotals()
     local out = {};
@@ -2213,12 +2191,11 @@ function Session.Init()
     Transport.Register(MSG.PING, onPing);
     Transport.Register(MSG.ABORT, onAbort);
 
-    -- Deliberately a raw C_Timer, not Scheduler.Every - see
-    -- UI/SyncStatusWindow.lua's own refresh-ticker comment for why: every
-    -- Scheduler timer unconditionally logs its own "[SCHED] timer fire
-    -- ..." line, which would otherwise double up with (and add pure noise
-    -- ahead of) the actual "[COMM] ctl queue ..." line this already
-    -- produces on its own, every 10s, forever.
+    -- Deliberately a raw C_Timer, not Scheduler.Every: every Scheduler
+    -- timer unconditionally logs its own "[SCHED] timer fire ..." line,
+    -- which would otherwise double up with (and add pure noise ahead of)
+    -- the actual "[COMM] ctl queue ..." line this already produces on its
+    -- own, every 10s, forever.
     C_Timer.NewTicker(10, logQueueSample);
 
     -- Plan Phase 5: "Abort every session with reason=gate when the gate

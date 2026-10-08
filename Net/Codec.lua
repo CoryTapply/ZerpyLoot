@@ -27,7 +27,6 @@ local FL = ForeverLoot;
 local Codec = FL.Sync.Codec;
 local Util = FL.Util;
 local Constants = FL.Sync.Constants;
-local MSG = Constants.MSG;
 
 -- LibStub and every vendored lib load well before this file (TOC order), so
 -- these can be resolved directly at file load instead of needing their own
@@ -189,14 +188,12 @@ end
 function Codec.EncodeId(id, awardedBy, builder)
     if (type(id) ~= "string" or type(awardedBy) ~= "string") then
         FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · not in the usual id pattern", tostring(id));
-        FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
 
     local prefix, a, b, c = id:match("^(.-)%-(%d+)%-(%d+)%-(%d+)$");
     if (not prefix) then
         FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · not in the usual id pattern", id);
-        FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
 
@@ -216,7 +213,6 @@ function Codec.EncodeId(id, awardedBy, builder)
     local expectedPrefix = (awardedBy .. "-" .. realm):lower():gsub("%s+", "");
     if (prefix ~= expectedPrefix) then
         FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · id doesn't start with its awarder's name", id);
-        FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
 
@@ -228,7 +224,6 @@ function Codec.EncodeId(id, awardedBy, builder)
     -- and compare byte-for-byte before trusting the compact form.
     if (Codec.DecodeId(compact, builder:Players()) ~= id) then
         FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · short form didn't decode back the same", id);
-        FL.Sync.Debug.Count("codec.rawIds", 1);
         return id;
     end
 
@@ -384,7 +379,6 @@ function Codec.EncodeMark(mark, originalAwardedBy, builder)
     else
         idEncoded = mark.id;
         FL.Sync.Debug.Log("CODEC", 2, "sending row id %s in full · awarder unknown", tostring(mark.id));
-        FL.Sync.Debug.Count("codec.rawIds", 1);
     end
     local byIdx = builder:PlayerIndex(mark.by, FL.Sync.Permissions.ClassOf(mark.by));
     return { idEncoded, mark.rowTime, mark.at, byIdx };
@@ -434,147 +428,4 @@ function Codec.DecodeMessage(encoded)
 
     if (bodyArray[1] ~= Constants.PROTO_VERSION) then return nil, "version", bodyArray; end
     return bodyArray;
-end
-
---------------------------------------------------------------------------
--- /fl debug roundtrip [n] - encodes the newest n (default 50) local history
--- rows as one ROWS batch, decodes it back, and compares every field.
---------------------------------------------------------------------------
-
-local function fieldMismatch(field, localVal, decodedVal)
-    return { field = field, localVal = localVal, decodedVal = decodedVal };
-end
-
-local function compareResponses(id, aResp, bResp)
-    aResp, bResp = aResp or {}, bResp or {};
-    for name, r in pairs(aResp) do
-        local other = bResp[name];
-        if (not other) then return fieldMismatch(("responses[%s]"):format(name), "present", "missing"); end
-        if ((r.note or "") ~= (other.note or "")) then
-            return fieldMismatch(("responses[%s].note"):format(name), r.note, other.note);
-        end
-        if ((r.votes or 0) ~= (other.votes or 0)) then
-            return fieldMismatch(("responses[%s].votes"):format(name), r.votes, other.votes);
-        end
-        -- Class is carried once per player NAME in the batch dictionary
-        -- (spec 4.3), not once per response - so a row whose own stored
-        -- response has class=nil (incomplete older data) can legitimately
-        -- decode with that same player's class FILLED IN from wherever else
-        -- in this batch it was captured. That's the dictionary doing its
-        -- job, not data loss, so only a genuine known-vs-known mismatch
-        -- counts as a diff.
-        if (r.class and r.class ~= other.class) then
-            return fieldMismatch(("responses[%s].class"):format(name), r.class, other.class);
-        end
-        local ar, br = r.response or {}, other.response or {};
-        if ((ar.label or "") ~= (br.label or "") or (ar.color or "") ~= (br.color or "") or (ar.kind or "") ~= (br.kind or "")) then
-            return fieldMismatch(("responses[%s].response"):format(name), ar.label, br.label);
-        end
-    end
-    for name in pairs(bResp) do
-        if (not aResp[name]) then return fieldMismatch(("responses[%s]"):format(name), "missing", "present"); end
-    end
-    return nil;
-end
-
--- itemLink is "compared by its item string" (plan's own wording) since the
--- decoded link's exact text can legitimately differ (locale, cached vs not)
--- while still describing the same item.
-local function compareRows(a, b)
-    if (a.id ~= b.id) then return fieldMismatch("id", a.id, b.id); end
-    if (a.awardedAt ~= b.awardedAt) then return fieldMismatch("awardedAt", a.awardedAt, b.awardedAt); end
-    if (a.awardedBy ~= b.awardedBy) then return fieldMismatch("awardedBy", a.awardedBy, b.awardedBy); end
-    if (a.awardedTo ~= b.awardedTo) then return fieldMismatch("awardedTo", a.awardedTo, b.awardedTo); end
-    if ((a.awardedToClass or false) ~= (b.awardedToClass or false)) then
-        return fieldMismatch("awardedToClass", a.awardedToClass, b.awardedToClass);
-    end
-    if ((a.sessionId or 0) ~= (b.sessionId or 0)) then return fieldMismatch("sessionId", a.sessionId, b.sessionId); end
-    if ((a.itemSession or 0) ~= (b.itemSession or 0)) then return fieldMismatch("itemSession", a.itemSession, b.itemSession); end
-
-    local aItemString = a.itemString or FL.Sync.Store.ItemStringFromLink(a.itemLink);
-    if ((aItemString or "") ~= (b.itemString or "")) then
-        return fieldMismatch("itemString", aItemString, b.itemString);
-    end
-
-    return compareResponses(a.id, a.responses, b.responses);
-end
-
---- Backs /fl debug roundtrip [n] (plan phase 2).
-function Codec.Roundtrip(n)
-    n = tonumber(n) or 50;
-
-    -- Rows with no obtainable item string at all (pre-Phase-1-migration
-    -- history whose itemLink never parsed - Data/Store.lua's own
-    -- "migrate noItemString" warning) can never legally go on the wire
-    -- (spec 4.9's badItemString check), on any client, ever - that's not a
-    -- round-trip failure to report, it's the same thing missingItemString
-    -- in /fl sync status already flags. Skipped here so the ok/diff counts
-    -- only speak to rows that actually CAN sync.
-    local candidates, skipped = {}, 0;
-    for _, row in ipairs(FL.LootCouncil.History) do
-        if (row.itemString or FL.Sync.Store.ItemStringFromLink(row.itemLink)) then
-            table.insert(candidates, row);
-        else
-            skipped = skipped + 1;
-        end
-    end
-    table.sort(candidates, function(a, b) return (a.awardedAt or 0) > (b.awardedAt or 0); end);
-
-    local rows = {};
-    for i = 1, math.min(n, #candidates) do table.insert(rows, candidates[i]); end
-    if (#rows == 0) then
-        print("|cff8865ffForeverLoot|r No history rows to round-trip.");
-        return;
-    end
-
-    local rawIdsBefore = FL.Sync.Debug.GetCounter("codec.rawIds");
-
-    local builder = newDictBuilder();
-    local wireRows = {};
-    for _, row in ipairs(rows) do
-        table.insert(wireRows, Codec.EncodeRow(row, builder));
-    end
-    local token = "test";
-    local body = { Constants.PROTO_VERSION, MSG.ROWS, token, 1, builder:Players(), builder:Types(), wireRows };
-    local encoded, stats = Codec.EncodeMessage(body);
-    FL.Sync.Debug.Log("CODEC", 2, "encoded ROWS · %d rows, %d players, %d responses, %s raw, %s compressed, %s on the wire, %.1fms",
-        #rows, builder:PlayerCount(), builder:TypeCount(), FL.Sync.Debug.FormatBytes(stats.ser),
-        FL.Sync.Debug.FormatBytes(stats.cmp), FL.Sync.Debug.FormatBytes(stats.enc), stats.ms);
-
-    local decodedBody = Codec.DecodeMessage(encoded);
-    local players, types, decodedWireRows = decodedBody[5], decodedBody[6], decodedBody[7];
-
-    local decodedById = {};
-    for _, wireRow in ipairs(decodedWireRows) do
-        local row, reason, field = Codec.DecodeRow(wireRow, players, types);
-        if (row) then
-            decodedById[row.id] = row;
-        else
-            FL.Sync.Debug.Log("CODEC", 2, "rejected row %s · %s%s", tostring(Codec.WireRowIdGuess(wireRow)), tostring(reason),
-                field and (" (field " .. field .. ")") or "");
-        end
-    end
-
-    local ok, diff = 0, 0;
-    for _, original in ipairs(rows) do
-        local decoded = decodedById[original.id];
-        if (not decoded) then
-            diff = diff + 1;
-            FL.Sync.Debug.Log("TEST", 1, "roundtrip history: row %s MISSING after decode", original.id);
-        else
-            local mismatch = compareRows(original, decoded);
-            if (mismatch) then
-                diff = diff + 1;
-                FL.Sync.Debug.Log("TEST", 1, "roundtrip history: row %s MISMATCH in %s · local %q, decoded %q",
-                    original.id, mismatch.field, tostring(mismatch.localVal), tostring(mismatch.decodedVal));
-            else
-                ok = ok + 1;
-            end
-        end
-    end
-
-    local rawIds = FL.Sync.Debug.GetCounter("codec.rawIds") - rawIdsBefore;
-    FL.Sync.Debug.Log("TEST", 1, "roundtrip history: %s · %d rows, %d ok, %d mismatched, %d full ids, %d skipped, %s per row, %s total",
-        (diff == 0) and "ok" or "MISMATCH", #rows, ok, diff, rawIds, skipped,
-        FL.Sync.Debug.FormatBytes(math.floor(stats.cmp / #rows)), FL.Sync.Debug.FormatBytes(stats.cmp));
 end

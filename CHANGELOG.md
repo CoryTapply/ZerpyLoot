@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0
+
+### Slash commands
+
+- Cleaned up all of the `/fl` and `/flc` commands
+- `/flc history` (or `/flc h`) opens the loot history window, same as `/fl history`.
+- `/fl roll [item link]` now starts a roll-off for that item, the same as alt+left-clicking it. It used to open the roll window, which didn't work.
+
 ## 0.2.2-beta1
 
 ### Loot history

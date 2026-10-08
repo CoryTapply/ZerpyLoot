@@ -177,38 +177,6 @@ function Retention.Prune()
     removeSlice();
 end
 
---- Dry run (/fl debug prunedry): reports what Prune() would do without
---- changing anything. `wouldRemove` counts only REAL candidates (what
---- PRUNE_REAL=true would additionally remove); `test` is reported
---- separately since test rows are removed on every real Prune() run
---- regardless of PRUNE_REAL.
-function Retention.PruneDry()
-    local db = FL.DB.lootCouncil;
-    local cutoff = Retention.Cutoff();
-    local wouldRemoveReal, test, pinnedKept = 0, 0, 0;
-    local oldest, newest;
-
-    for _, row in ipairs(FL.LootCouncil.History) do
-        if (row.awardedAt < cutoff) then
-            if (db.pins[row.id]) then
-                pinnedKept = pinnedKept + 1;
-            else
-                if (FL.Sync.Store.IsTestId(row.id)) then
-                    test = test + 1;
-                else
-                    wouldRemoveReal = wouldRemoveReal + 1;
-                end
-                oldest = (oldest and math.min(oldest, row.awardedAt)) or row.awardedAt;
-                newest = (newest and math.max(newest, row.awardedAt)) or row.awardedAt;
-            end
-        end
-    end
-
-    FL.Sync.Debug.Log("TEST", 1, "prunedry: would remove %d rows · %s to %s, keeping %d pinned, %d test rows",
-        wouldRemoveReal, oldest and date("!%Y-%m-%d", oldest) or "-", newest and date("!%Y-%m-%d", newest) or "-",
-        pinnedKept, test);
-end
-
 --- Checked at login and hourly (spec 10.3). Only an actual UTC month
 --- boundary passing moves the cutoff, so the hourly tick is a no-op almost
 --- every time it fires.

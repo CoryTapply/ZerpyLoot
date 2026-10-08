@@ -8,7 +8,7 @@ Every line ForeverLoot writes to the debug log (`/fl debug`, `/fl debug log`). T
 FL HH:MM:SS.mmm [CAT] <area>: <what happened> · <details>
 ```
 
-- **Area** says what the line is about: `council`, `history`, `sync with Bolvar (#a3F9)` (a history sync session, with its token), `session #12`, or a debug command name (`roundtrip history`, `probe #Xy3k`). It's left out where the category already says it, as in most GATE lines.
+- **Area** says what the line is about: `council`, `history`, `sync with Bolvar (#a3F9)` (a history sync session, with its token), `session #12`, or a debug command name (`gen`, `probe #Xy3k`). It's left out where the category already says it, as in most GATE lines.
 - **What happened** is a short sentence that makes sense on its own. Failures and surprises are written in capitals so they stand out: `FAILED`, `MISMATCH`, `STILL DIFFERENT`, `DENIED`.
 - **Details** come after ` · ` as comma-separated words. There are no `key=value` codes.
 - **Times** always use `Debug.FormatTime`, so they look like `340ms`, `4.2s` or `2m05s`. Sizes use `Debug.FormatBytes`.
@@ -230,7 +230,6 @@ On the leader's side:
 | 2 | `sending %s on the real guild channel · guilddirect test mode` | Net/Transport.lua:608 |
 | 1 | `sending %s to the guild as %d whispers · %s` | Net/Transport.lua:623 |
 | 2 | `finished %s guild whispers · %d of %d sent, last one after %s` | Net/Transport.lua:636 |
-| 1 | `rawsend: got test message from %s · via %s, prefix %s, text %s` | Net/Transport.lua:680 |
 | W | `dropped oversized message from %s · %s, limit %s (prefix %s)` | Net/Transport.lua:691 |
 | 2 | `ignored message from %s · protocol %s, ours is %d` | Net/Transport.lua:708 |
 | 2 | `got %s from %s · via %s, %s` | Net/Transport.lua:724 |
@@ -343,31 +342,17 @@ On the leader's side:
 
 | Lvl | Message | Where |
 |---|---|---|
-| 1 | `roundtrip council: skipped · no session to export` | Data/CouncilSessionDomain.lua:537 |
-| 1 | `roundtrip council: FAILED to decode · %s` | Data/CouncilSessionDomain.lua:545 |
-| 1 | `roundtrip council: %s · rev %d, items %d/%d, candidates %d/%d, votes %d/%d, %s` | Data/CouncilSessionDomain.lua:563 |
-| 1 | `prunedry: would remove %d rows · %s to %s, keeping %d pinned, %d test rows` | Data/Retention.lua:207 |
 | 1 | `gen: added %d test rows · %s to %s, %dms` | Data/Store.lua:361 |
 | 1 | `purgetest: removed %d test rows` | Data/Store.lua:403 |
 | 1 | `wipehistory: removed %d entries (rows, deletes and pins)` | Data/Store.lua:439 |
 | 1 | `droplocal: dropped %d %s rows · newest %s, oldest %s` | Data/Store.lua:474 |
-| 1 | `roundtrip history: row %s MISSING after decode` | Net/Codec.lua:563 |
-| 1 | `roundtrip history: row %s MISMATCH in %s · local %q, decoded %q` | Net/Codec.lua:568 |
-| 1 | `roundtrip history: %s · %d rows, %d ok, %d mismatched, %d full ids, %d skipped, %s per row, %s total` | Net/Codec.lua:577 |
 | 1 | `%s: refused · needs /fl debug testdata on` | Sync/Debug.lua:222 |
-| 1 | `livetest: queued on the award-updates gate` | Sync/Debug.lua:227 |
-| 1 | `livetest: ran` | Sync/Debug.lua:229 |
-| 1 | `gate: override set to %s` | Sync/Debug.lua:261 |
 | 1 | `testdata: turned %s` | Sync/Debug.lua:270 |
 | 1 | `keyitem: added item %d as a key item` | Sync/Debug.lua:286 |
 | 1 | `guilddirect: turned %s` | Sync/Debug.lua:380 |
 | 1 | `forcehello: asking %s now` | Sync/Debug.lua:387 |
 | 1 | `forcedelete: sent delete of row %s · officer check skipped` | Sync/Live.lua:233 |
-| 1 | `spamhello: need a count · /fl debug spamhello <n> [name]` | Sync/Peers.lua:646 |
-| 1 | `spamhello: skipped · gate closed` | Sync/Peers.lua:651 |
-| 1 | `spamhello: sent %d HELLOs to %s · %s each` | Sync/Peers.lua:662 |
 | 1 | `probe #%s: sending %d to %s · %s, %dB each, prefix %s, %s priority` | Sync/Probe.lua:117 |
 | 1 | `probe: no runs yet` | Sync/Probe.lua:154 |
 | 1 | `probe #%s to %s: %d of %d echoed back (%.0f%% lost) · round trip %s, %d send failures, %s %s, %dB each, prefix %s, %s priority` | Sync/Probe.lua:71 |
 | 1 | `probe #%s from %s: got %d of %d (%.0f%% lost) · %d out of order, arrived over %s, via %s` | Sync/Probe.lua:81 |
-| 1 | `maxserve: serve limit set to %s` | Sync/Session.lua:2127 |

@@ -243,7 +243,6 @@ end
 local function fromOtherGuild(senderName, what)
     if (FL.Sync.Permissions.IsGuildPeer(senderName)) then return false; end
     FL.Sync.Debug.Log("LIVE", 1, "ignored %s from %s · not in our guild", what, senderName);
-    FL.Sync.Debug.Count("store.apply.foreignguild", 1);
     return true;
 end
 
@@ -256,7 +255,6 @@ local function onLiveRow(body, senderName)
 
     if (not row) then
         local guessId = Codec.WireRowIdGuess(wireRow);
-        FL.Sync.Debug.Count("codec.rowRejects", 1);
         FL.Sync.Debug.Log("CODEC", 2, "couldn't decode LIVE_ROW from %s · row %s: %s%s, %.1fms", senderName,
             tostring(guessId), tostring(reason), field and (" (field " .. field .. ")") or "", elapsed);
         -- "rejected" is one of the fixed outcome words (plan's Debug system
@@ -302,11 +300,6 @@ end
 local function applyRemoteMark(msgType, kind, mark, senderName, checkFn)
     if (not Util.iEquals(senderName, mark.by)) then
         FL.Sync.Debug.Log("PERM", 1, "rejected %s from %s · it claims to be from %s", markWord(msgType), senderName, tostring(mark.by));
-        -- Never reaches Store:Apply, so without this it's invisible to
-        -- every counter: not a codec.rowRejects (it decoded fine) and not a
-        -- store.apply.* outcome (Store:Apply is never called). "rejected"
-        -- is the fixed outcome word that fits (plan's Debug system section).
-        FL.Sync.Debug.Count("store.apply.rejected", 1);
         return;
     end
 
@@ -314,7 +307,6 @@ local function applyRemoteMark(msgType, kind, mark, senderName, checkFn)
     if (not allowed) then
         FL.Sync.Debug.Log("PERM", 1, "rejected %s from %s · not an officer (rank %s)",
             markWord(msgType), senderName, tostring(FL.Sync.Permissions.RankOf(mark.by)));
-        FL.Sync.Debug.Count("store.apply.rejected", 1);
         return;
     end
 
@@ -333,7 +325,6 @@ local function onLiveMark(msgType, kind, checkFn)
         local name = typeName(msgType);
 
         if (not mark) then
-            FL.Sync.Debug.Count("codec.rowRejects", 1);
             FL.Sync.Debug.Log("CODEC", 2, "couldn't decode %s from %s · %s, %.1fms", name, senderName, tostring(reason), elapsed);
             FL.Sync.Debug.Log("LIVE", 1, "rejected %s from %s · %s", markWord(msgType), senderName, tostring(reason));
             return;

@@ -1744,11 +1744,6 @@ function RollWindow.IsShown()
     return frame ~= nil and frame:IsShown();
 end
 
-function RollWindow.Toggle()
-    ensureFrame();
-    if (frame:IsShown()) then RollWindow.Hide(); else RollWindow.Show(); end
-end
-
 function RollWindow.ResetPosition()
     FL.Settings.ClearWindowPosition(POSITION_KEY);
     if (frame) then Pixel.ResetPosition(frame); end

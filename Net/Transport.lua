@@ -153,31 +153,6 @@ local function guildMemberNames()
     return names;
 end
 
--- Rolling record of this client's own recently-CONFIRMED sends (success or
--- failure) - `dur` is the time from handing a message to AceComm until its
--- callback actually confirms the outcome, i.e. this client's own observed
--- send latency. Exists purely so a tester can see whether that latency is
--- consistently bad or just occasionally spiky, without combing through
--- "[COMM] sent ..." log lines by hand (see UI/SyncStatusWindow.lua's "Send
--- latency" section). Important limit: this only measures OUR OWN send
--- path - it says nothing about how long a PEER took to receive, process or
--- reply (that round-trip, which is what a slow handshake actually feels
--- like from this client's side, isn't observable from here at all).
-local recentSends = {};
-local RECENT_SENDS_MAX = 30;
-
-local function recordSend(name, bytes, dur, ok, target)
-    table.insert(recentSends, { type = name, bytes = bytes, dur = dur, ok = ok, target = target, at = GetTime() });
-    while (#recentSends > RECENT_SENDS_MAX) do table.remove(recentSends, 1); end
-end
-
---- Every recently-confirmed send this client has made, oldest first - see
---- `recentSends`'s own comment above for exactly what `dur` does and
---- doesn't measure.
-function Transport.RecentSends()
-    return recentSends;
-end
-
 -- AceComm-3.0's SendCommMessage calls our callback as
 -- (callbackArg, sent, total, didSend) - `didSend` is CTL's real per-chunk
 -- success boolean (see this file's header comment: previously unread here,
@@ -251,8 +226,6 @@ local function sendOne(msgType, encoded, dist, target, prefix, prio, name, resol
     FL.Sync.Debug.Log("COMM", 2, "sending %s %s · %s in %d piece%s, %s priority, prefix %s",
         name, destination(dist, target), FL.Sync.Debug.FormatBytes(#encoded), #pieces, (#pieces == 1) and "" or "s",
         tostring(prio):lower(), prefix);
-    FL.Sync.Debug.Count("comm.sent." .. name .. ".msgs", 1);
-    FL.Sync.Debug.Count("comm.sent." .. name .. ".bytes", #encoded);
 
     local startedAt = GetTime();
     queuedAt = queuedAt or startedAt;
@@ -284,7 +257,6 @@ local function sendOne(msgType, encoded, dist, target, prefix, prio, name, resol
                     name, destination(dist, target), FL.Sync.Debug.FormatBytes(#encoded),
                     FL.Sync.Debug.FormatTime(wait - dur), FL.Sync.Debug.FormatTime(dur));
             end
-            recordSend(name, #encoded, dur, not failed, target);
             resolve(not failed);
         end);
     end
@@ -309,7 +281,6 @@ local function expirePartials(now)
             local prefix, sender = key:match("^(.-)\t(.-)\t");
             FL.Sync.Debug.Warn("COMM", "dropped incomplete message from %s · only %d of %d pieces arrived (prefix %s)",
                 sender or "?", p.got, p.total, prefix or "?");
-            FL.Sync.Debug.Count("comm.incomplete", 1);
         end
     end
 end
@@ -388,7 +359,6 @@ local function rateLimited(msgType, sender, name)
         return false;
     end
 
-    FL.Sync.Debug.Count("comm.ratelimit." .. name, 1);
     if (not rateDropped[key]) then
         rateDropped[key] = 0;
         C_Timer.After(RATE_REPORT_DELAY, function()
@@ -530,10 +500,6 @@ local function noteKnownUser(senderName)
     knownUsers()[Util.stripRealm(senderName)] = GetServerTime();
 end
 
-function Transport.KnownUserCount()
-    return Util.tcount(knownUsers());
-end
-
 -- GUILD requests go out as one real GUILD message: the server relays GUILD
 -- addon messages now (retested 2026-10-04). `/fl debug guilddirect off`
 -- falls back to the WHISPER fan-out below, in case the relay breaks again.
@@ -669,19 +635,6 @@ local function onCommReceived(prefix, text, distribution, senderName)
         return; -- our own broadcast looping back on GUILD/RAID distribution
     end
 
-    -- /fl debug rawsend's plain "diag" payload (not Codec-encoded) - log
-    -- its arrival instead of reporting a decode failure, so a raw GUILD/
-    -- PARTY/CHANNEL delivery test can be read off the receiving client.
-    -- /fl debug rawbytes sends "diag<n>:<test string>" - log which test
-    -- strings survived, with every non-printable byte (and "|") shown as
-    -- <NN> hex so a mangled byte is visible too.
-    if (text:sub(1, 4) == "diag") then
-        local shown = text:sub(5):gsub("[^\32-\126]", function(c) return ("<%02X>"):format(c:byte()); end):gsub("|", "<7C>");
-        FL.Sync.Debug.Log("COMM", 1, "rawsend: got test message from %s · via %s, prefix %s, text %s",
-            senderName, tostring(distribution):lower(), prefix, shown);
-        return;
-    end
-
     local encoded, frameErr, frameBytes = reassemble(prefix, text, Util.stripRealm(senderName or "?"));
     if (not encoded) then
         if (frameErr == "oversize") then
@@ -690,10 +643,8 @@ local function onCommReceived(prefix, text, distribution, senderName)
             -- line names the prefix instead of the plan's sample "type=".
             FL.Sync.Debug.Warn("COMM", "dropped oversized message from %s · %s, limit %s (prefix %s)", senderName,
                 FL.Sync.Debug.FormatBytes(frameBytes or 0), FL.Sync.Debug.FormatBytes(Constants.MAX_MESSAGE_BYTES), prefix);
-            FL.Sync.Debug.Count("comm.oversize", 1);
         elseif (frameErr) then
             FL.Sync.Debug.Warn("CODEC", "couldn't decode message from %s · bad framing (our protocol %d)", senderName, Constants.PROTO_VERSION);
-            FL.Sync.Debug.Count("codec.decodeFail", 1);
         end
         return; -- not complete yet, or not one of our framed pieces
     end
@@ -707,13 +658,11 @@ local function onCommReceived(prefix, text, distribution, senderName)
             -- is expected traffic, not a fault.
             FL.Sync.Debug.Log("COMM", 2, "ignored message from %s · protocol %s, ours is %d", senderName,
                 tostring(foreignBody and foreignBody[1]), Constants.PROTO_VERSION);
-            FL.Sync.Debug.Count("comm.protoMismatch", 1);
             if (foreignBody) then FL.Sync.Peers.NoteForeignProto(foreignBody, senderName); end
             return;
         end
         FL.Sync.Debug.Warn("CODEC", "couldn't decode message from %s · failed at %s step (our protocol %d)",
             senderName, tostring(failStep), Constants.PROTO_VERSION);
-        FL.Sync.Debug.Count("codec.decodeFail", 1);
         return;
     end
 
@@ -723,8 +672,6 @@ local function onCommReceived(prefix, text, distribution, senderName)
     noteKnownUser(senderName);
     FL.Sync.Debug.Log("COMM", 2, "got %s from %s · via %s, %s", name, senderName, tostring(distribution):lower(),
         FL.Sync.Debug.FormatBytes(#encoded));
-    FL.Sync.Debug.Count("comm.recv." .. name .. ".msgs", 1);
-    FL.Sync.Debug.Count("comm.recv." .. name .. ".bytes", #encoded);
 
     local handler = handlers[msgType];
     if (handler) then

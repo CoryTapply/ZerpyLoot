@@ -442,7 +442,7 @@ FL.UI.SettingsWindow.RegisterPage("lootcouncil", "Loot Council", function(page)
     page.gridContainer = gridContainer;
     page.RefreshGrid = function() refreshGrid(page); end;
 
-    -- Saved roster edits elsewhere (/flc council), a session starting, or a
+    -- Saved roster edits elsewhere, a session starting, or a
     -- council update all change what this page shows.
     LootCouncil.RegisterRosterChangedCallback(function()
         if (page.frame:IsVisible()) then page.RefreshGrid(); end
