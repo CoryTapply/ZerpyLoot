@@ -575,7 +575,7 @@ local function buildFilterColumn(parent, opts)
     rightDivider:SetColorTexture(unpack(Colors.divider));
     rightDivider:SetPoint("TOPRIGHT", col, "TOPRIGHT", 0, 0);
     rightDivider:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", 0, 0);
-    rightDivider:SetWidth(Pixel.PixelSize(1));
+    Pixel.SetLineWidth(rightDivider, 1);
 
     ------------------------------------------------------------------
     -- Header
@@ -589,7 +589,7 @@ local function buildFilterColumn(parent, opts)
     headerBorder:SetColorTexture(unpack(Colors.divider));
     headerBorder:SetPoint("BOTTOMLEFT", header, "BOTTOMLEFT", 0, 0);
     headerBorder:SetPoint("BOTTOMRIGHT", header, "BOTTOMRIGHT", 0, 0);
-    headerBorder:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(headerBorder, 1);
 
     local activeBar = header:CreateTexture(nil, "OVERLAY");
     activeBar:SetColorTexture(unpack(Colors.gold));
@@ -813,7 +813,7 @@ local function createFilterBar(parent)
     border:SetColorTexture(unpack(Colors.divider));
     border:SetPoint("BOTTOMLEFT", filterBar, "BOTTOMLEFT", 0, 0);
     border:SetPoint("BOTTOMRIGHT", filterBar, "BOTTOMRIGHT", 0, 0);
-    border:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(border, 1);
 
     addEntryButton = CreateFrame("Button", nil, filterBar, "BackdropTemplate");
     Skin.Button(addEntryButton, "primary");
@@ -864,7 +864,7 @@ local function createFilterBar(parent)
 
     filterClearUnderline = filterBar:CreateTexture(nil, "OVERLAY");
     filterClearUnderline:SetColorTexture(unpack(Colors.text));
-    filterClearUnderline:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(filterClearUnderline, 1);
     filterClearUnderline:Hide();
 
     filterClearButton = CreateFrame("Button", nil, filterBar);
@@ -1067,7 +1067,7 @@ local function ensureExpandedBlock()
     expandedBlock.rule:SetColorTexture(unpack(Colors.divider));
     expandedBlock.rule:SetPoint("TOPLEFT", expandedBlock, "TOPLEFT", 0, 0);
     expandedBlock.rule:SetPoint("TOPRIGHT", expandedBlock, "TOPRIGHT", 0, 0);
-    expandedBlock.rule:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(expandedBlock.rule, 1);
 
     expandedBlock.header = CreateFrame("Frame", nil, expandedBlock);
     expandedBlock.header:SetPoint("TOPLEFT", expandedBlock.rule, "BOTTOMLEFT", 0, -Sizes.expanded.topPad);
@@ -1204,7 +1204,7 @@ local function createResultRow()
     row.divider:SetColorTexture(unpack(Colors.lhResultDivider));
     row.divider:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0);
     row.divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0);
-    row.divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(row.divider, 1);
 
     row:HookScript("OnEnter", function(self) if (not self.expanded) then self:SetBackdropColor(unpack(Colors.hoverBg)); end end);
     row:HookScript("OnLeave", function(self) if (not self.expanded) then self:SetBackdropColor(unpack(Colors.transparent)); end end);
@@ -1357,7 +1357,7 @@ local function createResultRow()
         button:SetPoint("BOTTOMRIGHT", fontString, "BOTTOMRIGHT");
         local underline = row:CreateTexture(nil, "OVERLAY");
         underline:SetColorTexture(unpack(underlineColor));
-        underline:SetHeight(Pixel.PixelSize(1));
+        Pixel.SetLineHeight(underline, 1);
         underline:SetPoint("BOTTOMLEFT", fontString, "BOTTOMLEFT", 0, -1);
         underline:SetPoint("BOTTOMRIGHT", fontString, "BOTTOMRIGHT", 0, -1);
         underline:Hide();
@@ -2634,7 +2634,7 @@ local function createTitleBar()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 2, 0);
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
@@ -2719,8 +2719,8 @@ function ensureFrame()
     -- borderInset convention AwardWindow's itemPanel uses. Top is untouched:
     -- body starts below the title bar, which has no fill.
     body = CreateFrame("Frame", nil, frame);
-    body:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -Sizes.titleBarHeight);
-    body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1);
+    Pixel.SetBorderInsetPoint(body, "TOPLEFT", frame, "TOPLEFT", 1, 0, 0, -Sizes.titleBarHeight);
+    Pixel.SetBorderInsetPoint(body, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1);
 
     dateColumn = buildFilterColumn(body, {
         title = "Date", filterType = "date", hasSearch = false,

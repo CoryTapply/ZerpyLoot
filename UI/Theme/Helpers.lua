@@ -25,17 +25,115 @@ function Helpers.EnsureBackdrop(frame)
     end
 end
 
---- Flat solid-color backdrop with a border `thicknessPx` physical pixels wide
---- (edge size computed through FL.Pixel so it lands exactly on the pixel
---- grid). Pass a nil `fillColor` for a border-only frame.
+-- Shared so a repeat SetFlatBackdrop (hover states) hits SetBackdrop's
+-- same-info early return instead of rebuilding the pieces.
+local FILL_INFO = { bgFile = Helpers.FLAT_TEXTURE };
+
+local function newStrip(frame)
+    local strip = frame:CreateTexture(nil, "BORDER");
+    strip:SetTexture(Helpers.FLAT_TEXTURE);
+    if (strip.SetSnapToPixelGrid) then
+        strip:SetSnapToPixelGrid(false);
+        strip:SetTexelSnappingBias(0);
+    end
+    return strip;
+end
+
+-- Top/bottom span the full width; left/right sit between them so corners
+-- are never drawn twice (matters for a translucent border color).
+local function layoutBorder(frame, border)
+    local edge = Pixel.PixelSize(border.thicknessPx, frame);
+    if (border.edge == edge) then return; end
+    border.edge = edge;
+
+    local top, bottom, left, right = border.top, border.bottom, border.left, border.right;
+    top:ClearAllPoints();
+    top:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0);
+    top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0);
+    top:SetHeight(edge);
+    bottom:ClearAllPoints();
+    bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0);
+    bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0);
+    bottom:SetHeight(edge);
+    left:ClearAllPoints();
+    left:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -edge);
+    left:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, edge);
+    left:SetWidth(edge);
+    right:ClearAllPoints();
+    right:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, -edge);
+    right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, edge);
+    right:SetWidth(edge);
+end
+
+local function setBorderColor(self, r, g, b, a)
+    for _, strip in ipairs(self.flBorder.strips) do
+        strip:SetVertexColor(r, g, b, a or 1);
+    end
+end
+
+local function getBorderColor(self)
+    return self.flBorder.top:GetVertexColor();
+end
+
+local function ensureBorder(frame)
+    local border = frame.flBorder;
+    if (border) then return border; end
+
+    border = {
+        top = newStrip(frame), bottom = newStrip(frame),
+        left = newStrip(frame), right = newStrip(frame),
+        thicknessPx = 1,
+    };
+    border.strips = { border.top, border.bottom, border.left, border.right };
+    frame.flBorder = border;
+    frame.SetBackdropBorderColor = setBorderColor;
+    frame.GetBackdropBorderColor = getBorderColor;
+
+    Pixel.Track(frame, "border", function() layoutBorder(frame, border); end);
+    return border;
+end
+
+--- Flat solid-color backdrop with a border `thicknessPx` physical pixels wide.
+--- Pass a nil `fillColor` for a border-only frame.
+---
+--- The fill is a plain BackdropTemplate bgFile (SetBackdropColor keeps
+--- working). The border is NOT the backdrop's edge pieces: it is 4 texture
+--- strips of our own (EllesmereUI's PP.CreateBorder approach) with the
+--- engine's pixel-grid snapping turned off. With snapping on, a 1px edge
+--- that lands on a fractional pixel position can round to 0px and that side
+--- of the box vanishes - which side depends on the box's position, so it
+--- showed up at 1440p/1080p and odd UI scales but not at 4K (2px edges).
+--- Unsnapped, an edge exactly N pixels thick always covers N pixel rows.
+---
+--- SetBackdropBorderColor/GetBackdropBorderColor on the frame are routed to
+--- the strips, so callers recolor the border exactly as before. Use
+--- ClearFlatBackdrop (not SetBackdrop(nil)) to remove it. The edge thickness
+--- is re-applied whenever the pixel grid changes (see Pixel.Track).
 function Helpers.SetFlatBackdrop(frame, fillColor, borderColor, thicknessPx)
-    frame:SetBackdrop({
-        bgFile = fillColor and Helpers.FLAT_TEXTURE or nil,
-        edgeFile = Helpers.FLAT_TEXTURE,
-        edgeSize = Pixel.PixelSize(thicknessPx or 1),
-    });
-    if (fillColor) then frame:SetBackdropColor(unpack(fillColor)); end
+    if (fillColor) then
+        frame:SetBackdrop(FILL_INFO);
+        frame:SetBackdropColor(unpack(fillColor));
+    elseif (frame.SetBackdrop) then
+        frame:SetBackdrop(nil);
+    end
+
+    local border = ensureBorder(frame);
+    if (border.thicknessPx ~= (thicknessPx or 1)) then
+        border.thicknessPx = thicknessPx or 1;
+        border.edge = nil;
+    end
+    layoutBorder(frame, border);
+    for _, strip in ipairs(border.strips) do strip:Show(); end
     frame:SetBackdropBorderColor(unpack(borderColor));
+end
+
+--- Removes a SetFlatBackdrop fill and border (hover highlights etc.).
+function Helpers.ClearFlatBackdrop(frame)
+    if (frame.SetBackdrop) then frame:SetBackdrop(nil); end
+    local border = frame.flBorder;
+    if (border) then
+        for _, strip in ipairs(border.strips) do strip:Hide(); end
+    end
 end
 
 --- Wires an eased mouse-wheel scroll onto `scrollFrame` (any ScrollFrame,

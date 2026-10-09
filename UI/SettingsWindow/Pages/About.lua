@@ -84,7 +84,7 @@ FL.UI.SettingsWindow.RegisterPage("about", "About", function(page)
 
     local divider = page.frame:CreateTexture(nil, "ARTWORK");
     divider:SetColorTexture(unpack(Colors.divider));
-    divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(divider, 1);
 
     local rows = {};
     for _, feature in ipairs(FEATURES) do

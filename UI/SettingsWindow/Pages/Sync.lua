@@ -143,7 +143,7 @@ local function newBlock(parent, title, width)
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -6);
     divider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0);
-    divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(divider, 1);
 
     return { frame = frame, width = width, contentTop = -(titleText:GetStringHeight() + 6 + ROW_GAP) };
 end

@@ -63,7 +63,7 @@ local function buildFullWidthSection(page, title)
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -6);
     divider:SetPoint("TOPRIGHT", outer, "TOPRIGHT", 0, 0);
-    divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(divider, 1);
 
     return outer, -(titleText:GetStringHeight() + 6 + Sizes.layout.rowGap);
 end

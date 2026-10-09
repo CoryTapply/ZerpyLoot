@@ -159,7 +159,7 @@ local function createTitleBar()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 2, 0);
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
@@ -329,8 +329,8 @@ end
 
 local function createItemPanel()
     itemPanel = CreateFrame("Frame", nil, frame, "BackdropTemplate");
-    itemPanel:SetPoint("TOPLEFT", frame, "TOPLEFT", Sizes.borderInset, -(Sizes.titleBarHeight + Sizes.borderInset));
-    itemPanel:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", Sizes.borderInset, Sizes.borderInset);
+    Pixel.SetBorderInsetPoint(itemPanel, "TOPLEFT", frame, "TOPLEFT", 1, -1, 0, -Sizes.titleBarHeight);
+    Pixel.SetBorderInsetPoint(itemPanel, "BOTTOMLEFT", frame, "BOTTOMLEFT", 1, 1);
     itemPanel:SetWidth(Sizes.itemPanel.width);
     Theme.Helpers.SetFlatBackdrop(itemPanel, Colors.sidebarBg, Colors.transparent, 0);
 
@@ -338,7 +338,7 @@ local function createItemPanel()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPRIGHT", itemPanel, "TOPRIGHT", 0, 0);
     divider:SetPoint("BOTTOMRIGHT", itemPanel, "BOTTOMRIGHT", 0, 0);
-    divider:SetWidth(Pixel.PixelSize(1));
+    Pixel.SetLineWidth(divider, 1);
 
     local pad = Sizes.itemPanel.padding;
 
@@ -585,7 +585,7 @@ local function createHeaderRow()
     divider:SetColorTexture(unpack(Colors.disabledBorder));
     divider:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -Sizes.mainPanel.headerDividerGap);
     divider:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -Sizes.mainPanel.headerDividerGap);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     return header, divider;
 end
@@ -975,7 +975,7 @@ local function createFooter()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", footer, "TOPLEFT", 0, Sizes.mainPanel.footerDividerGap);
     divider:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, Sizes.mainPanel.footerDividerGap);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     footerHintIcon = footer:CreateTexture(nil, "ARTWORK");
     footerHintIcon:SetHeight(Sizes.mainPanel.mouseHintIconHeight);
@@ -1848,7 +1848,7 @@ local function ensureFrame()
 
     mainPanel = CreateFrame("Frame", nil, frame);
     mainPanel:SetPoint("TOPLEFT", itemPanel, "TOPRIGHT", 0, 0);
-    mainPanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -Sizes.borderInset, Sizes.borderInset);
+    Pixel.SetBorderInsetPoint(mainPanel, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1);
 
     local header, headerDivider = createHeaderRow();
     createFooter();

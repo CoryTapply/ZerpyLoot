@@ -102,7 +102,7 @@ local function buildHeading(parent, width, title, rightText)
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -6);
     divider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0);
-    divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(divider, 1);
 
     local height = titleText:GetStringHeight() + 6 + 1 + Sizes.layout.rowGap;
     frame:SetHeight(height);
@@ -283,7 +283,7 @@ local function buildRow(page, list, entry, index)
     row.divider:SetColorTexture(unpack(Colors.lrRowDivider));
     row.divider:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0);
     row.divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0);
-    row.divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(row.divider, 1);
     if (index == #list) then row.divider:Hide(); end
 
     row.moveArrows = Skin.MoveArrows(row, {

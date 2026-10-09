@@ -101,7 +101,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     outerDivider:SetColorTexture(unpack(Colors.divider));
     outerDivider:SetPoint("TOPLEFT", outerTitle, "BOTTOMLEFT", 0, -6);
     outerDivider:SetPoint("TOPRIGHT", outer, "TOPRIGHT", 0, 0);
-    outerDivider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(outerDivider, 1);
 
     local innerTop = -(outerTitle:GetStringHeight() + 6 + Sizes.layout.rowGap);
     local colWidth = math.floor((page.contentWidth - COLUMN_GAP) / 2);
@@ -259,7 +259,7 @@ FL.UI.SettingsWindow.RegisterPage("lootrolls", "Loot Rolls", function(page)
     arDivider:SetColorTexture(unpack(Colors.divider));
     arDivider:SetPoint("TOPLEFT", arTitle, "BOTTOMLEFT", 0, -6);
     arDivider:SetPoint("TOPRIGHT", arOuter, "TOPRIGHT", 0, 0);
-    arDivider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(arDivider, 1);
 
     local arInnerTop = -(arTitle:GetStringHeight() + 6 + Sizes.layout.rowGap);
 

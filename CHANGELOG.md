@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1
+
+### Windows
+
+- Item tooltips no longer show through a window from icons in a window underneath it.
+- Opening the Settings or Respond window now brings it to the front. Before, it could open behind other ForeverLoot windows.
+- Alt+left-clicking an item to start a roll-off now brings the roll-off window to the front, even if it was already open behind other windows.
+- Box borders no longer go missing on one or two sides at some resolutions and UI scales.
+- Windows now line up with your screen's pixels at any resolution and UI scale, so their edges stay sharp.
+- Borders and divider lines now update straight away when you change UI scale, resolution or Window Scale. Before, some needed a `/reload`.
+
 ## 1.0.0
 
 ### Slash commands

@@ -330,7 +330,7 @@ FL.UI.Sizes = {
     -- out of sync with the panels/columns they're built from.
     award = (function()
         local windowWidth, windowHeight = 830, 495;
-        local borderInset = 1; -- both panels sit inset 1 from the window border
+        local borderInset = 1; -- both panels sit inset one border width from the window edge (AwardWindow anchors them via Pixel.SetBorderInsetPoint; this value only feeds the column-width math below)
 
         local itemPanelWidth = 196;
         local mainPanelLeft = borderInset + itemPanelWidth;

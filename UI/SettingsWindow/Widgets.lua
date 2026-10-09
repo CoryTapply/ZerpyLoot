@@ -600,7 +600,7 @@ function PageMethods:Section(title, column)
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -6);
     divider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0);
-    divider:SetHeight(FL.Pixel.PixelSize(1));
+    FL.Pixel.SetLineHeight(divider, 1);
 
     local startY = -(titleText:GetStringHeight() + 6 + ROW_SPACING);
     local section = setmetatable({

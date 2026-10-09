@@ -654,7 +654,7 @@ local function createTitleBar()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 2, 0);
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);

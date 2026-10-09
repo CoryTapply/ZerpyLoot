@@ -308,7 +308,7 @@ local function ensureFrame()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 2, 0);
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -2, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
@@ -582,7 +582,7 @@ local function ensureFrame()
 
     statusDivider = frame:CreateTexture(nil, "ARTWORK");
     statusDivider:SetColorTexture(unpack(Colors.divider));
-    statusDivider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(statusDivider, 1);
 
     statusDot = frame:CreateTexture(nil, "ARTWORK");
     statusDot:SetSize(Sizes.status.dotSize, Sizes.status.dotSize);

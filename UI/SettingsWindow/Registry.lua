@@ -65,7 +65,7 @@ local function setNavButtonState(button, selected, hovering)
         Theme.Helpers.SetFlatBackdrop(button, Colors.hoverBg, Colors.transparent, 1);
         button.text:SetTextColor(unpack(Colors.text));
     else
-        button:SetBackdrop(nil);
+        Theme.Helpers.ClearFlatBackdrop(button);
         button.text:SetTextColor(unpack(Colors.text));
     end
 end
@@ -179,7 +179,7 @@ local function acquireResultButton(index)
     button.subtitle = subtitle;
 
     button:SetScript("OnEnter", function(self) Theme.Helpers.SetFlatBackdrop(self, Colors.hoverBg, Colors.transparent, 1); end);
-    button:SetScript("OnLeave", function(self) self:SetBackdrop(nil); end);
+    button:SetScript("OnLeave", function(self) Theme.Helpers.ClearFlatBackdrop(self); end);
 
     resultButtons[index] = button;
     return button;
@@ -408,7 +408,7 @@ function Registry.Build(sidebar, content, topAnchor, footerRow)
             divider:SetPoint("TOP", prevAnchor, "BOTTOM", 0, -Sizes.layout.navDividerGap);
             divider:SetPoint("LEFT", sidebar, "LEFT", padX, 0);
             divider:SetPoint("RIGHT", sidebar, "RIGHT", -padX, 0);
-            divider:SetHeight(FL.Pixel.PixelSize(1));
+            FL.Pixel.SetLineHeight(divider, 1);
             prevAnchor = divider;
             prevWasDivider = true;
             navDivider = divider;

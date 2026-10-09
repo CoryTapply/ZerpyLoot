@@ -77,7 +77,7 @@ local function createTitleBar()
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("BOTTOMLEFT", titleBar, "BOTTOMLEFT", 1, 0);
     divider:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", -1, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     local closeButton = CreateFrame("Button", nil, titleBar, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleBar, "TOPRIGHT", -8, -8);
@@ -101,7 +101,7 @@ local function createSidebar()
     edgeDivider:SetColorTexture(unpack(Colors.divider));
     edgeDivider:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", 0, 0);
     edgeDivider:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", 0, 0);
-    edgeDivider:SetWidth(Pixel.PixelSize(1));
+    Pixel.SetLineWidth(edgeDivider, 1);
 
     local searchBox = CreateFrame("EditBox", nil, sidebar, "SearchBoxTemplate");
     searchBox:SetPoint("TOPLEFT", sidebar, "TOPLEFT", Sizes.layout.sidebarPadX, -Sizes.layout.sidebarPadTop);
@@ -135,7 +135,7 @@ local function createFooter(content)
     divider:SetColorTexture(unpack(Colors.divider));
     divider:SetPoint("TOPLEFT", footerFrame, "TOPLEFT", 0, 0);
     divider:SetPoint("TOPRIGHT", footerFrame, "TOPRIGHT", 0, 0);
-    divider:SetHeight(Pixel.PixelSize(1));
+    Pixel.SetLineHeight(divider, 1);
 
     footerFrame.row = CreateFrame("Frame", nil, footerFrame);
     footerFrame.row:SetPoint("BOTTOMLEFT", footerFrame, "BOTTOMLEFT", 0, 0);

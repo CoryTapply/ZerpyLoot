@@ -234,7 +234,7 @@ local function ensureFrame()
     footerDivider:SetColorTexture(unpack(Colors.divider));
     footerDivider:SetPoint("TOPLEFT", noteText, "BOTTOMLEFT", 0, -Sizes.gap);
     footerDivider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -Sizes.padding, 0);
-    footerDivider:SetHeight(FL.Pixel.PixelSize(Sizes.footerDividerHeight));
+    FL.Pixel.SetLineHeight(footerDivider, Sizes.footerDividerHeight);
 
     viewOverridesButton = Widgets.CreateFlatButton(frame, "View Overrides", "default");
     viewOverridesButton:SetSize(viewOverridesButton.text:GetStringWidth() + 24, Sizes.viewOverridesHeight);
