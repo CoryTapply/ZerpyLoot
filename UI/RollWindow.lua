@@ -1719,6 +1719,7 @@ function RollWindow.ShowStartPrompt(itemLink)
     if (RollOff and RollOff.active) then
         print("|cff8865ffForeverLoot|r A roll-off is already in progress.");
         frame:Show();
+        Pixel.BringToFront(frame); -- already-open windows get no OnShow, so raise explicitly
         RollWindow.Refresh();
         return;
     end
@@ -1730,6 +1731,7 @@ function RollWindow.ShowStartPrompt(itemLink)
     end
 
     frame:Show();
+    Pixel.BringToFront(frame); -- already-open windows get no OnShow, so raise explicitly
     RollWindow.Refresh();
 end
 

@@ -310,7 +310,7 @@ local function ensureFrame()
 
     FL.UI.SettingsRegistry.Build(sidebar, scrollChild, searchBox, footerRow);
 
-    frame:SetScript("OnShow", SettingsWindow.Refresh);
+    frame:HookScript("OnShow", SettingsWindow.Refresh); -- HookScript: keeps Pixel.MakeToplevelWindow's bring-to-front hook
 end
 
 function SettingsWindow.Refresh()

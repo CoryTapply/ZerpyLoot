@@ -162,10 +162,78 @@ end
 -- without it, padding/labels/backgrounds pass clicks straight through to
 -- whatever window (or the 3D world) is underneath, and since nothing
 -- mouse-enabled in this window was hit, SetToplevel doesn't raise it either.
+--
+-- What Raise() does NOT fix: it changes which window DRAWS in front, but
+-- not the frame levels the engine uses to pick what the mouse is over
+-- (measured in game: Start Session drawn over History still reported level
+-- 1 vs History's 10). So a covered window's icons keep winning the hover
+-- and pop their tooltips through the window in front, and GetFrameLevel()
+-- can't tell us which window is really in front either.
+--
+-- So ForeverLoot tracks the front-to-back order itself (`zOrder`, last =
+-- front): a window moves to the front when shown, or when clicked at a
+-- spot no window in front of it covers. The GameTooltip OnShow hook below
+-- then hides any tooltip whose owner sits in a window that a window in
+-- front of it covers at the cursor.
+local toplevels = {};
+local zOrder = {};
+
+local function MoveToFront(frame)
+    for i, f in ipairs(zOrder) do
+        if (f == frame) then table.remove(zOrder, i); break; end
+    end
+    table.insert(zOrder, frame);
+end
+
+function Pixel.BringToFront(frame)
+    MoveToFront(frame);
+    frame:Raise();
+end
+
+local function OwningWindow(frame)
+    while (frame) do
+        if (toplevels[frame]) then return frame; end
+        frame = frame.GetParent and frame:GetParent();
+    end
+end
+
+-- The front-most visible window under the cursor, by zOrder.
+local function FrontWindowAtCursor()
+    for i = #zOrder, 1, -1 do
+        local frame = zOrder[i];
+        if (frame:IsVisible() and frame:IsMouseOver()) then return frame; end
+    end
+end
+
+GameTooltip:HookScript("OnShow", function(tooltip)
+    local window = OwningWindow(tooltip:GetOwner());
+    if (window) then
+        local front = FrontWindowAtCursor();
+        if (front and front ~= window) then
+            tooltip:Hide();
+        end
+    end
+end);
+
+-- Clicking a window brings it to the front - but only the window that is
+-- visibly front-most at the cursor, never one whose buried icon happened to
+-- win the engine's hit-test. Uses IsMouseOver rather than the mouse focus
+-- for exactly that reason.
+local clickWatcher = CreateFrame("Frame");
+clickWatcher:RegisterEvent("GLOBAL_MOUSE_DOWN");
+clickWatcher:SetScript("OnEvent", function()
+    local front = FrontWindowAtCursor();
+    if (front and zOrder[#zOrder] ~= front) then
+        Pixel.BringToFront(front);
+    end
+end);
+
 function Pixel.MakeToplevelWindow(frame)
+    toplevels[frame] = true;
     frame:EnableMouse(true);
     frame:SetToplevel(true);
-    frame:HookScript("OnShow", function() frame:Raise(); end);
+    frame:HookScript("OnShow", function() Pixel.BringToFront(frame); end);
+    if (frame:IsShown()) then MoveToFront(frame); end
 end
 
 -- Tracks a frame so its layout is re-snapped whenever the pixel grid changes

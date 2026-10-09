@@ -243,7 +243,7 @@ local function ensureFrame()
         FL.UI.SettingsWindow.Show();
         FL.UI.SettingsRegistry.SelectPage("lootrolls");
         FL.UI.SettingsWindow.ScrollToSection("autoRoll");
-        frame:Raise(); -- both DIALOG strata; keep the popup visibly on top since it must stay open
+        FL.Pixel.BringToFront(frame); -- both DIALOG strata; keep the popup visibly on top since it must stay open
     end);
 
     -- footerDivider's own LEFT point sits at the (razor-thin) divider's

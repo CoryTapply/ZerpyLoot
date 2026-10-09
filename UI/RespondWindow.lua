@@ -1027,7 +1027,7 @@ local function ensureFrame()
 
     ensurePopover();
 
-    frame:SetScript("OnShow", RespondWindow.RefreshTimerState);
+    frame:HookScript("OnShow", RespondWindow.RefreshTimerState); -- HookScript: keeps Pixel.MakeToplevelWindow's bring-to-front hook
 end
 
 --------------------------------------------------------------------------
