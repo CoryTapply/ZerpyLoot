@@ -125,9 +125,6 @@ SlashCmdList["FOREVERLOOT"] = function(rawMsg)
     elseif (msg == "minimap") then
         local shown = FL.UI.MinimapButton.ToggleShown();
         print(("|cff8865ffForeverLoot|r minimap button: %s"):format(shown and "shown" or "hidden"));
-    -- Border/pixel-grid diagnostics live in Core/PixelPerfect.lua.
-    elseif (string.match(msg, "^pixel%s") or msg == "pixel") then
-        FL.Pixel.HandleSlash(string.match(msg, "^pixel%s*(.-)$") or "");
     -- The debug log tools live in Sync/Debug.lua.
     elseif (string.match(msg, "^debug%s") or msg == "debug") then
         local rest = string.match(msg, "^debug%s*(.-)$") or "";

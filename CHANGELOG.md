@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.2
+
+### Windows
+
+- Everything inside ForeverLoot windows (text, icons, buttons, borders and dividers) now lines up exactly with your screen's pixels, so it looks sharper. Before, only the window edges did.
+- Because of this, windows may look a little bigger or smaller than before, depending on your resolution and UI scale. For example, about 10% bigger at 4K, and about 30% smaller at 1080p with UI scale 1.0. Windows keep their saved positions.
+- Window Scale 1.0 gives the sharpest result. Other values still zoom smoothly but look a little softer.
+- New installs on a screen 1080 pixels tall or less start at Window Scale 1.2, so windows aren't too small there. If you already use ForeverLoot, your Window Scale stays as it is.
+- Dropdown lists in Settings and the name suggestions in the History search now follow Window Scale. Before, they stayed at their original size.
+- The auto-roll popup now follows Window Scale too.
+
 ## 1.0.1
 
 ### Windows

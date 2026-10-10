@@ -122,6 +122,18 @@ local function createGridButton(choice)
     return button;
 end
 
+-- Upper third of the screen, horizontally centered, with the TOPLEFT on a
+-- whole physical pixel: the popup renders at the window scale (see
+-- Pixel.ScaleWithWindows), so its children's integer offsets are only
+-- pixel-exact if the frame itself sits on the pixel grid.
+local function placeFrame()
+    local scale = frame:GetScale();
+    local left = FL.Pixel.Snap((UIParent:GetWidth() - frame:GetWidth() * scale) / 2);
+    local top = FL.Pixel.Snap(-UIParent:GetHeight() / 3);
+    frame:ClearAllPoints();
+    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left / scale, top / scale);
+end
+
 local function ensureFrame()
     if (frame) then return; end
 
@@ -131,10 +143,10 @@ local function ensureFrame()
     frame:SetFrameStrata("DIALOG");
     FL.Pixel.MakeToplevelWindow(frame);
     frame:SetWidth(Sizes.width);
-    -- Centered in the upper third of the screen - re-centers on every Show()
-    -- (see the "no position persistence" decision below), so this is always
-    -- computed fresh rather than a fixed literal.
-    frame:SetPoint("TOP", UIParent, "TOP", 0, -(UIParent:GetHeight() / 3));
+    -- Placed fresh (see the "no position persistence" decision below), and
+    -- again whenever the UI scale/resolution/Window Scale changes.
+    FL.Pixel.ScaleWithWindows(frame, placeFrame);
+    placeFrame();
 
     Theme.Helpers.SetFlatBackdrop(frame, Colors.windowBg, Colors.controlFocus, 1);
 
@@ -154,7 +166,10 @@ local function ensureFrame()
     titleRow:EnableMouse(true);
     titleRow:RegisterForDrag("LeftButton");
     titleRow:SetScript("OnDragStart", function() frame:StartMoving(); end);
-    titleRow:SetScript("OnDragStop", function() frame:StopMovingOrSizing(); end);
+    titleRow:SetScript("OnDragStop", function()
+        frame:StopMovingOrSizing();
+        FL.Pixel.SnapPosition(frame);
+    end);
 
     closeButton = CreateFrame("Button", nil, titleRow, "BackdropTemplate");
     closeButton:SetPoint("TOPRIGHT", titleRow, "TOPRIGHT", 0, 0);

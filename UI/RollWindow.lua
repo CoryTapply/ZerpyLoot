@@ -188,10 +188,12 @@ local function animateGrowTo(targetHeight)
     -- before growing, so the bottom edge is the only thing that moves as
     -- height increases - the window grows straight down, never up or from
     -- the middle.
+    -- GetLeft/GetTop and SetPoint offsets are all in the window's own
+    -- scaled units, so UIParent's height has to be converted into them too.
     local left, top = frame:GetLeft(), frame:GetTop();
     if (left and top) then
         frame:ClearAllPoints();
-        frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, top - UIParent:GetHeight());
+        frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, top - UIParent:GetHeight() / frame:GetScale());
     end
 
     heightAnim = { startHeight = frame:GetHeight(), targetHeight = targetHeight, startTime = GetTime() };

@@ -804,6 +804,9 @@ function Skin.Dropdown(parent, opts)
         list:SetFrameLevel(catcher:GetFrameLevel() + 1);
         list:SetWidth(width);
         list:Hide();
+        -- Parented to UIParent (to draw over everything), so it has to be
+        -- told to render at the same scale as the window it drops from.
+        FL.Pixel.ScaleWithWindows(list);
         Skin.Backdrop(list, Colors.sidebarBg, Colors.border);
         list.zlCatcher = catcher;
         tinsert(UISpecialFrames, name);

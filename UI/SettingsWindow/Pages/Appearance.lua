@@ -57,7 +57,9 @@ FL.UI.SettingsWindow.RegisterPage("appearance", "Appearance", function(page)
 
     -- Whole-window zoom (Pixel.SetGlobalScale, per-character) - a coarse
     -- escape hatch layered on top of the corrected base sizes in
-    -- UI/Sizes.lua, not a replacement for them.
+    -- UI/Sizes.lua, not a replacement for them. 1.0 is the pixel-exact
+    -- setting (one window unit = a whole number of screen pixels, see
+    -- Core/PixelPerfect.lua); other values zoom smoothly but render softer.
     section:Slider{
         key = "appearance.windowScale",
         label = "Window Scale",

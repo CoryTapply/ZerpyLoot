@@ -1998,6 +1998,8 @@ end
 local function createNameSuggestList(editBox, onPick)
     local listFrame = CreateFrame("Frame", "ForeverLootHistorySuggestList", UIParent, "BackdropTemplate");
     listFrame:SetFrameStrata("FULLSCREEN_DIALOG");
+    -- UIParent child, so match the History window's scale explicitly.
+    FL.Pixel.ScaleWithWindows(listFrame);
     Skin.Backdrop(listFrame, Colors.sidebarBg, Colors.border);
     listFrame:Hide();
     tinsert(UISpecialFrames, "ForeverLootHistorySuggestList");

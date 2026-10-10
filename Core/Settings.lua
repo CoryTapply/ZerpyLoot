@@ -16,7 +16,15 @@ function Settings.Init()
     local s = FL.DB.settings;
 
     s.font = s.font or FL.Theme.DEFAULT_FONT_KEY;
-    s.windowScale = s.windowScale or 1.0;
+    -- First login only (nothing saved yet - every later login finds the value
+    -- written here): screens 1080px tall or less start at 1.2, since windows
+    -- there render one physical pixel per unit and read small at 1.0
+    -- (Core/PixelPerfect.lua). A 0 height (mid display change) counts as unknown.
+    if (s.windowScale == nil) then
+        local _, physicalHeight = GetPhysicalScreenSize();
+        local small = physicalHeight and physicalHeight > 0 and physicalHeight <= 1080;
+        s.windowScale = small and 1.2 or 1.0;
+    end
 
     s.lootCouncil = s.lootCouncil or {};
     local lc = s.lootCouncil;

@@ -10,6 +10,14 @@ Both the effective scale (UIScale * any window :SetScale()) and the
 physical height are read live (GetPhysicalScreenSize, via Blizzard's own
 PixelUtil), so borders and window edges land on the real pixel grid on any
 monitor, resolution, UIScale or Window Scale without hardcoding any of them.
+
+Every registered window (and every Pixel.ScaleWithWindows frame) runs at a
+scale where one of ITS units is a whole number of physical pixels - so every
+integer SetPoint offset and SetSize inside a window is pixel-exact without
+wrapping each call. That whole number is UIParent's own px-per-unit rounded
+(min 1), so windows keep roughly the size they were designed at in UIParent
+units. Window Scale multiplies on top: at 1.0 everything is exact, other
+values are smooth but soft.
 ]]
 
 local FL = ForeverLoot;
@@ -58,43 +66,92 @@ local function ToSelfOffset(frame, value)
     return value / frame:GetScale();
 end
 
--- Window Scale (UI/SettingsWindow/Pages/Appearance.lua's slider) applies a
--- plain frame:SetScale() on top of UIParent's scale. Pixel.Unit() stays in
--- UIParent units (layout.x/y and window positions live there); the window's
--- own size is snapped in its self-scaled units (see selfUnit below), and
--- Pixel.PixelSize(px, region) reads the region's full effective scale, so
--- borders stay whole pixels at any Window Scale too.
-local currentScale = 1.0;
+-- Window Scale (UI/SettingsWindow/Pages/Appearance.lua's slider). Window
+-- positions (layout.x/y, saved windowPositions) stay in plain UIParent units
+-- whatever the window's own scale; see Pixel.GetWindowScale for the scale.
+local userScale = 1.0;
 
-function Pixel.GetGlobalScale()
-    return currentScale;
+-- Frames parented to UIParent that aren't registered windows but must render
+-- at the window scale (dropdown lists, the auto-roll popup) - see
+-- Pixel.ScaleWithWindows.
+local scaledFrames = {};
+
+-- Last good physical height: GetPhysicalScreenSize() can report 0 mid
+-- display-mode change, and a 0 here would turn every scale into inf/NaN.
+local physicalHeight = 1080;
+
+local function PhysicalHeight()
+    local _, h = GetPhysicalScreenSize();
+    if (h and h > 0) then physicalHeight = h; end
+    return physicalHeight;
 end
 
---- Applies `scale` to every registered window immediately, and remembers it
---- so a window registered later (opened for the first time after the slider
---- moved) still picks it up - see Pixel.RegisterWindow below.
----
---- Re-runs Pixel.ApplyLayout (which factors currentScale into its position
---- math - see below) instead of just calling frame:SetScale(), so each
---- window's layout.x/y center stays fixed on screen across a scale change
---- rather than drifting toward its bottom-right corner. Works even for a
---- currently-hidden window, since it's driven entirely by the stored layout
---- table rather than the frame's live (unshown) on-screen position.
-function Pixel.SetGlobalScale(scale)
-    currentScale = scale;
+-- Physical pixels per UIParent unit (1.83 at 4K@0.65, 1.41 at 1080p@1.0).
+local function BasePixels()
+    return UIParent:GetEffectiveScale() * PhysicalHeight() / 768;
+end
+
+-- Whole physical pixels per window unit at Window Scale 1.0.
+local function WholePixels()
+    return math.max(1, math.floor(BasePixels() + 0.5));
+end
+
+-- Whether one window unit is currently a whole number of physical pixels
+-- (true at Window Scale 1.0, and any other value that happens to land on
+-- one), i.e. whether integer sizes inside a window are pixel-exact.
+local function IsWholePixels()
+    local px = WholePixels() * userScale;
+    return math.abs(px - math.floor(px + 0.5)) < EPSILON;
+end
+
+function Pixel.GetGlobalScale()
+    return userScale;
+end
+
+--- The :SetScale() value (relative to UIParent) every ForeverLoot window
+--- renders at: one window unit = WholePixels() * Window Scale physical px.
+function Pixel.GetWindowScale()
+    return WholePixels() * userScale / BasePixels();
+end
+
+-- Re-applies the window scale to everything that renders at it - every
+-- registered window (re-laid-out from its stored layout, so its layout.x/y
+-- center stays fixed on screen and a hidden window works too), every
+-- Pixel.ScaleWithWindows frame - then everything sized from a pixel count.
+local function ApplyAll()
+    local scale = Pixel.GetWindowScale();
     for frame, entry in pairs(windows) do
         frame:SetScale(scale);
         Pixel.ApplyLayout(frame, entry.layout);
         if (entry.onRescale) then entry.onRescale(); end
     end
+    for frame, onRescale in pairs(scaledFrames) do
+        frame:SetScale(scale);
+        if (onRescale ~= true) then onRescale(); end
+    end
     refreshTracked();
 end
 
+--- Sets the Window Scale and applies it to every window immediately; a
+--- window registered later (opened for the first time after the slider
+--- moved) picks it up in Pixel.RegisterWindow.
+function Pixel.SetGlobalScale(scale)
+    userScale = scale;
+    ApplyAll();
+end
+
+--- Renders a frame that isn't a registered window (e.g. a dropdown list
+--- parented to UIParent so it can draw over everything) at the window scale,
+--- now and after every rescale - so it matches the window it opened from.
+--- `onRescale` (optional) re-positions anything placed in UIParent units.
+function Pixel.ScaleWithWindows(frame, onRescale)
+    scaledFrames[frame] = onRescale or true;
+    frame:SetScale(Pixel.GetWindowScale());
+end
+
 -- Size, in UIParent units, of exactly one physical screen pixel.
--- PixelUtil.GetPixelToUIUnitFactor() is 768 / physical screen height - the
--- size of one physical pixel at effective scale 1.
 function Pixel.Unit()
-    return PixelUtil.GetPixelToUIUnitFactor() / UIParent:GetEffectiveScale();
+    return 1 / BasePixels();
 end
 
 -- Size of one physical pixel in `frame`'s own (self-scaled) units.
@@ -135,6 +192,15 @@ function Pixel.SetBorderInsetPoint(region, point, relativeTo, relativePoint, xBo
     end);
 end
 
+-- Grid a window's own width/height snaps to: whole window units while a unit
+-- is whole pixels (so children anchored to its RIGHT/BOTTOM edges stay exact
+-- too), otherwise one physical pixel in its self-scaled units (so at least
+-- its own edges do).
+local function sizeUnit(frame)
+    if (IsWholePixels()) then return 1; end
+    return selfUnit(frame);
+end
+
 -- Rounds to the nearest multiple of one physical pixel.
 function Pixel.Snap(value)
     local px = Pixel.Unit();
@@ -155,11 +221,6 @@ end
 -- coordinate pipeline). So after anchoring, re-measure the frame's *actual*
 -- on-screen edges and nudge away any leftover drift.
 --
--- gridBias (in pixels, default 0) parks windows that far past a pixel
--- boundary instead of exactly on it. Only changed by the `/fl pixel bias`
--- diagnostic, while investigating 1px borders vanishing at some scales.
-local gridBias = 0;
-
 function Pixel.CorrectDrift(frame)
     -- GetLeft()/GetTop() are in this frame's own self-scaled coordinate
     -- space (see ToSelfOffset above) - convert to true UIParent-local units
@@ -176,8 +237,8 @@ function Pixel.CorrectDrift(frame)
     local leftPixels = left / px;
     local topPixels = (screenHeight - top) / px;
 
-    local driftLeft = leftPixels - (math.floor(leftPixels - gridBias + 0.5) + gridBias);
-    local driftTop = topPixels - (math.floor(topPixels - gridBias + 0.5) + gridBias);
+    local driftLeft = leftPixels - math.floor(leftPixels + 0.5);
+    local driftTop = topPixels - math.floor(topPixels + 0.5);
 
     if (math.abs(driftLeft) < EPSILON and math.abs(driftTop) < EPSILON) then return; end
 
@@ -193,22 +254,20 @@ end
 -- than around its center (the anchor offset itself, in UIParent-local units,
 -- doesn't move - only how far the opposite corners render from it does). So
 -- the TOPLEFT anchor has to be solved backward from the *desired center*
--- (screen-center + layout.x/y) through currentScale, not just through the
--- window's raw unscaled width/height - otherwise the window's rendered
--- center silently drifts off layout.x/y at any scale other than 1.0.
+-- (screen-center + layout.x/y) through the window's scale, not just through
+-- its raw unscaled width/height - otherwise the window's rendered center
+-- silently drifts off layout.x/y.
 function Pixel.ApplyLayout(frame, layout)
-    -- Snapped in the frame's own self-scaled units, so the size it actually
-    -- renders at (width * its scale) is a whole number of pixels at any
-    -- Window Scale, not just 1.0.
-    local width = Pixel.SnapUp(layout.width, selfUnit(frame));
-    local height = Pixel.SnapUp(layout.height, selfUnit(frame));
+    local width = Pixel.SnapUp(layout.width, sizeUnit(frame));
+    local height = Pixel.SnapUp(layout.height, sizeUnit(frame));
+    local scale = frame:GetScale();
 
     local screenWidth, screenHeight = UIParent:GetWidth(), UIParent:GetHeight();
     local centerX = screenWidth / 2 + (layout.x or 0);
     local centerY = screenHeight / 2 + (layout.y or 0);
 
-    local left = Pixel.Snap(centerX - width * currentScale / 2);
-    local top = Pixel.Snap(centerY + height * currentScale / 2 - screenHeight);
+    local left = Pixel.Snap(centerX - width * scale / 2);
+    local top = Pixel.Snap(centerY + height * scale / 2 - screenHeight);
 
     frame:SetSize(width, height);
     frame:ClearAllPoints();
@@ -316,7 +375,7 @@ end
 -- x=200).
 function Pixel.RegisterWindow(frame, layout, onRescale)
     windows[frame] = { layout = layout, onRescale = onRescale, defaultX = layout.x or 0, defaultY = layout.y or 0 };
-    frame:SetScale(currentScale);
+    frame:SetScale(Pixel.GetWindowScale());
     Pixel.ApplyLayout(frame, layout);
     if (onRescale) then onRescale(); end
     -- Anything this window's children tracked before the SetScale above was
@@ -335,7 +394,7 @@ end
 -- the actual (pixel-snapped) height applied.
 function Pixel.SetHeight(frame, height)
     local entry = windows[frame];
-    local snapped = Pixel.SnapUp(height, selfUnit(frame));
+    local snapped = Pixel.SnapUp(height, sizeUnit(frame));
     if (entry) then
         entry.layout.height = snapped;
     end
@@ -404,76 +463,6 @@ end
 local rescaleFrame = CreateFrame("Frame");
 rescaleFrame:RegisterEvent("UI_SCALE_CHANGED");
 rescaleFrame:RegisterEvent("DISPLAY_SIZE_CHANGED");
-rescaleFrame:SetScript("OnEvent", function()
-    for frame, entry in pairs(windows) do
-        Pixel.ApplyLayout(frame, entry.layout);
-        if (entry.onRescale) then entry.onRescale(); end
-    end
-    refreshTracked();
-end);
-
---------------------------------------------------------------------------
--- `/fl pixel` diagnostics (routed from Debug.lua), for tracking down 1px
--- borders that vanish at some resolutions/UI scales:
---   /fl pixel            - screen/scale values, plus the 4 border strips
---                          (Theme.Helpers.SetFlatBackdrop) of the frame
---                          under the mouse, in physical pixels
---   /fl pixel bias <px>  - gridBias above, re-applied to every window
---------------------------------------------------------------------------
-
-local BORDER_STRIPS = { "top", "bottom", "left", "right" };
-
-local function out(fmt, ...)
-    print("|cff8865ffForeverLoot|r " .. fmt:format(...));
-end
-
-local function physical(region)
-    local _, physH = GetPhysicalScreenSize();
-    local k = region:GetEffectiveScale() * physH / 768;
-    local l, t, w, h = region:GetLeft(), region:GetTop(), region:GetWidth(), region:GetHeight();
-    if (not l) then return nil; end
-    local screenTop = UIParent:GetTop() * UIParent:GetEffectiveScale() * physH / 768;
-    return l * k, screenTop - t * k, w * k, h * k;
-end
-
-local function mouseFrame()
-    if (GetMouseFoci) then return (GetMouseFoci())[1]; end
-    if (GetMouseFocus) then return GetMouseFocus(); end
-end
-
-local function describe(frame)
-    local l, t, w, h = physical(frame);
-    out("frame %s  left=%.3f top=%.3f w=%.3f h=%.3f px  effScale=%.4f",
-        tostring(frame:GetName() or frame:GetObjectType()), l or -1, t or -1, w or -1, h or -1, frame:GetEffectiveScale());
-    local border = frame.flBorder;
-    if (not border) then
-        out("  (no ForeverLoot border on this frame - hover the box itself)");
-        return;
-    end
-    out("  edge=%.5f units (%d px wanted)", border.edge or -1, border.thicknessPx);
-    for _, name in ipairs(BORDER_STRIPS) do
-        local strip = border[name];
-        local pl, pt, pw, ph = physical(strip);
-        local snap = strip.IsSnappingToPixelGrid and tostring(strip:IsSnappingToPixelGrid()) or "?";
-        out("  %-6s shown=%s left=%.3f top=%.3f w=%.3f h=%.3f snap=%s",
-            name, tostring(strip:IsShown()), pl or -1, pt or -1, pw or -1, ph or -1, snap);
-    end
-end
-
-function Pixel.HandleSlash(rest)
-    local cmd, arg = string.match(rest or "", "^(%S*)%s*(.-)$");
-    if (cmd == "bias") then
-        gridBias = tonumber(arg) or 0;
-        for frame, entry in pairs(windows) do Pixel.ApplyLayout(frame, entry.layout); end
-        out("window grid bias set to %.3f px.", gridBias);
-    else
-        local pw, ph = GetPhysicalScreenSize();
-        out("physical %dx%d  useUiScale=%s uiScale=%s  UIParent effScale=%.5f height=%.3f",
-            pw, ph, tostring(GetCVar("useUiScale")), tostring(GetCVar("uiScale")),
-            UIParent:GetEffectiveScale(), UIParent:GetHeight());
-        out("Pixel.Unit=%.5f units  PixelSize(1)=%.5f units  windowScale=%.2f  bias=%.3f",
-            Pixel.Unit(), Pixel.PixelSize(1), currentScale, gridBias);
-        local frame = mouseFrame();
-        if (frame and frame ~= WorldFrame) then describe(frame); else out("(hover a ForeverLoot box to inspect its border)"); end
-    end
-end
+-- UIScale or resolution changed: the whole-pixel window scale depends on
+-- both, so re-derive it (not just re-snap the layouts).
+rescaleFrame:SetScript("OnEvent", ApplyAll);

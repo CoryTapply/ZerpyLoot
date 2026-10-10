@@ -1066,7 +1066,8 @@ local function updateCardWidthForSession(Session)
 
     local naturalRowWidth = ResponseRow.MeasureNaturalWidth(Session.responses);
     local desired = math.max(Sizes.cardWidth, Sizes.cardPadding * 2 + naturalRowWidth);
-    desired = math.min(desired, Sizes.cardWidthMaxPct * UIParent:GetWidth());
+    -- UIParent's width converted into the window's own (scaled) units.
+    desired = math.min(desired, Sizes.cardWidthMaxPct * UIParent:GetWidth() / Pixel.GetWindowScale());
     applyCardWidth(desired);
 end
 
@@ -1175,7 +1176,7 @@ function RespondWindow.Refresh()
     scrollFrame:SetPoint("TOPLEFT", scrollAnchor, "BOTTOMLEFT", 0, -Sizes.stackSpacing);
     scrollFrame:SetPoint("TOPRIGHT", scrollAnchor, "BOTTOMRIGHT", 0, -Sizes.stackSpacing);
 
-    local maxScrollHeight = Sizes.scrollMaxHeightPct * UIParent:GetHeight();
+    local maxScrollHeight = Sizes.scrollMaxHeightPct * UIParent:GetHeight() / Pixel.GetWindowScale();
     local scrollHeight = math.min(contentHeight, maxScrollHeight);
     scrollFrame:SetHeight(scrollHeight);
 
